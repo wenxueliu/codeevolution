@@ -36,7 +36,7 @@
           <tr v-for="ev in events" :key="ev.id">
             <td><span class="event-badge" :class="ev.event_type">{{ ev.event_type }}</span></td>
             <td>
-              <router-link :to="'/features/' + encodeURIComponent(ev.stable_id)" class="feature-link">
+              <router-link :to="'/repo/' + repoName + '/features/' + encodeURIComponent(ev.stable_id)" class="feature-link">
                 {{ ev.canonical_name }}
               </router-link>
             </td>
@@ -62,6 +62,7 @@
 
 <script>
 export default {
+  props: { repoName: String },
   data() {
     return {
       events: [], total: 0, offset: 0, pageSize: 50,
@@ -74,13 +75,14 @@ export default {
   },
   created() { this.loadEvents() },
   methods: {
+    api(p) { return '/api/' + p + (p.includes('?')?'&':'?') + 'repo=' + encodeURIComponent(this.repoName || '') },
     async loadEvents() {
       const params = new URLSearchParams({
         feature_stable_id: this.searchFeature, event_type: this.eventTypeFilter,
-        limit: this.pageSize, offset: this.offset,
+        limit: '' + this.pageSize, offset: '' + this.offset,
       });
       try {
-        const r = await fetch('/api/events?' + params);
+        const r = await fetch(this.api('events') + '&' + params);
         const data = await r.json();
         this.events = data.events || [];
         this.total = data.total || 0;

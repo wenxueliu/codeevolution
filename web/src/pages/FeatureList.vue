@@ -38,7 +38,7 @@
         <tbody>
           <tr v-for="f in features" :key="f.stable_id" class="feature-row">
             <td class="name-cell">
-              <router-link :to="'/features/' + encodeURIComponent(f.stable_id)">
+              <router-link :to="'/repo/' + repoName + '/features/' + encodeURIComponent(f.stable_id)">
                 {{ f.canonical_name }}
               </router-link>
               <div class="name-zh" v-if="f.description_zh">{{ f.description_zh }}</div>
@@ -53,7 +53,7 @@
             <td v-if="!selectedCommit">{{ f.event_count ?? '-' }}</td>
             <td v-if="selectedCommit">{{ f.call_tree_nodes ?? '-' }}</td>
             <td>
-              <router-link :to="'/features/' + encodeURIComponent(f.stable_id)" class="detail-link">详情</router-link>
+              <router-link :to="'/repo/' + repoName + '/features/' + encodeURIComponent(f.stable_id)" class="detail-link">详情</router-link>
             </td>
           </tr>
           <tr v-if="features.length === 0">
@@ -73,6 +73,7 @@
 
 <script>
 export default {
+  props: { repoName: String },
   data() {
     return {
       features: [], total: 0, search: '', statusFilter: 'all',
@@ -88,18 +89,15 @@ export default {
     this.loadFeatures();
   },
   methods: {
+    api(p) { return '/api/' + p + (p.includes('?') ? '&' : '?') + 'repo=' + encodeURIComponent(this.repoName || '') },
     async loadCommits() {
-      try {
-        const r = await fetch('/api/commits?limit=200');
-        const data = await r.json();
-        this.commits = data.commits || [];
-      } catch(e) {}
+      try { const r = await fetch(this.api('commits?limit=200')); const data = await r.json(); this.commits = data.commits || [] } catch(e) {}
     },
     async loadFeatures() {
-      const params = new URLSearchParams({ status: this.statusFilter, search: this.search, limit: this.pageSize, offset: this.offset });
+      const params = new URLSearchParams({ status: this.statusFilter, search: this.search, limit: '' + this.pageSize, offset: '' + this.offset });
       if (this.selectedCommit) params.set('at_commit', this.selectedCommit);
       try {
-        const r = await fetch('/api/features?' + params);
+        const r = await fetch(this.api('features') + '&' + params);
         const data = await r.json();
         this.features = data.features || [];
         this.total = data.total || 0;

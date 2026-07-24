@@ -54,6 +54,7 @@
 
 <script>
 export default {
+  props: { repoName: String },
   data() {
     return { stats: {}, eventTypeStats: [], recentEvents: [] }
   },
@@ -61,22 +62,19 @@ export default {
     await Promise.all([this.loadStats(), this.loadEventStats(), this.loadRecentEvents()])
   },
   methods: {
+    api(p) { return '/api/' + p + '?repo=' + encodeURIComponent(this.repoName || '') },
     async loadStats() {
-      try { const r = await fetch('/api/stats'); this.stats = await r.json() } catch(e) {}
+      try { const r = await fetch(this.api('stats')); this.stats = await r.json() } catch(e) {}
     },
     async loadEventStats() {
       try {
-        const r = await fetch('/api/event-stats');
+        const r = await fetch(this.api('event-stats'));
         const data = await r.json();
         this.eventTypeStats = data.stats || [];
       } catch(e) {}
     },
     async loadRecentEvents() {
-      try {
-        const r = await fetch('/api/events?limit=10');
-        const data = await r.json();
-        this.recentEvents = data.events || [];
-      } catch(e) {}
+      try { const r = await fetch(this.api('events') + '&limit=10'); const data = await r.json(); this.recentEvents = data.events || [] } catch(e) {}
     },
     barWidth(count) {
       const max = Math.max(...this.eventTypeStats.map(s => s.count));

@@ -1,12 +1,12 @@
-"""FastAPI backend for the CodeHistory web dashboard."""
+"""FastAPI backend for the CodeHistory web dashboard — multi-repo support."""
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from .store import EvolutionStore
-from .config import Config
+from .registry import list_repos, register_repo, get_repo
 
 app = FastAPI(title="CodeHistory API")
 
@@ -17,38 +17,79 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_store: EvolutionStore | None = None
+_stores: dict[str, EvolutionStore] = {}
 
 
-def init_store(db_path: str):
-    global _store
-    _store = EvolutionStore(db_path)
+def get_store(repo: str = "") -> EvolutionStore:
+    if not repo:
+        repos = list_repos()
+        if repos:
+            repo = repos[0]["name"]
+        else:
+            raise HTTPException(400, "No repos registered. Register a repo first.")
+
+    if repo not in _stores:
+        entry = get_repo(repo)
+        if not entry:
+            raise HTTPException(404, f"Repo '{repo}' not found")
+        db_path = entry.get("db_path") or str(Path(entry["path"]) / ".codehistory" / "evolution.db")
+        _stores[repo] = EvolutionStore(db_path)
+
+    return _stores[repo]
 
 
-def get_store() -> EvolutionStore:
-    if _store is None:
-        raise RuntimeError("Store not initialized")
-    return _store
+# --- Repo management ---
+
+@app.get("/api/repos")
+def api_list_repos():
+    repos = list_repos()
+    result = []
+    for r in repos:
+        entry = {"name": r["name"], "path": r["path"]}
+        try:
+            store = _stores.get(r["name"])
+            if not store:
+                db_path = r.get("db_path") or str(Path(r["path"]) / ".codehistory" / "evolution.db")
+                if Path(db_path).exists():
+                    store = EvolutionStore(db_path)
+                    _stores[r["name"]] = store
+            if store:
+                entry["stats"] = store.get_stats()
+            else:
+                entry["stats"] = None
+        except Exception:
+            entry["stats"] = None
+        result.append(entry)
+    return {"repos": result}
 
 
-# --- API Routes ---
+@app.post("/api/repos/register")
+def api_register_repo(name: str = Query(...), path: str = Query(...)):
+    try:
+        entry = register_repo(name, path)
+        return {"ok": True, "repo": entry}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# --- Scoped API routes ---
 
 @app.get("/api/stats")
-def get_stats():
-    store = get_store()
+def get_stats(repo: str = Query("")):
+    store = get_store(repo)
     return store.get_stats()
 
 
 @app.get("/api/features")
 def list_features(
+    repo: str = Query(""),
     status: str = Query("all"),
     search: str = Query(""),
     at_commit: str = Query(""),
     limit: int = Query(100),
     offset: int = Query(0),
 ):
-    store = get_store()
-
+    store = get_store(repo)
     if at_commit:
         all_features = store.get_features_at_commit(at_commit)
     else:
@@ -68,7 +109,6 @@ def list_features(
     for f in features:
         timeline = store.get_feature_timeline(f["stable_id"])
         f["event_count"] = len(timeline)
-        # For non-snapshot queries, also include the latest call_chain
         if not at_commit:
             snapshot = store.get_latest_snapshot(f["id"])
             if snapshot:
@@ -82,24 +122,21 @@ def list_features(
 
 
 @app.get("/api/commits")
-def list_commits(limit: int = Query(200)):
-    store = get_store()
+def list_commits(repo: str = Query(""), limit: int = Query(200)):
+    store = get_store(repo)
     commits = store.get_commits(limit=limit)
     return {"total": len(commits), "commits": commits}
 
 
 @app.get("/api/features/{stable_id:path}")
-def get_feature_detail(stable_id: str):
-    store = get_store()
+def get_feature_detail(stable_id: str, repo: str = Query("")):
+    store = get_store(repo)
     feature = store.get_feature(stable_id)
     if not feature:
         return {"error": "Feature not found"}
-
     timeline = store.get_feature_timeline(stable_id)
     feature["timeline"] = timeline
     feature["event_count"] = len(timeline)
-
-    # Include latest call chain
     snapshot = store.get_latest_snapshot(feature["id"])
     if snapshot:
         feature["call_chain"] = snapshot.get("call_chain", [])
@@ -107,20 +144,19 @@ def get_feature_detail(stable_id: str):
         feature["call_tree_depth"] = snapshot.get("call_tree_depth", 0)
     else:
         feature["call_chain"] = []
-
     return feature
 
 
 @app.get("/api/events")
 def list_events(
+    repo: str = Query(""),
     feature_stable_id: str = Query(""),
     event_type: str = Query(""),
     limit: int = Query(50),
     offset: int = Query(0),
 ):
-    store = get_store()
+    store = get_store(repo)
     conn = store.conn
-
     conditions = []
     params = []
     if feature_stable_id:
@@ -129,7 +165,6 @@ def list_events(
     if event_type:
         conditions.append("e.event_type = ?")
         params.append(event_type)
-
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
     rows = conn.execute(
@@ -145,58 +180,41 @@ def list_events(
         params + [limit, offset],
     ).fetchall()
 
-    # Count total
     count_result = conn.execute(
-        f"""SELECT COUNT(*)
-            FROM evolution_events e
-            JOIN features f ON e.feature_id = f.id
-            {where}""",
+        f"""SELECT COUNT(*) FROM evolution_events e
+            JOIN features f ON e.feature_id = f.id {where}""",
         params,
     ).fetchone()
 
-    events = [
-        {
-            "id": r[0],
-            "event_type": r[1],
-            "detail": r[2],
-            "feature_id": r[3],
-            "commit_id": r[4],
-            "commit_hash": r[5],
-            "timestamp": r[6],
-            "author": r[7],
-            "message": r[8],
-            "canonical_name": r[9],
-            "stable_id": r[10],
-        }
-        for r in rows
-    ]
+    events = [{
+        "id": r[0], "event_type": r[1], "detail": r[2],
+        "feature_id": r[3], "commit_id": r[4], "commit_hash": r[5],
+        "timestamp": r[6], "author": r[7], "message": r[8],
+        "canonical_name": r[9], "stable_id": r[10],
+    } for r in rows]
 
     return {"total": count_result[0] if count_result else 0, "events": events}
 
 
 @app.get("/api/event-stats")
-def event_stats():
-    store = get_store()
+def event_stats(repo: str = Query("")):
+    store = get_store(repo)
     rows = store.conn.execute(
         "SELECT event_type, COUNT(*) as cnt FROM evolution_events GROUP BY event_type ORDER BY cnt DESC"
     ).fetchall()
     return {"stats": [{"event_type": r[0], "count": r[1]} for r in rows]}
 
 
-def serve(repo_path: str, host: str = "0.0.0.0", port: int = 8765):
-    """Start the web API server and serve the Vue frontend."""
+def serve(host: str = "0.0.0.0", port: int = 8765):
+    """Start the web API server. Uses registry for multi-repo support."""
     import uvicorn
 
-    config = Config(repo_path=repo_path)
-    init_store(config.db_path)
-
-    # Serve Vue build if exists
     web_dir = Path(__file__).parent.parent / "web" / "dist"
     if web_dir.exists():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
     else:
         @app.get("/")
         def root():
-            return {"message": "CodeHistory API running. Frontend not built. Run: cd web && npm run build"}
+            return {"message": "CodeHistory API running. Frontend not built."}
 
     uvicorn.run(app, host=host, port=port, log_level="info")

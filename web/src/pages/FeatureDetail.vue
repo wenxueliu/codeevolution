@@ -1,7 +1,7 @@
 <template>
   <div class="feature-detail" v-if="feature">
     <div class="back-row">
-      <router-link to="/features" class="back-link">&larr; 返回功能列表</router-link>
+      <router-link :to="'/repo/' + repoName + '/features'" class="back-link">&larr; 返回功能列表</router-link>
     </div>
 
     <div class="detail-header">
@@ -83,7 +83,7 @@ function parseCall(fullName) {
 }
 
 export default {
-  props: { stableId: String },
+  props: { stableId: String, repoName: String },
   data() {
     return { feature: null, diagramError: false }
   },
@@ -176,7 +176,7 @@ export default {
   methods: {
     async loadFeature() {
       try {
-        const r = await fetch('/api/features/' + encodeURIComponent(this.stableId))
+        const r = await fetch('/api/features/' + encodeURIComponent(this.stableId) + '?repo=' + encodeURIComponent(this.repoName || ''))
         this.feature = await r.json()
       } catch(e) { console.error(e) }
     },

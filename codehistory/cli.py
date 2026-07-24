@@ -76,13 +76,33 @@ def cmd_serve(args):
 
 
 def cmd_web(args):
-    """Start the web dashboard."""
+    """Start the web dashboard (multi-repo)."""
     from .api import serve
     print(f"Starting CodeHistory web server at http://{args.host}:{args.port}")
-    if not args.repo:
-        print("ERROR: --repo is required")
+    serve(host=args.host, port=args.port)
+
+
+def cmd_register(args):
+    """Register a repo in the multi-repo registry."""
+    from .registry import register_repo
+    try:
+        entry = register_repo(args.name, args.repo)
+        print(f"Registered: {entry['name']} -> {entry['path']}")
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
-    serve(repo_path=args.repo, host=args.host, port=args.port)
+
+
+def cmd_repos(args):
+    """List registered repos."""
+    from .registry import list_repos
+    repos = list_repos()
+    if not repos:
+        print("No repos registered.")
+        print("Use 'codehistory register --name <name> --repo <path>' to register one.")
+        return
+    for r in repos:
+        print(f"  {r['name']}: {r['path']}")
 
 
 def cmd_status(args):
@@ -144,10 +164,17 @@ def main():
                    help="MCP transport (default: stdio)")
 
     # web
-    p = subparsers.add_parser("web", help="Start web dashboard")
-    p.add_argument("--repo", "-r", required=True, help="Path to git repository")
+    p = subparsers.add_parser("web", help="Start web dashboard (multi-repo)")
     p.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
     p.add_argument("--port", type=int, default=8765, help="Port to bind (default: 8765)")
+
+    # register
+    p = subparsers.add_parser("register", help="Register a repo for multi-repo dashboard")
+    p.add_argument("--name", "-n", required=True, help="Short name for the repo")
+    p.add_argument("--repo", "-r", required=True, help="Path to git repository")
+
+    # repos
+    p = subparsers.add_parser("repos", help="List registered repos")
 
     # status
     p = subparsers.add_parser("status", help="Show current analysis status")
@@ -170,6 +197,10 @@ def main():
         cmd_serve(args)
     elif args.command == "web":
         cmd_web(args)
+    elif args.command == "register":
+        cmd_register(args)
+    elif args.command == "repos":
+        cmd_repos(args)
     elif args.command == "status":
         cmd_status(args)
     else:
