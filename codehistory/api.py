@@ -196,6 +196,12 @@ def list_events(
     return {"total": count_result[0] if count_result else 0, "events": events}
 
 
+@app.get("/api/capabilities")
+def get_capabilities(repo: str = Query("")):
+    store = get_store(repo)
+    return {"capabilities": store.get_capabilities()}
+
+
 @app.get("/api/event-stats")
 def event_stats(repo: str = Query("")):
     store = get_store(repo)

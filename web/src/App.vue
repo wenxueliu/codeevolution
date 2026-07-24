@@ -8,6 +8,7 @@
       <div class="nav-links" v-if="repoName">
         <router-link :to="'/repo/' + repoName">仪表盘</router-link>
         <router-link :to="'/repo/' + repoName + '/features'">功能列表</router-link>
+        <router-link :to="'/repo/' + repoName + '/capabilities'">特性聚类</router-link>
         <router-link :to="'/repo/' + repoName + '/events'">事件日志</router-link>
       </div>
       <div class="nav-right" v-if="repoName">

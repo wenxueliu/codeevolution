@@ -337,6 +337,160 @@ class EvolutionStore:
 
         return result
 
+    # --- capabilities (clustered features) ---
+
+    def get_capabilities(self) -> list[dict]:
+        """Cluster features into capabilities.
+
+        Layer 1: Group by class (extracted from stable_id).
+        Layer 2: Merge groups with overlapping call chain tails.
+        """
+        features = self.get_all_features()
+        if not features:
+            return []
+
+        # Build per-feature data with class and call chain tails
+        feat_data = {}
+        for f in features:
+            cls, mod = self._parse_class_module(f["stable_id"])
+            snap = self.get_latest_snapshot(f["id"])
+            chain = snap.get("call_chain", []) if snap else []
+            # Collect unique callee names (the "to" end of each call edge)
+            callees = set()
+            for edge in chain:
+                to_name = (edge.get("to") or "").replace("self.", "")
+                if to_name:
+                    callees.add(to_name)
+            feat_data[f["stable_id"]] = {
+                "feature": f,
+                "class": cls,
+                "module": mod,
+                "callees": callees,
+            }
+
+        # Layer 1: Group by class
+        class_groups: dict[str, dict] = {}
+        for fid, fd in feat_data.items():
+            key = fd["class"]  # e.g., "GraphStore"
+            if key not in class_groups:
+                class_groups[key] = {
+                    "primary_class": key,
+                    "modules": set(),
+                    "features": [],
+                    "all_callees": set(),
+                }
+            class_groups[key]["features"].append(fd["feature"])
+            class_groups[key]["modules"].add(fd["module"])
+            class_groups[key]["all_callees"].update(fd["callees"])
+
+        # Layer 2: Merge groups with significant call chain overlap
+        groups = list(class_groups.values())
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    g1, g2 = groups[i], groups[j]
+                    if not g1["all_callees"] or not g2["all_callees"]:
+                        continue
+                    overlap = g1["all_callees"] & g2["all_callees"]
+                    union = g1["all_callees"] | g2["all_callees"]
+                    jaccard = len(overlap) / len(union) if union else 0
+                    # Merge if Jaccard > 0.3 (shared callees)
+                    if jaccard > 0.3:
+                        g1["features"].extend(g2["features"])
+                        g1["modules"].update(g2["modules"])
+                        g1["all_callees"].update(g2["all_callees"])
+                        # Update primary class to the larger one
+                        g1["primary_class"] = g1["primary_class"] if len(g1["features"]) >= len(g2["features"]) else g2["primary_class"]
+                        groups.pop(j)
+                        merged = True
+                        break
+                if merged:
+                    break
+
+        # Build result
+        result = []
+        for i, g in enumerate(groups):
+            total_events = sum(
+                len(self.get_feature_timeline(f["stable_id"])) for f in g["features"]
+            )
+            stats = self._capability_stats(g["features"])
+            result.append({
+                "id": "cap-" + str(i + 1),
+                "name": g["primary_class"],
+                "name_zh": self._capability_name_zh(g["primary_class"], list(g["modules"])),
+                "module": sorted(g["modules"])[0] if g["modules"] else "",
+                "modules": sorted(g["modules"]),
+                "feature_count": len(g["features"]),
+                "event_count": total_events,
+                "features": sorted(g["features"], key=lambda f: f["canonical_name"]),
+                "stats": stats,
+            })
+
+        # Sort by feature count desc
+        result.sort(key=lambda c: c["feature_count"], reverse=True)
+        return result
+
+    @staticmethod
+    def _parse_class_module(stable_id: str) -> tuple[str, str]:
+        """Parse class and module from stable_id.
+
+        'server/graph.py::GraphStore.get_node' → ('GraphStore', 'server/graph.py')
+        'server/incremental.py::get_db_path' → ('server/incremental.py', 'server/incremental.py')
+        """
+        if "::" in stable_id:
+            file_part, func_part = stable_id.split("::", 1)
+        else:
+            file_part, func_part = stable_id, stable_id
+
+        if "." in func_part:
+            cls = func_part.rsplit(".", 1)[0]  # Before last dot = class
+        else:
+            cls = file_part  # No class → use file as class
+
+        return cls, file_part
+
+    @staticmethod
+    def _capability_name_zh(primary_class: str, modules: list[str]) -> str:
+        """Auto-generate Chinese capability name."""
+        patterns = {
+            "GraphStore": "图谱存储与查询",
+            "CodeParser": "代码解析",
+            "ChangeDetector": "变更检测",
+            "FlowAnalyzer": "流程分析",
+            "CommunityDetector": "社区检测",
+            "ArchitectureView": "架构视图",
+            "WikiGenerator": "Wiki 生成",
+            "EmbeddingService": "向量嵌入",
+            "SearchEngine": "搜索引擎",
+            "ConfigManager": "配置管理",
+            "MultiRepoManager": "多仓管理",
+            "DaemonManager": "守护进程",
+        }
+        if primary_class in patterns:
+            return patterns[primary_class]
+        # Fallback: use module path
+        for m in modules:
+            parts = m.replace(".py", "").replace("/", " ").replace("_", " ").split()
+            if parts:
+                return " ".join(parts).title() + " 模块"
+        return primary_class + " 能力"
+
+    def _capability_stats(self, features: list[dict]) -> dict:
+        """Aggregate stats for a capability."""
+        total_nodes = 0
+        total_depth = 0
+        for f in features:
+            snap = self.get_latest_snapshot(f["id"])
+            if snap:
+                total_nodes += snap.get("call_tree_nodes", 0)
+                total_depth = max(total_depth, snap.get("call_tree_depth", 0))
+        return {
+            "total_call_tree_nodes": total_nodes,
+            "max_call_depth": total_depth,
+        }
+
     # --- stats ---
 
     def get_stats(self) -> dict:
