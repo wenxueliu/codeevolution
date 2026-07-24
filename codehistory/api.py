@@ -43,11 +43,16 @@ def get_stats():
 def list_features(
     status: str = Query("all"),
     search: str = Query(""),
+    at_commit: str = Query(""),
     limit: int = Query(100),
     offset: int = Query(0),
 ):
     store = get_store()
-    all_features = store.get_all_features()
+
+    if at_commit:
+        all_features = store.get_features_at_commit(at_commit)
+    else:
+        all_features = store.get_all_features()
 
     if status != "all":
         all_features = [f for f in all_features if f["status"] == status]
@@ -65,6 +70,13 @@ def list_features(
         f["event_count"] = len(timeline)
 
     return {"total": total, "features": features}
+
+
+@app.get("/api/commits")
+def list_commits(limit: int = Query(200)):
+    store = get_store()
+    commits = store.get_commits(limit=limit)
+    return {"total": len(commits), "commits": commits}
 
 
 @app.get("/api/features/{stable_id:path}")

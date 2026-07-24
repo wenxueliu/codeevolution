@@ -245,6 +245,63 @@ class EvolutionStore:
             for r in rows
         ]
 
+    # --- commits ---
+
+    def get_commits(self, limit: int = 200) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT id, hash, timestamp, author, message FROM commits ORDER BY timestamp ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {"id": r[0], "hash": r[1], "timestamp": r[2], "author": r[3], "message": r[4]}
+            for r in rows
+        ]
+
+    def get_features_at_commit(self, commit_hash: str) -> list[dict]:
+        """Get all features and their state at a specific commit."""
+        commit_row = self.conn.execute(
+            "SELECT id FROM commits WHERE hash = ?", (commit_hash,)
+        ).fetchone()
+        if not commit_row:
+            return []
+        target_commit_id = commit_row[0]
+
+        rows = self.conn.execute(
+            """SELECT f.id, f.stable_id, f.canonical_name, f.entry_type,
+                      f.entry_signature, f.status, f.first_seen_at, f.last_seen_at,
+                      COALESCE(
+                          (SELECT fs.call_tree_nodes FROM feature_snapshots fs
+                           WHERE fs.feature_id = f.id AND fs.commit_id <= ?
+                           ORDER BY fs.commit_id DESC LIMIT 1),
+                          0
+                      ) as call_tree_nodes
+               FROM features f
+               WHERE f.first_seen_at <= ?
+               ORDER BY f.canonical_name""",
+            (target_commit_id, target_commit_id),
+        ).fetchall()
+
+        # Keep features that weren't removed before or at the target commit
+        result = []
+        for r in rows:
+            # Check if DIED event exists at or before target commit
+            died = self.conn.execute(
+                """SELECT 1 FROM evolution_events
+                   WHERE feature_id = ? AND event_type = 'DIED' AND commit_id <= ?
+                   LIMIT 1""",
+                (r[0], target_commit_id),
+            ).fetchone()
+
+            if not died:
+                result.append({
+                    "id": r[0], "stable_id": r[1], "canonical_name": r[2],
+                    "entry_type": r[3], "entry_signature": r[4], "status": r[5],
+                    "first_seen_at": r[6], "last_seen_at": r[7],
+                    "call_tree_nodes": r[8],
+                })
+
+        return result
+
     # --- stats ---
 
     def get_stats(self) -> dict:
