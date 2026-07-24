@@ -75,6 +75,16 @@ def cmd_serve(args):
         store.close()
 
 
+def cmd_web(args):
+    """Start the web dashboard."""
+    from .api import serve
+    print(f"Starting CodeHistory web server at http://{args.host}:{args.port}")
+    if not args.repo:
+        print("ERROR: --repo is required")
+        sys.exit(1)
+    serve(repo_path=args.repo, host=args.host, port=args.port)
+
+
 def cmd_status(args):
     """Show current analysis status."""
     config = Config(
@@ -133,6 +143,12 @@ def main():
                    choices=["stdio", "sse", "streamable-http"],
                    help="MCP transport (default: stdio)")
 
+    # web
+    p = subparsers.add_parser("web", help="Start web dashboard")
+    p.add_argument("--repo", "-r", required=True, help="Path to git repository")
+    p.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+    p.add_argument("--port", type=int, default=8765, help="Port to bind (default: 8765)")
+
     # status
     p = subparsers.add_parser("status", help="Show current analysis status")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
@@ -152,6 +168,8 @@ def main():
         cmd_update(args)
     elif args.command == "serve":
         cmd_serve(args)
+    elif args.command == "web":
+        cmd_web(args)
     elif args.command == "status":
         cmd_status(args)
     else:
