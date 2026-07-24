@@ -8,6 +8,7 @@ from typing import Callable
 
 from .analyzer import EvolutionAnalyzer, SnapshotData
 from .config import Config
+from .crossfile import CrossFileIndex
 from .matcher import FeatureMatcher
 from .parser import SnapshotParser
 from .store import EvolutionStore
@@ -111,41 +112,69 @@ class EvolutionEngine:
             self._process_delta_commit(commit, commit_id)
 
     def _process_initial_commit(self, commit: CommitInfo, commit_id: int):
-        """Process the first commit: parse all files."""
+        """Process the first commit: parse all files, build cross-file index."""
         files = self.walker.get_files_at(commit.hash)
-        # Filter for supported languages
         supported_files = [f for f in files if self._is_supported(f)]
 
+        # Pass 1: parse all files, build cross-file index
+        parsed_files = {}
         for fpath in supported_files:
             content = self.walker.read_file(commit.hash, fpath)
             if content is None:
                 continue
             self._known_files.add(fpath)
+            parsed_files[fpath] = self.parser.parse_file(fpath, content)
 
-            parsed = self.parser.parse_file(fpath, content)
+        # Build cross-file index
+        cross_index = CrossFileIndex()
+        for parsed in parsed_files.values():
+            cross_index.add_file(parsed)
+
+        # Store for _get_call_tree to use
+        self._cross_index = cross_index
+
+        # Pass 2: process entry points
+        for fpath, parsed in parsed_files.items():
             self._process_entry_points(parsed, commit_id)
 
     def _process_delta_commit(self, commit: CommitInfo, commit_id: int):
-        """Process a delta commit: only parse changed files."""
+        """Process a delta commit: parse changed files, update cross-file index."""
         if commit.parent_hash is None:
             return
 
         changed_files = self.walker.get_changed_files(commit.parent_hash, commit.hash)
+        if not changed_files:
+            return
 
-        for fpath in changed_files:
-            if not self._is_supported(fpath):
-                continue
+        # Get all current files (not just changed) for cross-file index
+        all_files = self.walker.get_files_at(commit.hash)
+        all_supported = [f for f in all_files if self._is_supported(f)]
 
+        # Parse changed files; reuse cached results for unchanged files
+        parsed_files = {}
+        for fpath in all_supported:
             content = self.walker.read_file(commit.hash, fpath)
             if content is None:
-                # File was deleted
                 self._known_files.discard(fpath)
-                self._handle_file_deletion(fpath, commit_id)
                 continue
-
             self._known_files.add(fpath)
-            parsed = self.parser.parse_file(fpath, content)
-            self._process_entry_points(parsed, commit_id)
+            parsed_files[fpath] = self.parser.parse_file(fpath, content)
+
+        # Rebuild cross-file index
+        cross_index = CrossFileIndex()
+        for parsed in parsed_files.values():
+            cross_index.add_file(parsed)
+        self._cross_index = cross_index
+
+        # Process entry points from changed files only
+        for fpath in changed_files:
+            if fpath in parsed_files:
+                self._process_entry_points(parsed_files[fpath], commit_id)
+
+        # Handle deleted files
+        for fpath in changed_files:
+            if fpath not in parsed_files:
+                self._handle_file_deletion(fpath, commit_id)
 
     def _process_entry_points(self, parsed, commit_id: int):
         """Process entry points from a parsed file."""
@@ -155,12 +184,13 @@ class EvolutionEngine:
                 entry_type, ep.name, ep.file_path, ep.line_start
             )
 
-            # Calculate call tree stats + call chain
-            call_tree = self._get_call_tree(ep, parsed)
+            # Calculate call tree stats + call chain (with cross-file resolution)
+            cross_index = getattr(self, '_cross_index', None)
+            call_tree = self._get_call_tree(ep, parsed, cross_index)
             call_tree_nodes = len(call_tree)
-            call_tree_depth = self._max_call_depth(ep, parsed)
+            call_tree_depth = self._max_call_depth(ep, parsed, cross_index)
             call_tree_edges = len([c for c in parsed.calls if c.caller == ep.qualified_name])
-            call_chain = self._build_call_chain(ep, parsed, call_tree)
+            call_chain = self._build_call_chain(ep, parsed, call_tree, cross_index)
 
             snapshot = SnapshotData(
                 call_tree_nodes=call_tree_nodes,
@@ -234,11 +264,8 @@ class EvolutionEngine:
                 if ev.event_type != "UNCHANGED":
                     self.store.insert_event(feature_id, commit_id, ev.event_type, ev.detail)
 
-    def _build_call_chain(self, entry_point, parsed, call_tree: set) -> list[dict]:
-        """Build the call chain starting from the entry point.
-
-        Returns a list of {from, to} dicts representing call edges in the tree.
-        """
+    def _build_call_chain(self, entry_point, parsed, call_tree: set, cross_index=None) -> list[dict]:
+        """Build call chain including cross-file resolved calls."""
         chain = []
         visited = set()
 
@@ -246,16 +273,23 @@ class EvolutionEngine:
             if depth > 10:
                 return
             for call in parsed.calls:
-                if call.caller == caller_qname and call.is_resolved and call.resolved_to in call_tree:
-                    edge_key = (caller_qname, call.resolved_to)
-                    if edge_key not in visited:
-                        visited.add(edge_key)
-                        chain.append({
-                            "from": call.caller.split("::")[-1],
-                            "to": call.callee_name,
-                            "depth": depth,
-                        })
-                        traverse(call.resolved_to, depth + 1)
+                if call.caller == caller_qname:
+                    target = self._resolve_call_target(call, parsed, cross_index)
+                    if target and target in call_tree:
+                        edge_key = (caller_qname, target)
+                        if edge_key not in visited:
+                            visited.add(edge_key)
+                            # Display callee: use resolved name's short form
+                            callee_display = call.callee_name.replace("self.", "")
+                            if cross_index and not call.is_resolved:
+                                parts = target.split("::")[-1].split(".")
+                                callee_display = parts[-1] if parts else callee_display
+                            chain.append({
+                                "from": call.caller.split("::")[-1],
+                                "to": callee_display,
+                                "depth": depth,
+                            })
+                            traverse(target, depth + 1)
 
         traverse(entry_point.qualified_name)
         return chain
@@ -350,38 +384,43 @@ class EvolutionEngine:
         lang = detect_language(filepath)
         return lang in self.config.languages
 
-    def _get_call_tree(self, entry_point, parsed) -> set:
-        """Get the set of functions reachable from entry_point via calls.
+    def _resolve_call_target(self, call, parsed, cross_index) -> str | None:
+        """Resolve a call to its target qualified name, using cross-file index if needed."""
+        if call.is_resolved and call.resolved_to:
+            return call.resolved_to
+        if cross_index:
+            return cross_index.resolve_call(parsed.file_path, call.callee_name)
+        return None
 
-        Simple BFS within a single file. Cross-file calls are unresolved in Phase 1.
-        """
+    def _get_call_tree(self, entry_point, parsed, cross_index=None) -> set:
+        """BFS from entry_point, traversing file-local and cross-file calls."""
         visited = {entry_point.qualified_name}
         queue = [entry_point.qualified_name]
         while queue:
             caller = queue.pop(0)
             for call in parsed.calls:
-                if call.caller == caller and call.is_resolved:
-                    if call.resolved_to not in visited:
-                        visited.add(call.resolved_to)
-                        queue.append(call.resolved_to)
+                if call.caller == caller:
+                    target = self._resolve_call_target(call, parsed, cross_index)
+                    if target and target not in visited:
+                        visited.add(target)
+                        queue.append(target)
         return visited
 
-    def _max_call_depth(self, entry_point, parsed) -> int:
-        """Calculate maximum call depth from entry point."""
-        tree = self._get_call_tree(entry_point, parsed)
+    def _max_call_depth(self, entry_point, parsed, cross_index=None) -> int:
+        """Calculate maximum call depth via BFS."""
+        tree = self._get_call_tree(entry_point, parsed, cross_index)
         if len(tree) <= 1:
             return 1
-
-        # BFS-based depth calculation
         depth = {entry_point.qualified_name: 1}
         queue = [entry_point.qualified_name]
         max_depth = 1
         while queue:
             caller = queue.pop(0)
             for call in parsed.calls:
-                if call.caller == caller and call.is_resolved and call.resolved_to in tree:
-                    if call.resolved_to not in depth:
-                        depth[call.resolved_to] = depth[caller] + 1
-                        max_depth = max(max_depth, depth[call.resolved_to])
-                        queue.append(call.resolved_to)
+                if call.caller == caller:
+                    target = self._resolve_call_target(call, parsed, cross_index)
+                    if target and target in tree and target not in depth:
+                        depth[target] = depth.get(caller, 1) + 1
+                        max_depth = max(max_depth, depth[target])
+                        queue.append(target)
         return max_depth
