@@ -406,7 +406,44 @@ Phase 4 (后续)       报告导出 + 跨仓库分析
 - **依赖传播（Phase 2）**：变更文件的 import 方也重解析（2 跳 BFS），确保调用边不遗漏
 - `git ls-files` 作为文件列表快速获取方式（codegraph 已验证）
 
-## 9. 参考项目
+## 9. 实现状态 (2026-07-24)
+
+### 已完成
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| HistoryWalker | 已完成 | git log 遍历，git show 读取文件，git diff-tree 增量变更检测 |
+| SnapshotParser | 已完成 | tree-sitter Python/Java 解析，函数/调用/入口点提取，self.method() 调用解析 |
+| EntryPointDetector | 已完成 | HTTP/CLI/Event 入口点分类，基于命名启发式 |
+| FeatureMatcher | 已完成 | L1 精确匹配（entry_type + entry_signature） |
+| EvolutionAnalyzer | 已完成 | 10+ 事件类型，调用树对比，阈值可配置 |
+| EvolutionStore | 已完成 | SQLite WAL 模式，features/snapshots/events/commits 表，自动迁移 |
+| Engine | 已完成 | backfill/update 两种模式，增量解析，file_hash 去重 |
+| Multi-Repo Registry | 已完成 | ~/.codehistory/registry.json，注册/列出/取消注册 |
+| FastAPI Backend | 已完成 | /api/repos, /api/features, /api/events, /api/stats, /api/commits |
+| MCP Server | 已完成 | 5 个 MCP tools（timeline, list, search, summary, stats） |
+| CLI | 已完成 | backfill/update/status/register/repos/web/serve 命令 |
+| Vue 3 Dashboard | 已完成 | 仪表盘/功能列表/功能详情/事件日志 4 页面 |
+| 时序图 | 已完成 | Mermaid.js 渲染，类级生命线，self-call 解析 |
+| 中英文描述 | 已完成 | 50+ 函数名自动生成，启发式回退 |
+| Commit 时间旅行 | 已完成 | 功能列表可按 commit 查看历史快照 |
+
+### 已投入验证
+
+- **测试仓库**: `code-review-graph` (327 commits, Python)
+- **分析结果**: 90 功能, 1598 快照, 403 事件, 42 个功能有调用链
+
+### 待实现 (Phase 2+)
+
+| 功能 | 优先级 | 说明 |
+|------|--------|------|
+| L2 模糊匹配 | 中 | 调用树图编辑距离匹配消失/新增功能 |
+| 架构规则学习 | 中 | 自动学习分层约束 + 人工锁定 |
+| 交叉文件调用链 | 中 | 跨 import 的调用追踪（当前仅文件内） |
+| Web 注册界面 | 低 | 前端直接注册仓库，无需 CLI |
+| 报告导出 | 低 | PDF/Markdown 报告 |
+
+## 10. 参考项目
 
 | 项目 | 位置 | 复用内容 |
 |------|------|----------|
