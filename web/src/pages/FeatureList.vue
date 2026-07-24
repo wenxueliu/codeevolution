@@ -28,8 +28,7 @@
         <thead>
           <tr>
             <th style="width:22%">功能名称</th>
-            <th style="width:28%">描述</th>
-            <th style="width:22%">调用链</th>
+            <th style="width:30%">描述</th>
             <th>类型</th>
             <th v-if="!selectedCommit">事件数</th>
             <th v-if="selectedCommit">节点</th>
@@ -37,9 +36,9 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="f in features" :key="f.stable_id" class="feature-row" @click="toggleExpand(f.stable_id)">
+          <tr v-for="f in features" :key="f.stable_id" class="feature-row">
             <td class="name-cell">
-              <router-link :to="'/features/' + encodeURIComponent(f.stable_id)" @click.stop>
+              <router-link :to="'/features/' + encodeURIComponent(f.stable_id)">
                 {{ f.canonical_name }}
               </router-link>
               <div class="name-zh" v-if="f.description_zh">{{ f.description_zh }}</div>
@@ -50,28 +49,11 @@
                 <span v-if="!selectedCommit" class="status-tag" :class="f.status">{{ f.status }}</span>
               </div>
             </td>
-            <td class="chain-cell">
-              <template v-if="hasChain(f)">
-                <div class="chain-preview" v-if="!isExpanded(f.stable_id)">
-                  {{ chainPreview(f) }}
-                  <span class="chain-more">{{ chainCount(f) }}</span>
-                </div>
-                <div class="chain-expanded" v-else>
-                  <div v-for="(c, i) in f.call_chain" :key="i" class="chain-edge">
-                    <span class="chain-from">{{ c.from }}</span>
-                    <span class="chain-arrow">→</span>
-                    <span class="chain-to">{{ c.to }}</span>
-                    <span v-if="c.depth" class="chain-depth">(d{{ c.depth }})</span>
-                  </div>
-                </div>
-              </template>
-              <span v-else class="no-chain">—</span>
-            </td>
             <td><span class="type-tag">{{ f.entry_type }}</span></td>
             <td v-if="!selectedCommit">{{ f.event_count ?? '-' }}</td>
             <td v-if="selectedCommit">{{ f.call_tree_nodes ?? '-' }}</td>
             <td>
-              <router-link :to="'/features/' + encodeURIComponent(f.stable_id)" class="detail-link" @click.stop>详情</router-link>
+              <router-link :to="'/features/' + encodeURIComponent(f.stable_id)" class="detail-link">详情</router-link>
             </td>
           </tr>
           <tr v-if="features.length === 0">
@@ -95,7 +77,6 @@ export default {
     return {
       features: [], total: 0, search: '', statusFilter: 'all',
       selectedCommit: '', commits: [], offset: 0, pageSize: 50,
-      expanded: {},
     }
   },
   computed: {
@@ -129,22 +110,6 @@ export default {
     nextPage() { this.offset += this.pageSize; this.loadFeatures() },
     prevPage() { this.offset = Math.max(0, this.offset - this.pageSize); this.loadFeatures() },
     formatDate(ts) { return new Date(ts * 1000).toLocaleDateString('zh-CN'); },
-    hasChain(f) { return f.call_chain && f.call_chain.length > 0; },
-    chainPreview(f) {
-      const chain = f.call_chain || [];
-      return chain.slice(0, 2).map(c => `${c.from}→${c.to}`).join(', ');
-    },
-    chainCount(f) {
-      const n = (f.call_chain || []).length;
-      return n > 2 ? ` +${n - 2}` : '';
-    },
-    isExpanded(stableId) { return !!this.expanded[stableId]; },
-    toggleExpand(stableId) {
-      if (this.hasChain(this.features.find(f => f.stable_id === stableId))) {
-        this.expanded[stableId] = !this.expanded[stableId];
-        this.expanded = { ...this.expanded };
-      }
-    },
   },
 }
 </script>

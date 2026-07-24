@@ -1,19 +1,37 @@
 <template>
   <div class="feature-detail" v-if="feature">
     <div class="back-row">
-      <router-link to="/features" class="back-link">← 返回功能列表</router-link>
+      <router-link to="/features" class="back-link">&larr; 返回功能列表</router-link>
     </div>
 
     <div class="detail-header">
       <h1>{{ feature.canonical_name }}</h1>
+      <div class="descriptions" v-if="feature.description || feature.description_zh">
+        <div class="desc-zh" v-if="feature.description_zh">{{ feature.description_zh }}</div>
+        <div class="desc-en" v-if="feature.description">{{ feature.description }}</div>
+      </div>
       <div class="meta">
         <span class="type-tag">{{ feature.entry_type }}</span>
         <span class="status-tag" :class="feature.status">{{ feature.status }}</span>
         <span>{{ feature.event_count }} 个事件</span>
+        <span v-if="feature.call_chain?.length">{{ feature.call_chain.length }} 步调用</span>
       </div>
-      <div class="stable-id">Stable ID: {{ feature.stable_id }}</div>
+      <div class="stable-id">{{ feature.stable_id }}</div>
     </div>
 
+    <!-- Mermaid Sequence Diagram -->
+    <div class="sequence-section" v-if="feature.call_chain?.length">
+      <h3>调用时序图</h3>
+      <div v-if="diagramError" class="mermaid-error">时序图渲染失败</div>
+      <div class="mermaid-wrap" v-show="!diagramError" ref="wrapEl">
+        <pre class="mermaid" ref="mermaidEl">{{ mermaidText }}</pre>
+      </div>
+    </div>
+    <div class="no-sequence" v-else>
+      <p>该功能无内部调用链（未检测到同一文件内的函数调用）</p>
+    </div>
+
+    <!-- Timeline -->
     <div class="timeline-section">
       <h3>演变时间线</h3>
       <div class="timeline" v-if="timeline.length">
@@ -40,28 +58,144 @@
 </template>
 
 <script>
+import mermaid from 'mermaid'
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'default',
+  sequence: {
+    useMaxWidth: true,
+    wrap: true,
+  },
+})
+
+// Extract class and method from qualified name
+// "GraphStore.get_subgraph" → {cls:"GraphStore", method:"get_subgraph"}
+// "self.get_node" → null (self-call, use caller's class)
+function parseCall(fullName) {
+  if (!fullName) return { cls: null, method: fullName }
+  const stripped = fullName.replace(/^self\./, '')
+  const dotIdx = stripped.lastIndexOf('.')
+  if (dotIdx > 0 && dotIdx < stripped.length - 1) {
+    return { cls: stripped.substring(0, dotIdx), method: stripped.substring(dotIdx + 1) }
+  }
+  return { cls: null, method: stripped }
+}
+
 export default {
   props: { stableId: String },
-  data() { return { feature: null } },
+  data() {
+    return { feature: null, diagramError: false }
+  },
   computed: {
     timeline() { return this.feature?.timeline || [] },
+    mermaidText() {
+      const chain = this.feature?.call_chain || []
+      if (!chain.length) return ''
+      const m = (n) => { const p = n.replace(/^self\./, '').split('.'); return p[p.length-1] }
+
+      // Determine the class for each function: parse qualified name or self-call
+      const entryCls = parseCall(chain[0].from).cls || 'EntryPoint'
+      const fnClass = {}  // qualifiedName → className
+
+      function resolveClass(fullName, callerClass) {
+        if (fnClass[fullName]) return fnClass[fullName]
+        if (fullName.startsWith('self.')) {
+          return callerClass || entryCls
+        }
+        const p = parseCall(fullName)
+        return p.cls || callerClass || entryCls
+      }
+
+      // Build class mapping
+      fnClass[chain[0].from] = entryCls
+      for (const c of chain) {
+        // Ensure caller's class is known
+        if (!fnClass[c.from]) {
+          fnClass[c.from] = resolveClass(c.from, entryCls)
+        }
+        // Determine callee's class
+        fnClass[c.to] = resolveClass(c.to, fnClass[c.from])
+      }
+
+      // Collect unique classes as participants
+      const classes = []
+      const clsSeen = new Set()
+      for (const name of Object.values(fnClass)) {
+        if (!clsSeen.has(name)) { clsSeen.add(name); classes.push(name) }
+      }
+
+      // Map class name → alias
+      const clsAlias = {}
+      classes.forEach((c, i) => { clsAlias[c] = 'C' + i })
+
+      // Build mermaid DSL
+      let lines = ['sequenceDiagram']
+      for (const cls of classes) {
+        lines.push('  participant ' + clsAlias[cls] + ' as ' + cls)
+      }
+
+      for (const c of chain) {
+        const fromCls = fnClass[c.from] || entryCls
+        const toCls = fnClass[c.to] || entryCls
+        const fromA = clsAlias[fromCls]
+        const toA = clsAlias[toCls]
+        const methodName = m(c.to)
+        if (fromA === toA) {
+          // Self-call
+          lines.push('  ' + fromA + '->>+' + fromA + ': ' + methodName + '()')
+        } else {
+          lines.push('  ' + fromA + '->>+' + toA + ': ' + methodName + '()')
+        }
+      }
+
+      // Return arrows (deactivation)
+      const rev = [...chain].reverse()
+      const retSeen = new Set()
+      for (const c of rev) {
+        const toCls = fnClass[c.to] || entryCls
+        const toA = clsAlias[toCls]
+        if (!retSeen.has(toA + '_' + c.depth)) {
+          retSeen.add(toA + '_' + c.depth)
+          const fromCls = fnClass[c.from] || entryCls
+          lines.push('  ' + toA + '-->>-' + clsAlias[fromCls] + ': ')
+        }
+      }
+
+      return lines.join('\n')
+    },
   },
-  async created() { await this.loadFeature() },
+  watch: {
+    mermaidText(val) {
+      if (val) {
+        this.$nextTick(() => { setTimeout(() => this.renderDiagram(), 50) })
+      }
+    },
+  },
+  created() { this.loadFeature() },
   methods: {
     async loadFeature() {
       try {
-        const r = await fetch('/api/features/' + encodeURIComponent(this.stableId));
-        this.feature = await r.json();
+        const r = await fetch('/api/features/' + encodeURIComponent(this.stableId))
+        this.feature = await r.json()
       } catch(e) { console.error(e) }
     },
-    formatDate(ts) {
-      return new Date(ts * 1000).toLocaleDateString('zh-CN');
+    async renderDiagram() {
+      if (!this.$refs.mermaidEl) return
+      this.diagramError = false
+      try {
+        await mermaid.run({ nodes: [this.$refs.mermaidEl] })
+      } catch(e) {
+        console.error('Mermaid error:', e)
+        this.diagramError = true
+      }
     },
+    formatDate(ts) { return new Date(ts * 1000).toLocaleDateString('zh-CN') },
     formatDetail(d) {
       if (typeof d === 'string') {
         try { d = JSON.parse(d) } catch(e) { return d }
       }
-      return Object.entries(d).map(([k,v]) => `${k}: ${v}`).join(', ');
+      return Object.entries(d).map(([k,v]) => k + ': ' + v).join(', ')
     },
   },
 }
@@ -72,13 +206,26 @@ export default {
 .back-link { color: #888; text-decoration: none; font-size: 13px; }
 .back-link:hover { color: #e94560; }
 .detail-header { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-.detail-header h1 { font-size: 22px; margin-bottom: 12px; word-break: break-all; }
-.meta { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 14px; color: #666; }
+.detail-header h1 { font-size: 22px; margin-bottom: 8px; word-break: break-all; }
+.descriptions { margin-bottom: 12px; }
+.desc-zh { font-size: 14px; color: #333; margin-bottom: 2px; font-weight: 500; }
+.desc-en { font-size: 12px; color: #888; }
+.meta { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 14px; color: #666; flex-wrap: wrap; }
 .type-tag { padding: 2px 8px; border-radius: 4px; font-size: 12px; background: #e8e8e8; color: #555; }
 .status-tag { padding: 2px 8px; border-radius: 4px; font-size: 12px; }
 .status-tag.active { background: #d4edda; color: #155724; }
 .status-tag.removed { background: #f8d7da; color: #721c24; }
 .stable-id { font-family: monospace; font-size: 12px; color: #aaa; }
+
+/* Mermaid */
+.sequence-section { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow-x: auto; }
+.sequence-section h3 { font-size: 16px; margin-bottom: 16px; }
+.mermaid-wrap { min-height: 100px; display: flex; justify-content: center; }
+.mermaid-wrap :deep(svg) { max-width: 100%; height: auto; }
+.mermaid-error { text-align: center; color: #dc3545; padding: 20px; }
+.no-sequence {background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; color: #999; font-size: 14px; }
+
+/* Timeline */
 .timeline-section { background: #fff; border-radius: 8px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
 .timeline-section h3 { font-size: 16px; margin-bottom: 20px; }
 .timeline { position: relative; padding-left: 24px; border-left: 2px solid #eee; margin-left: 8px; }
@@ -90,6 +237,7 @@ export default {
 .tl-dot.SHRUNK, .tl-dot.CONTRACTED, .tl-dot.DEP_REMOVED { background: #fd7e14; }
 .tl-dot.MOVED { background: #6f42c1; }
 .tl-dot.MODIFIED { background: #17a2b8; }
+.tl-dot.UNCHANGED { background: #ccc; }
 .tl-content { padding-left: 8px; }
 .tl-header { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
 .event-badge { padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; background: #eee; color: #555; }

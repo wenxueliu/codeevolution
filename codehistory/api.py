@@ -98,6 +98,16 @@ def get_feature_detail(stable_id: str):
     timeline = store.get_feature_timeline(stable_id)
     feature["timeline"] = timeline
     feature["event_count"] = len(timeline)
+
+    # Include latest call chain
+    snapshot = store.get_latest_snapshot(feature["id"])
+    if snapshot:
+        feature["call_chain"] = snapshot.get("call_chain", [])
+        feature["call_tree_nodes"] = snapshot.get("call_tree_nodes", 0)
+        feature["call_tree_depth"] = snapshot.get("call_tree_depth", 0)
+    else:
+        feature["call_chain"] = []
+
     return feature
 
 

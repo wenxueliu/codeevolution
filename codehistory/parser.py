@@ -290,14 +290,36 @@ def _extract_calls(root: Node, functions: list[FunctionNode], lang: str) -> list
     """Extract function calls from the AST."""
     calls = []
     func_map = {f.name: f.qualified_name for f in functions}
-    # Also index by qualified_name for self-resolution
-    qualified_map = {f.qualified_name.split("::")[-1]: f.qualified_name for f in functions}
+    # Also index by qualified_name short form: "ClassName.method" and "method"
+    qualified_map: dict[str, str] = {}
+    for f in functions:
+        short = f.qualified_name.split("::")[-1]  # "ClassName.method" or "method"
+        qualified_map[short] = f.qualified_name
+        qualified_map[f.name] = f.qualified_name  # "method" → qualified
 
     if lang == "python":
-        # Python: call nodes — callee is a child identifier/attribute, not a named field
+        def _resolve_callee(callee_name: str) -> str | None:
+            """Try to resolve a callee name to a qualified function name."""
+            # Direct match
+            if callee_name in func_map:
+                return func_map[callee_name]
+            if callee_name in qualified_map:
+                return qualified_map[callee_name]
+            # Strip 'self.' prefix for method calls
+            if callee_name.startswith("self."):
+                method_name = callee_name[5:]
+                if method_name in func_map:
+                    return func_map[method_name]
+                if method_name in qualified_map:
+                    return qualified_map[method_name]
+                return None
+            # Object.attr() calls (external objects, builtins) — skip
+            if "." in callee_name:
+                return None
+            return None
+
         def walk_python_calls(node: Node):
             if node.type == "call":
-                # Find the callee (identifier or attribute)
                 callee = None
                 for child in node.children:
                     if child.type in ("identifier", "attribute"):
@@ -305,17 +327,15 @@ def _extract_calls(root: Node, functions: list[FunctionNode], lang: str) -> list
                         break
                 if callee:
                     callee_name = callee.text.decode()
-                    resolved = func_map.get(callee_name)
-                    if not resolved:
-                        resolved = qualified_map.get(callee_name)
+                    resolved_to = _resolve_callee(callee_name)
                     enclosing = _find_enclosing_function(node, functions)
                     if enclosing:
                         calls.append(CallEdge(
                             caller=enclosing.qualified_name,
                             callee_name=callee_name,
                             line=node.start_point[0] + 1,
-                            is_resolved=resolved is not None,
-                            resolved_to=resolved,
+                            is_resolved=resolved_to is not None,
+                            resolved_to=resolved_to,
                         ))
             for child in node.children:
                 walk_python_calls(child)
