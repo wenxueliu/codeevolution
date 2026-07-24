@@ -15,6 +15,7 @@ class SnapshotData:
     line_end: int
     cyclomatic_complexity: float | None = None
     test_nodes: int = 0
+    call_chain: list = field(default_factory=list)
 
 
 @dataclass

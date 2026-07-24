@@ -155,10 +155,12 @@ class EvolutionEngine:
                 entry_type, ep.name, ep.file_path, ep.line_start
             )
 
-            # Calculate call tree stats
-            call_tree_nodes = len(self._get_call_tree(ep, parsed))
+            # Calculate call tree stats + call chain
+            call_tree = self._get_call_tree(ep, parsed)
+            call_tree_nodes = len(call_tree)
             call_tree_depth = self._max_call_depth(ep, parsed)
             call_tree_edges = len([c for c in parsed.calls if c.caller == ep.qualified_name])
+            call_chain = self._build_call_chain(ep, parsed, call_tree)
 
             snapshot = SnapshotData(
                 call_tree_nodes=call_tree_nodes,
@@ -172,9 +174,10 @@ class EvolutionEngine:
 
             # Match to existing feature
             match = self.matcher.match(entry_type, entry_signature)
+            descriptions = self._generate_descriptions(ep.name, ep.file_path)
 
             if match.matched_feature_id:
-                # Existing feature: get last snapshot and analyze
+                # Existing feature
                 feature = self.store.get_feature(match.matched_feature_id)
                 if feature:
                     feature_id = feature["id"]
@@ -182,18 +185,17 @@ class EvolutionEngine:
                     prev = None
                     if prev_snapshot:
                         prev = SnapshotData(**prev_snapshot)
-
                     events = self.analyzer.analyze(prev, snapshot)
                     self.store.update_feature_last_seen(feature_id, commit_id)
                 else:
-                    # Feature registered in matcher but not in DB (shouldn't happen)
-                    logger.warning(f"Feature {match.matched_feature_id} in matcher but not in DB, treating as new")
+                    logger.warning(f"Feature {match.matched_feature_id} in matcher but not in DB")
                     feature_id = self.store.insert_feature(
                         stable_id=match.matched_feature_id,
                         canonical_name=ep.name,
                         entry_type=entry_type,
                         entry_signature=entry_signature,
                         first_seen_at=commit_id,
+                        **descriptions,
                     )
                     events = self.analyzer.analyze(None, snapshot)
             else:
@@ -205,11 +207,12 @@ class EvolutionEngine:
                     entry_type=entry_type,
                     entry_signature=entry_signature,
                     first_seen_at=commit_id,
+                    **descriptions,
                 )
                 self.matcher.register_feature(stable_id, entry_type, entry_signature)
                 events = self.analyzer.analyze(None, snapshot)
 
-            # Write snapshot and events (skip UNCHANGED)
+            # Write snapshot with call_chain
             try:
                 self.store.insert_snapshot(feature_id, commit_id, {
                     "call_tree_nodes": snapshot.call_tree_nodes,
@@ -219,6 +222,7 @@ class EvolutionEngine:
                     "line_start": snapshot.line_start,
                     "line_end": snapshot.line_end,
                     "test_nodes": snapshot.test_nodes,
+                    "call_chain": call_chain,
                 })
             except Exception as e:
                 logger.error(
@@ -229,6 +233,105 @@ class EvolutionEngine:
             for ev in events:
                 if ev.event_type != "UNCHANGED":
                     self.store.insert_event(feature_id, commit_id, ev.event_type, ev.detail)
+
+    def _build_call_chain(self, entry_point, parsed, call_tree: set) -> list[dict]:
+        """Build the call chain starting from the entry point.
+
+        Returns a list of {from, to} dicts representing call edges in the tree.
+        """
+        chain = []
+        visited = set()
+
+        def traverse(caller_qname: str, depth: int = 0):
+            if depth > 10:
+                return
+            for call in parsed.calls:
+                if call.caller == caller_qname and call.is_resolved and call.resolved_to in call_tree:
+                    edge_key = (caller_qname, call.resolved_to)
+                    if edge_key not in visited:
+                        visited.add(edge_key)
+                        chain.append({
+                            "from": call.caller.split("::")[-1],
+                            "to": call.callee_name,
+                            "depth": depth,
+                        })
+                        traverse(call.resolved_to, depth + 1)
+
+        traverse(entry_point.qualified_name)
+        return chain
+
+    @staticmethod
+    def _generate_descriptions(func_name: str, file_path: str) -> dict:
+        """Auto-generate English and Chinese descriptions from function name."""
+        name = func_name.replace("_", " ").strip()
+
+        # Common patterns → descriptions
+        patterns = {
+            "get_metadata": ("Retrieve metadata for the graph", "获取图谱元数据"),
+            "get_node": ("Retrieve a specific node from the graph", "获取图谱中的指定节点"),
+            "get_nodes_by_file": ("Retrieve nodes filtered by file path", "按文件路径获取节点列表"),
+            "get_nodes_by_size": ("Retrieve nodes filtered by size", "按大小获取节点列表"),
+            "get_edges_by_source": ("Retrieve edges originating from a node", "获取节点的出边列表"),
+            "get_edges_by_target": ("Retrieve edges targeting a node", "获取节点的入边列表"),
+            "get_all_files": ("Retrieve all tracked file paths", "获取所有已追踪的文件路径"),
+            "get_all_nodes": ("Retrieve all nodes in the graph", "获取图谱中的所有节点"),
+            "get_all_edges": ("Retrieve all edges in the graph", "获取图谱中的所有边"),
+            "get_edges_among": ("Retrieve edges among specified nodes", "获取指定节点之间的边"),
+            "get_impact_radius": ("Calculate the impact radius of a change", "计算代码变更的影响范围"),
+            "get_subgraph": ("Retrieve a subgraph of the full graph", "获取图谱的子图"),
+            "get_stats": ("Retrieve graph statistics", "获取图谱统计信息"),
+            "get_session": ("Retrieve session data", "获取会话数据"),
+            "get_communities": ("Retrieve community detection results", "获取社区检测结果"),
+            "get_flows": ("Retrieve execution flows", "获取执行流程列表"),
+            "get_flow": ("Retrieve a specific execution flow", "获取指定执行流程"),
+            "get_flow_by_id": ("Retrieve an execution flow by its ID", "按 ID 获取执行流程"),
+            "get_affected_flows": ("Retrieve flows affected by a change", "获取被变更影响的执行流程"),
+            "get_community": ("Retrieve a community by ID", "按 ID 获取社区"),
+            "get_community_ids_by_qualified_names": ("Map qualified names to community IDs", "将限定名映射到社区 ID"),
+            "get_architecture_overview": ("Retrieve architecture overview", "获取架构概览"),
+            "get_wiki_page": ("Generate a wiki page for a topic", "为指定主题生成 Wiki 页面"),
+            "get_minimal_context": ("Retrieve minimal context for a task", "为任务获取最小上下文"),
+            "get_docs_section": ("Retrieve a section of documentation", "获取文档章节"),
+            "get_review_context": ("Retrieve review context for changes", "获取代码审查上下文"),
+            "get_db_path": ("Get the database file path", "获取数据库文件路径"),
+            "get_changed_files": ("Detect changed files from git", "通过 git 检测变更文件"),
+            "get_staged_and_unstaged": ("Detect staged and unstaged changes", "检测暂存和未暂存的变更"),
+            "get_all_tracked_files": ("List all tracked source files", "列出所有已追踪的源文件"),
+            "get_parser": ("Get the configured parser instance", "获取已配置的解析器实例"),
+            "get_config_consumers": ("Get configuration consumers", "获取配置消费者"),
+            "get_data_dir": ("Get the data directory path", "获取数据目录路径"),
+            "get_transitive_tests": ("Get transitively related tests", "获取传递相关的测试"),
+            "get_hub_nodes": ("Get hub nodes in the graph", "获取图谱中的中心节点"),
+            "get_bridge_nodes": ("Get bridge nodes between communities", "获取社区间的桥接节点"),
+            "get_knowledge_gaps": ("Identify gaps in the knowledge graph", "识别知识图谱中的缺口"),
+            "get_surprising_connections": ("Find surprising cross-community connections", "发现跨社区的意外连接"),
+            "get_suggested_questions": ("Suggest relevant exploration questions", "推荐相关探索问题"),
+            "get_flow_criticalities": ("Get execution flow criticality scores", "获取执行流程关键性评分"),
+            "get_minimal_context_tool": ("MCP tool: retrieve minimal review context", "MCP 工具：获取最小审查上下文"),
+            "get_impact_radius_tool": ("MCP tool: calculate impact radius", "MCP 工具：计算影响范围"),
+            "get_review_context_tool": ("MCP tool: retrieve review context", "MCP 工具：获取审查上下文"),
+            "get_docs_section_tool": ("MCP tool: retrieve documentation section", "MCP 工具：获取文档章节"),
+            "get_flow_tool": ("MCP tool: retrieve execution flow", "MCP 工具：获取执行流程"),
+            "get_affected_flows_tool": ("MCP tool: retrieve affected flows", "MCP 工具：获取受影响的流程"),
+            "get_community_tool": ("MCP tool: retrieve community info", "MCP 工具：获取社区信息"),
+            "get_architecture_overview_tool": ("MCP tool: retrieve architecture overview", "MCP 工具：获取架构概览"),
+            "get_wiki_page_tool": ("MCP tool: generate wiki page", "MCP 工具：生成 Wiki 页面"),
+            "get_hub_nodes_tool": ("MCP tool: find hub nodes", "MCP 工具：查找中心节点"),
+            "get_bridge_nodes_tool": ("MCP tool: find bridge nodes", "MCP 工具：查找桥接节点"),
+            "get_knowledge_gaps_tool": ("MCP tool: identify knowledge gaps", "MCP 工具：识别知识缺口"),
+            "get_surprising_connections_tool": ("MCP tool: find surprising connections", "MCP 工具：发现意外连接"),
+            "get_suggested_questions_tool": ("MCP tool: suggest exploration questions", "MCP 工具：建议探索问题"),
+        }
+
+        if func_name in patterns:
+            en, zh = patterns[func_name]
+            return {"description": en, "description_zh": zh}
+
+        # Heuristic fallback
+        words = name.replace("_", " ")
+        en = f"{' '.join(w.capitalize() for w in words.split())}"
+        zh = f"功能：{name}"
+        return {"description": en, "description_zh": zh}
 
     def _handle_file_deletion(self, filepath: str, commit_id: int):
         """Mark features whose entry points were in the deleted file."""

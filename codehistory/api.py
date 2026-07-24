@@ -68,6 +68,15 @@ def list_features(
     for f in features:
         timeline = store.get_feature_timeline(f["stable_id"])
         f["event_count"] = len(timeline)
+        # For non-snapshot queries, also include the latest call_chain
+        if not at_commit:
+            snapshot = store.get_latest_snapshot(f["id"])
+            if snapshot:
+                f["call_chain"] = snapshot.get("call_chain", [])
+                f["call_tree_nodes"] = snapshot.get("call_tree_nodes", 0)
+            else:
+                f["call_chain"] = []
+                f["call_tree_nodes"] = 0
 
     return {"total": total, "features": features}
 

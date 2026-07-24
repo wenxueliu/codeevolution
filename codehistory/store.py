@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS features (
     entry_signature TEXT NOT NULL,
     first_seen_at INTEGER NOT NULL REFERENCES commits(id),
     last_seen_at INTEGER REFERENCES commits(id),
-    status TEXT DEFAULT 'active'
+    status TEXT DEFAULT 'active',
+    description TEXT DEFAULT '',
+    description_zh TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS feature_snapshots (
@@ -42,6 +44,7 @@ CREATE TABLE IF NOT EXISTS feature_snapshots (
     line_end INTEGER NOT NULL,
     entry_point_node_id TEXT,
     test_nodes INTEGER DEFAULT 0,
+    call_chain TEXT DEFAULT '[]',
     UNIQUE(feature_id, commit_id)
 );
 
@@ -72,7 +75,21 @@ class EvolutionStore:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        """Add columns that may not exist in older DBs."""
+        migrations = [
+            "ALTER TABLE features ADD COLUMN description TEXT DEFAULT ''",
+            "ALTER TABLE features ADD COLUMN description_zh TEXT DEFAULT ''",
+            "ALTER TABLE feature_snapshots ADD COLUMN call_chain TEXT DEFAULT '[]'",
+        ]
+        for m in migrations:
+            try:
+                self.conn.execute(m)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     def close(self):
         self.conn.close()
@@ -127,11 +144,14 @@ class EvolutionStore:
     def insert_feature(
         self, stable_id: str, canonical_name: str, entry_type: str,
         entry_signature: str, first_seen_at: int,
+        description: str = "", description_zh: str = "",
     ) -> int:
         cur = self.conn.execute(
-            """INSERT OR IGNORE INTO features (stable_id, canonical_name, entry_type, entry_signature, first_seen_at, last_seen_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (stable_id, canonical_name, entry_type, entry_signature, first_seen_at, first_seen_at),
+            """INSERT OR IGNORE INTO features
+               (stable_id, canonical_name, entry_type, entry_signature, first_seen_at, last_seen_at, description, description_zh)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (stable_id, canonical_name, entry_type, entry_signature,
+             first_seen_at, first_seen_at, description, description_zh),
         )
         self.conn.commit()
         if cur.lastrowid:
@@ -142,7 +162,9 @@ class EvolutionStore:
 
     def get_feature(self, stable_id: str) -> dict | None:
         row = self.conn.execute(
-            "SELECT id, stable_id, canonical_name, entry_type, entry_signature, first_seen_at, last_seen_at, status FROM features WHERE stable_id = ?",
+            """SELECT id, stable_id, canonical_name, entry_type, entry_signature,
+                      first_seen_at, last_seen_at, status, description, description_zh
+               FROM features WHERE stable_id = ?""",
             (stable_id,),
         ).fetchone()
         if not row:
@@ -151,16 +173,20 @@ class EvolutionStore:
             "id": row[0], "stable_id": row[1], "canonical_name": row[2],
             "entry_type": row[3], "entry_signature": row[4],
             "first_seen_at": row[5], "last_seen_at": row[6], "status": row[7],
+            "description": row[8] or "", "description_zh": row[9] or "",
         }
 
     def get_all_features(self) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT id, stable_id, canonical_name, entry_type, entry_signature, first_seen_at, last_seen_at, status FROM features WHERE status != 'removed'"
+            """SELECT id, stable_id, canonical_name, entry_type, entry_signature,
+                      first_seen_at, last_seen_at, status, description, description_zh
+               FROM features WHERE status != 'removed'"""
         ).fetchall()
         return [
             {"id": r[0], "stable_id": r[1], "canonical_name": r[2],
              "entry_type": r[3], "entry_signature": r[4],
-             "first_seen_at": r[5], "last_seen_at": r[6], "status": r[7]}
+             "first_seen_at": r[5], "last_seen_at": r[6], "status": r[7],
+             "description": r[8] or "", "description_zh": r[9] or ""}
             for r in rows
         ]
 
@@ -184,8 +210,8 @@ class EvolutionStore:
         self.conn.execute(
             """INSERT OR REPLACE INTO feature_snapshots
                (feature_id, commit_id, call_tree_nodes, call_tree_edges, call_tree_depth,
-                cyclomatic_complexity, file_path, line_start, line_end, entry_point_node_id, test_nodes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                cyclomatic_complexity, file_path, line_start, line_end, entry_point_node_id, test_nodes, call_chain)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 feature_id, commit_id,
                 snapshot_data["call_tree_nodes"],
@@ -197,6 +223,7 @@ class EvolutionStore:
                 snapshot_data["line_end"],
                 snapshot_data.get("entry_point_node_id"),
                 snapshot_data.get("test_nodes", 0),
+                json.dumps(snapshot_data.get("call_chain", [])),
             ),
         )
         self.conn.commit()
@@ -204,7 +231,7 @@ class EvolutionStore:
     def get_latest_snapshot(self, feature_id: int) -> dict | None:
         row = self.conn.execute(
             """SELECT call_tree_nodes, call_tree_edges, call_tree_depth,
-                      file_path, line_start, line_end
+                      file_path, line_start, line_end, call_chain
                FROM feature_snapshots
                WHERE feature_id = ?
                ORDER BY commit_id DESC LIMIT 1""",
@@ -216,6 +243,7 @@ class EvolutionStore:
             "call_tree_nodes": row[0], "call_tree_edges": row[1],
             "call_tree_depth": row[2], "file_path": row[3],
             "line_start": row[4], "line_end": row[5],
+            "call_chain": json.loads(row[6]) if row[6] else [],
         }
 
     # --- events ---
@@ -274,11 +302,17 @@ class EvolutionStore:
                            WHERE fs.feature_id = f.id AND fs.commit_id <= ?
                            ORDER BY fs.commit_id DESC LIMIT 1),
                           0
-                      ) as call_tree_nodes
+                      ) as call_tree_nodes,
+                      COALESCE(
+                          (SELECT fs.call_chain FROM feature_snapshots fs
+                           WHERE fs.feature_id = f.id AND fs.commit_id <= ?
+                           ORDER BY fs.commit_id DESC LIMIT 1),
+                          '[]'
+                      ) as call_chain
                FROM features f
                WHERE f.first_seen_at <= ?
                ORDER BY f.canonical_name""",
-            (target_commit_id, target_commit_id),
+            (target_commit_id, target_commit_id, target_commit_id),
         ).fetchall()
 
         # Keep features that weren't removed before or at the target commit
@@ -298,6 +332,7 @@ class EvolutionStore:
                     "entry_type": r[3], "entry_signature": r[4], "status": r[5],
                     "first_seen_at": r[6], "last_seen_at": r[7],
                     "call_tree_nodes": r[8],
+                    "call_chain": json.loads(r[9]) if r[9] else [],
                 })
 
         return result
