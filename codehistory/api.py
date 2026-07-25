@@ -128,6 +128,37 @@ def list_commits(repo: str = Query(""), limit: int = Query(200)):
     return {"total": len(commits), "commits": commits}
 
 
+@app.get("/api/features/{stable_id:path}/explain")
+def explain_feature(stable_id: str, repo: str = Query("")):
+    """Generate LLM explanation for a feature's call chain. Optional: requires OPENAI_API_KEY."""
+    from .llm import explain_feature, is_available
+    if not is_available():
+        return {"available": False, "message": "Set OPENAI_API_KEY to enable AI explanations"}
+    store = get_store(repo)
+    feature = store.get_feature(stable_id)
+    if not feature:
+        return {"error": "Feature not found"}
+    snapshot = store.get_latest_snapshot(feature["id"])
+    call_chain = snapshot.get("call_chain", []) if snapshot else []
+    callee_names = set()
+    for edge in call_chain:
+        to_name = edge.get("to", "").replace("self.", "")
+        if to_name:
+            callee_names.add(to_name)
+    features_context = []
+    for f in store.get_all_features():
+        if f["canonical_name"] in callee_names:
+            features_context.append(f)
+    result = explain_feature(
+        feature_name=feature["canonical_name"],
+        description=feature.get("description", ""),
+        description_zh=feature.get("description_zh", ""),
+        call_chain=call_chain,
+        features_context=features_context,
+    )
+    return {"available": True, "explanation": result}
+
+
 @app.get("/api/features/{stable_id:path}")
 def get_feature_detail(stable_id: str, repo: str = Query("")):
     store = get_store(repo)
@@ -200,6 +231,12 @@ def list_events(
 def get_capabilities(repo: str = Query("")):
     store = get_store(repo)
     return {"capabilities": store.get_capabilities()}
+
+
+@app.get("/api/llm-status")
+def llm_status():
+    from .llm import is_available
+    return {"available": is_available()}
 
 
 @app.get("/api/event-stats")

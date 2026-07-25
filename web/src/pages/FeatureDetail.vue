@@ -19,6 +19,22 @@
       <div class="stable-id">{{ feature.stable_id }}</div>
     </div>
 
+    <!-- AI Explanation (optional, requires LLM config) -->
+    <div class="explain-section" v-if="llmAvailable || explanation">
+      <div class="explain-header">
+        <h3>AI 实现解释</h3>
+        <button v-if="!explanation && !explainLoading" @click="loadExplanation" class="explain-btn">
+          生成解释
+        </button>
+        <span v-if="explainLoading" class="explain-loading">生成中...</span>
+      </div>
+      <div v-if="explanation" class="explain-body">
+        <div class="explain-zh" v-if="explanation.zh">{{ explanation.zh }}</div>
+        <div class="explain-en" v-if="explanation.en">{{ explanation.en }}</div>
+      </div>
+      <div v-if="explainError" class="explain-error">{{ explainError }}</div>
+    </div>
+
     <!-- Mermaid Sequence Diagram -->
     <div class="sequence-section" v-if="feature.call_chain?.length">
       <h3>调用时序图</h3>
@@ -85,7 +101,7 @@ function parseCall(fullName) {
 export default {
   props: { stableId: String, repoName: String },
   data() {
-    return { feature: null, diagramError: false }
+    return { feature: null, diagramError: false, llmAvailable: false, explanation: null, explainLoading: false, explainError: null }
   },
   computed: {
     timeline() { return this.feature?.timeline || [] },
@@ -178,7 +194,35 @@ export default {
       try {
         const r = await fetch('/api/features/' + encodeURIComponent(this.stableId) + '?repo=' + encodeURIComponent(this.repoName || ''))
         this.feature = await r.json()
+        // Check if LLM is available
+        this.checkLLM()
       } catch(e) { console.error(e) }
+    },
+    async checkLLM() {
+      try {
+        const r = await fetch('/api/llm-status')
+        const d = await r.json()
+        this.llmAvailable = d.available
+      } catch(e) {}
+    },
+    async loadExplanation() {
+      this.explainLoading = true
+      this.explainError = null
+      try {
+        const r = await fetch('/api/features/' + encodeURIComponent(this.stableId) + '/explain?repo=' + encodeURIComponent(this.repoName || ''))
+        const d = await r.json()
+        if (d.available && d.explanation) {
+          this.explanation = d.explanation
+        } else if (!d.available) {
+          this.explainError = '需要配置 OPENAI_API_KEY 环境变量'
+        } else {
+          this.explainError = '生成失败'
+        }
+      } catch(e) {
+        this.explainError = '请求失败: ' + e.message
+      } finally {
+        this.explainLoading = false
+      }
     },
     async renderDiagram() {
       if (!this.$refs.mermaidEl) return
@@ -216,6 +260,20 @@ export default {
 .status-tag.active { background: #d4edda; color: #155724; }
 .status-tag.removed { background: #f8d7da; color: #721c24; }
 .stable-id { font-family: monospace; font-size: 12px; color: #aaa; }
+
+/* Explain */
+.explain-section { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.explain-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.explain-header h3 { font-size: 16px; }
+.explain-btn { padding: 6px 16px; background: #e94560; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.explain-btn:hover { background: #c73e54; }
+.explain-loading { font-size: 13px; color: #ffc107; }
+.explain-body { font-size: 14px; line-height: 1.8; }
+.explain-zh { color: #333; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid #f0f0f0; }
+.explain-en { color: #666; font-size: 13px; }
+.explain-error { color: #dc3545; font-size: 13px; }
+/* Placeholder for LLM unavailable */
+.no-explain { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; color: #999; font-size: 13px; }
 
 /* Mermaid */
 .sequence-section { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow-x: auto; }

@@ -56,6 +56,25 @@ python3 -m venv .venv
 # 应显示: backfill / update / web / serve / register / repos / status
 ```
 
+## AI 实现解释 (可选)
+
+配置 OpenAI API Key 后，功能详情页可生成调用链的自然语言解释（中英双语）。
+
+```bash
+# 安装 LLM 支持
+.venv/bin/pip install ".[llm]"
+
+# 配置环境变量
+export OPENAI_API_KEY="sk-..."
+export CODEHISTORY_LLM_MODEL="gpt-4o-mini"  # 可选，默认 gpt-4o-mini
+export CODEHISTORY_LLM_BASE="https://api.openai.com/v1"  # 可选，兼容任意 OpenAI 兼容接口
+
+# 启动 web
+.venv/bin/codehistory web --port 8765
+```
+
+功能详情页会显示「AI 实现解释」区域，点击「生成解释」即可。
+
 ## 快速开始
 
 ```bash

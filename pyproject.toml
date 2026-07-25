@@ -26,6 +26,9 @@ dependencies = [
 codehistory = "codehistory.cli:main"
 
 [project.optional-dependencies]
+llm = [
+    "litellm>=1.0,<2",
+]
 dev = [
     "pytest>=8.0,<9",
     "pytest-asyncio>=0.23,<2",
