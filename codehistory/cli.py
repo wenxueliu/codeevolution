@@ -144,21 +144,21 @@ def main():
     p = subparsers.add_parser("backfill", help="Full initial analysis from git history")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database (default: .codehistory/evolution.db)")
-    p.add_argument("--languages", "-l", default="python,java", help="Comma-separated language list")
+    p.add_argument("--languages", "-l", default="python,java,javascript,typescript,tsx,vue", help="Comma-separated language list")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     # update
     p = subparsers.add_parser("update", help="Process new commits since last analysis")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database")
-    p.add_argument("--languages", "-l", default="python,java", help="Comma-separated language list")
+    p.add_argument("--languages", "-l", default="python,java,javascript,typescript,tsx,vue", help="Comma-separated language list")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     # serve
     p = subparsers.add_parser("serve", help="Start MCP server")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database")
-    p.add_argument("--languages", "-l", default="python,java", help="Comma-separated language list")
+    p.add_argument("--languages", "-l", default="python,java,javascript,typescript,tsx,vue", help="Comma-separated language list")
     p.add_argument("--transport", "-t", default="stdio",
                    choices=["stdio", "sse", "streamable-http"],
                    help="MCP transport (default: stdio)")
