@@ -27,6 +27,14 @@ def detect_language(filepath: str) -> str | None:
         return "python"
     if ext in (".java"):
         return "java"
+    if ext in (".ts"):
+        return "typescript"
+    if ext in (".tsx"):
+        return "tsx"
+    if ext in (".js", ".jsx", ".mjs", ".cjs"):
+        return "javascript"
+    if ext in (".vue"):
+        return "vue"
     return None
 
 
@@ -85,9 +93,18 @@ class SnapshotParser:
             self._parsed_cache[cache_key] = result
             return result
 
+        # Vue: extract <script> section and parse as ts/js
+        if lang == "vue":
+            script_content, script_lang = _extract_vue_script(content)
+            if not script_content:
+                result = ParsedFile(filepath, "vue", [], [], [], [])
+                self._parsed_cache[cache_key] = result
+                return result
+            lang = script_lang  # Use the script's language (ts or js)
+
         tree_sitter_lang = _get_language(lang)
         parser = Parser(tree_sitter_lang)
-        source_bytes = content.encode()
+        source_bytes = content.encode() if lang != "vue" else script_content.encode()
         tree = parser.parse(source_bytes)
         root = tree.root_node
 
@@ -96,7 +113,8 @@ class SnapshotParser:
         imports = _extract_imports(root, lang)
         entry_points = [f for f in functions if _is_entry_point(root, f, lang)]
 
-        result = ParsedFile(filepath, lang, functions, calls, imports, entry_points)
+        result = ParsedFile(filepath, "vue" if detect_language(filepath) == "vue" else lang,
+                           functions, calls, imports, entry_points)
         self._parsed_cache[cache_key] = result
         return result
 
@@ -118,6 +136,10 @@ def _extract_functions(root: Node, source: bytes, filepath: str, lang: str) -> l
         return _extract_python_functions(root, source, filepath)
     elif lang == "java":
         return _extract_java_functions(root, source, filepath)
+    elif lang in ("javascript", "typescript", "tsx"):
+        return _extract_js_functions(root, source, filepath, lang)
+    elif lang == "vue":
+        return _extract_js_functions(root, source, filepath, "typescript")
     return []
 
 
@@ -284,11 +306,145 @@ def _extract_java_functions(root: Node, source: bytes, filepath: str) -> list[Fu
     return functions
 
 
+# --- Vue script extractor ---
+
+def _extract_vue_script(content: str) -> tuple[str, str]:
+    """Extract the <script> section from a Vue SFC. Returns (content, lang)."""
+    import re
+    # Match <script lang="ts"> or <script setup lang="ts"> or plain <script>
+    m = re.search(r'<script[^>]*>', content)
+    if not m:
+        return "", ""
+    start = m.end()
+    end = content.find("</script>", start)
+    if end < 0:
+        return "", ""
+    tag = m.group(0)
+    if 'lang="ts"' in tag or "lang='ts'" in tag or 'lang=ts' in tag:
+        lang = "typescript"
+    elif 'lang="tsx"' in tag:
+        lang = "tsx"
+    else:
+        lang = "javascript"
+    return content[start:end], lang
+
+
+# --- JS/TS extractors ---
+
+def _extract_js_functions(root: Node, source: bytes, filepath: str, lang: str) -> list[FunctionNode]:
+    """Extract JavaScript/TypeScript functions, methods, and arrow functions."""
+    functions = []
+    current_class: str | None = None
+
+    def get_text(node: Node) -> str:
+        return node.text.decode() if node.text else ""
+
+    def walk(node: Node, class_name: str | None = None):
+        nonlocal current_class
+
+        if node.type == "class_declaration":
+            name_node = node.child_by_field_name("name")
+            new_class = get_text(name_node) if name_node else "Anonymous"
+            current_class = new_class
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    walk(child, new_class)
+            current_class = class_name
+            return
+
+        if node.type == "method_definition":
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                return
+            name = get_text(name_node)
+
+            qualified = f"{filepath}::{class_name}.{name}" if class_name else f"{filepath}::{name}"
+
+            params = []
+            params_node = node.child_by_field_name("parameters")
+            if params_node:
+                for child in params_node.children:
+                    if child.type in ("identifier", "required_parameter", "optional_parameter"):
+                        for c in child.children:
+                            if c.type == "identifier":
+                                params.append(get_text(c))
+                                break
+
+            is_test = name.lower().startswith("test") or name.lower().endswith("test") or \
+                      (class_name and ("test" in class_name.lower() or "spec" in class_name.lower()))
+
+            functions.append(FunctionNode(
+                name=name, qualified_name=qualified, file_path=filepath,
+                line_start=node.start_point[0] + 1, line_end=node.end_point[0] + 1,
+                language=lang, is_method=class_name is not None,
+                parent_class=class_name, params=params, is_test=is_test,
+            ))
+
+        if node.type == "function_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                return
+            name = get_text(name_node)
+
+            qualified = f"{filepath}::{class_name}.{name}" if class_name else f"{filepath}::{name}"
+
+            params = []
+            params_node = node.child_by_field_name("parameters")
+            if params_node:
+                for child in params_node.children:
+                    if child.type in ("identifier", "required_parameter", "optional_parameter"):
+                        for c in child.children:
+                            if c.type == "identifier":
+                                params.append(get_text(c))
+                                break
+
+            is_test = name.lower().startswith("test") or name.lower().endswith("test")
+
+            functions.append(FunctionNode(
+                name=name, qualified_name=qualified, file_path=filepath,
+                line_start=node.start_point[0] + 1, line_end=node.end_point[0] + 1,
+                language=lang, is_method=False, params=params, is_test=is_test,
+            ))
+
+        if node.type in ("arrow_function", "function_expression"):
+            # Variable declarator or assignment: const foo = () => { ... }
+            parent = node.parent
+            if parent:
+                if parent.type == "variable_declarator":
+                    name_node = parent.child_by_field_name("name")
+                    if name_node:
+                        name = get_text(name_node)
+                        qualified = f"{filepath}::{class_name}.{name}" if class_name else f"{filepath}::{name}"
+                        functions.append(FunctionNode(
+                            name=name, qualified_name=qualified, file_path=filepath,
+                            line_start=node.start_point[0] + 1, line_end=node.end_point[0] + 1,
+                            language=lang, is_method=False,
+                            parent_class=class_name, is_test=name.lower().startswith("test"),
+                        ))
+
+        # Unwrap export statements to find inner functions
+        if node.type == "export_statement":
+            for child in node.children:
+                if child.type in ("function_declaration", "class_declaration",
+                                  "lexical_declaration", "variable_declaration"):
+                    walk(child, class_name)
+            return
+
+        # Recurse: find function/class children anywhere in the tree
+        for child in node.children:
+            walk(child, class_name)
+
+    walk(root)
+    return functions
+
+
 # --- Call extractors ---
 
 def _extract_calls(root: Node, functions: list[FunctionNode], lang: str) -> list[CallEdge]:
     """Extract function calls from the AST."""
     calls = []
+    js_langs = ("javascript", "typescript", "tsx")
     func_map = {f.name: f.qualified_name for f in functions}
     # Also index by qualified_name short form: "ClassName.method" and "method"
     qualified_map: dict[str, str] = {}
@@ -364,6 +520,35 @@ def _extract_calls(root: Node, functions: list[FunctionNode], lang: str) -> list
 
         walk_java_calls(root)
 
+    elif lang in js_langs:
+        def walk_js_calls(node: Node):
+            if node.type == "call_expression":
+                # function() or obj.method()
+                fn_node = node.child_by_field_name("function")
+                if fn_node:
+                    callee_name = fn_node.text.decode() if fn_node.text else ""
+                    if callee_name:
+                        resolved = func_map.get(callee_name)
+                        if not resolved:
+                            resolved = qualified_map.get(callee_name)
+                        if not resolved and "." in callee_name:
+                            # obj.method() → try just the method name
+                            method = callee_name.rsplit(".", 1)[-1]
+                            resolved = func_map.get(method) or qualified_map.get(method)
+                        enclosing = _find_enclosing_function(node, functions)
+                        if enclosing:
+                            calls.append(CallEdge(
+                                caller=enclosing.qualified_name,
+                                callee_name=callee_name,
+                                line=node.start_point[0] + 1,
+                                is_resolved=resolved is not None,
+                                resolved_to=resolved,
+                            ))
+            for child in node.children:
+                walk_js_calls(child)
+
+        walk_js_calls(root)
+
     return calls
 
 
@@ -390,6 +575,15 @@ def _extract_imports(root: Node, lang: str) -> list[str]:
         for node in _iter_tree(root):
             if node.type == "import_declaration":
                 imports.append(node.text.decode())
+    elif lang in ("javascript", "typescript", "tsx"):
+        for node in _iter_tree(root):
+            if node.type == "import_statement":
+                imports.append(node.text.decode())
+            # CommonJS require(): const x = require('...')
+            if node.type in ("lexical_declaration", "variable_declaration"):
+                text = node.text.decode() if node.text else ""
+                if "require(" in text:
+                    imports.append(text.strip())
     return imports
 
 
@@ -401,6 +595,8 @@ def _is_entry_point(root: Node, func: FunctionNode, lang: str) -> bool:
         return _is_python_entry_point(func)
     elif lang == "java":
         return _is_java_entry_point(root, func)
+    elif lang in ("javascript", "typescript", "tsx", "vue"):
+        return _is_js_entry_point(func)
     return False
 
 
@@ -438,6 +634,57 @@ def _is_java_entry_point(root: Node, func: FunctionNode) -> bool:
     if func.name.startswith("get") or func.name.startswith("post") or \
        func.name.startswith("put") or func.name.startswith("delete"):
         return True
+    return False
+
+
+def _is_js_entry_point(func: FunctionNode) -> bool:
+    """Detect JS/TS/Vue entry points.
+
+    Recognizes:
+    - Exported functions in api/controllers/routes/handlers/services directories
+    - Express/Koa/Hono/Fastify route handlers: (req, res) pattern
+    - Next.js API routes, page components, getServerSideProps etc.
+    - Vue composables (useXxx), setup functions, component exports
+    """
+    name = func.name.lower()
+    path_lower = func.file_path.lower()
+
+    # HTTP framework patterns
+    http_dirs = ("api", "controller", "route", "handler", "endpoint", "service", "middleware")
+    if any(d in path_lower for d in http_dirs):
+        return True
+
+    # Next.js patterns
+    if "pages/" in path_lower or "app/" in path_lower:
+        nextjs_exports = ("getserversideprops", "getstaticprops", "getstaticpaths",
+                          "generatemetadata", "generatestaticparams")
+        if name in nextjs_exports:
+            return True
+        if name == "default" and ("page" in path_lower or "layout" in path_lower or "route" in path_lower):
+            return True
+
+    # Express-like handlers: (req, res) or (request, response) params
+    params_lower = [p.lower() for p in func.params]
+    if any(p in params_lower for p in ("req", "request", "ctx")):
+        return True
+
+    # Vue composables: useXxx (check original name for camelCase)
+    if func.name.startswith("use") and len(func.name) > 3 and func.name[3].isupper():
+        return True
+
+    # CLI / main entry points
+    if name == "main" or name == "cli" or name.startswith("cli_"):
+        return True
+
+    # Exported function with handler-like names
+    handler_patterns = ("handle", "handler", "route", "endpoint", "controller")
+    if any(p in name for p in handler_patterns):
+        return True
+
+    # Vue template event handlers: short functions in .vue files (likely @click, @submit etc.)
+    if func.file_path.endswith(".vue") and len(func.params) <= 2:
+        return True
+
     return False
 
 

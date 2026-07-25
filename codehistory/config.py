@@ -20,7 +20,7 @@ class Config:
     cluster_window_minutes: int = 0  # 0 = disabled
 
     # Parser
-    languages: list[str] = field(default_factory=lambda: ["python", "java"])
+    languages: list[str] = field(default_factory=lambda: ["python", "java", "javascript", "typescript", "tsx", "vue"])
 
     # Matcher
     l1_match_threshold: float = 0.9

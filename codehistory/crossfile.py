@@ -37,16 +37,20 @@ class CrossFileIndex:
             self._parse_import(imp, parsed.file_path)
 
     def _parse_import(self, imp_text: str, caller_file: str):
-        """Parse a Python import statement and record alias→file mappings.
+        """Parse import statement and record alias→file mappings.
 
-        Examples:
-            from server.graph import GraphStore  → alias 'GraphStore' → server/graph.py
-            import server.graph                   → alias 'server.graph' → server/graph.py
-            from .utils import helper              → alias 'helper' → <caller_dir>/utils.py
+        Supports Python and JS/TS import syntax.
         """
         imp_text = imp_text.strip()
         caller_dir = str(Path(caller_file).parent)
+        ext = Path(caller_file).suffix
 
+        # JS/TS imports
+        if ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue"):
+            self._parse_js_import(imp_text, caller_file, caller_dir)
+            return
+
+        # Python imports
         if imp_text.startswith("from "):
             # from X import Y, Z
             parts = imp_text.split(" import ")
@@ -82,6 +86,89 @@ class CrossFileIndex:
 
             target_file = self._resolve_module_path(module_path, caller_dir)
             self.import_map[(caller_file, alias)] = target_file
+
+    def _parse_js_import(self, imp_text: str, caller_file: str, caller_dir: str):
+        """Parse JS/TS import and record alias→file mappings.
+
+        Examples:
+            import { foo } from './module'  → alias 'foo' → caller_dir/module.ts
+            import foo from './module'      → alias 'foo' → caller_dir/module.ts
+            import * as foo from './module' → alias 'foo' → caller_dir/module.ts
+            const { foo } = require('./module') → alias 'foo' → caller_dir/module.ts
+        """
+        import re
+
+        # ES6 imports: import ... from '...'
+        m = re.search(r'''from\s+['\"]([^'\"]+)['\"]''', imp_text)
+        if m:
+            module_path = m.group(1)
+            target_file = self._resolve_js_module(module_path, caller_dir)
+
+            # import { foo, bar } from ...
+            destructure = re.match(r'import\s*\{([^}]+)\}', imp_text)
+            if destructure:
+                for item in destructure.group(1).split(","):
+                    item = item.strip()
+                    if " as " in item:
+                        original, alias = item.split(" as ")
+                        alias = alias.strip()
+                    else:
+                        alias = item.strip()
+                    self.import_map[(caller_file, alias)] = target_file
+                return
+
+            # import foo from ...
+            default_import = re.match(r'import\s+(\w+)', imp_text)
+            if default_import:
+                alias = default_import.group(1)
+                if alias not in ("type", "from"):
+                    self.import_map[(caller_file, alias)] = target_file
+                return
+
+            # import * as foo from ...
+            namespace = re.match(r'import\s+\*\s+as\s+(\w+)', imp_text)
+            if namespace:
+                self.import_map[(caller_file, namespace.group(1))] = target_file
+                return
+
+        # CommonJS: const foo = require('...') or const { foo } = require('...')
+        m = re.search(r'''require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)''', imp_text)
+        if m:
+            module_path = m.group(1)
+            target_file = self._resolve_js_module(module_path, caller_dir)
+
+            # const foo = require(...)
+            simple = re.match(r'(?:const|let|var)\s+(\w+)\s*=', imp_text)
+            if simple:
+                self.import_map[(caller_file, simple.group(1))] = target_file
+                return
+
+            # const { foo, bar } = require(...)
+            destructure = re.match(r'(?:const|let|var)\s*\{([^}]+)\}', imp_text)
+            if destructure:
+                for item in destructure.group(1).split(","):
+                    item = item.strip()
+                    if ":" in item:
+                        item = item.split(":")[0].strip()
+                    self.import_map[(caller_file, item)] = target_file
+                return
+
+    def _resolve_js_module(self, module_path: str, caller_dir: str) -> str:
+        """Convert a JS/TS module path to a file path.
+
+        './utils' → '<caller_dir>/utils'
+        '../shared/foo' → '<parent>/shared/foo'
+        'lodash' → 'node_modules/lodash' (external, won't match)
+        """
+        if module_path.startswith("."):
+            resolved = str(Path(caller_dir) / module_path)
+            # Try common extensions
+            for ext in (".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"):
+                if Path(resolved + ext).exists() if hasattr(Path, 'exists') else True:
+                    return resolved + ext
+            return resolved + ".ts"  # default to .ts
+        # External package — return as-is (won't match any file in the repo)
+        return module_path
 
     def _resolve_module_path(self, module_path: str, caller_dir: str) -> str:
         """Convert a Python module path to a file path.
