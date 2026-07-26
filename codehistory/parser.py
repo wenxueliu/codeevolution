@@ -4,6 +4,7 @@ Extracts symbols (functions, classes, methods) and edges (calls, imports)
 to build call trees from entry points.
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,7 +23,16 @@ def _get_language(lang: str) -> Language:
 
 def detect_language(filepath: str) -> str | None:
     """Detect language from file extension."""
-    ext = Path(filepath).suffix.lower()
+    path = Path(filepath)
+    ext = path.suffix.lower()
+    name = path.name.lower()
+
+    # Dotfiles: .env, .cfg, .gitignore etc.
+    if name.startswith(".") and not ext:
+        if name in (".env",):
+            return "config"
+        return None
+
     if ext in (".py", ".pyw"):
         return "python"
     if ext in (".java"):
@@ -35,6 +45,8 @@ def detect_language(filepath: str) -> str | None:
         return "javascript"
     if ext in (".vue"):
         return "vue"
+    if ext in (".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf"):
+        return "config"
     return None
 
 
@@ -74,6 +86,7 @@ class ParsedFile:
     imports: list[str]
     entry_points: list[FunctionNode]
     inheritance: list[dict] = field(default_factory=list)  # [{class, bases}]
+    config_keys: list[str] = field(default_factory=list)  # config key paths
 
 
 class SnapshotParser:
@@ -91,6 +104,13 @@ class SnapshotParser:
         lang = detect_language(filepath)
         if lang is None:
             result = ParsedFile(filepath, "unknown", [], [], [], [])
+            self._parsed_cache[cache_key] = result
+            return result
+
+        # Config files: extract key-value pairs, no functions/calls/entry points
+        if lang == "config":
+            config_keys = _parse_config_keys(filepath, content)
+            result = ParsedFile(filepath, lang, [], [], [], [], config_keys=config_keys)
             self._parsed_cache[cache_key] = result
             return result
 
@@ -759,6 +779,124 @@ def _extract_inheritance(root: Node, source: str, lang: str) -> list[dict]:
                         result.append({"class": class_name, "bases": bases})
 
     return result
+
+
+# --- Config file parser ---
+
+def _parse_config_keys(filepath: str, content: str) -> list[str]:
+    """Extract key paths from config files."""
+    import json
+    path = Path(filepath)
+    ext = path.suffix.lower()
+    name = path.name.lower()
+
+    try:
+        # Dotfiles
+        if not ext and name == ".env":
+            return _extract_env_keys(content)
+
+        if ext in (".json",):
+            return _extract_json_keys(json.loads(content))
+        elif ext in (".yml", ".yaml"):
+            return _extract_yaml_keys(content)
+        elif ext in (".toml"):
+            return _extract_toml_keys(content)
+        elif ext in (".ini", ".cfg", ".conf"):
+            return _extract_ini_keys(content)
+    except Exception:
+        pass
+    return []
+
+
+def _extract_json_keys(data, prefix: str = "") -> list[str]:
+    keys = []
+    if isinstance(data, dict):
+        for k, v in data.items():
+            path = f"{prefix}.{k}" if prefix else k
+            keys.append(path)
+            if isinstance(v, (dict, list)):
+                keys.extend(_extract_json_keys(v, path))
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            if isinstance(item, dict):
+                keys.extend(_extract_json_keys(item, f"{prefix}[{i}]" if prefix else f"[{i}]"))
+    return keys
+
+
+def _extract_yaml_keys(content: str) -> list[str]:
+    """Extract keys from YAML without PyYAML dependency (basic regex)."""
+    keys = []
+    for line in content.split("\n"):
+        # Skip comments and empty lines
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Match indented key: "  key:" or "key:"
+        m = re.match(r'^(\s*)([\w_-]+)\s*:', line)
+        if m:
+            indent = len(m.group(1))
+            key = m.group(2)
+            # Build dotted path from indentation level
+            depth = indent // 2  # assume 2-space indent
+            keys.append(key)  # store bare key; depth info could be used to build path
+    return keys
+
+
+def _extract_toml_keys(content: str) -> list[str]:
+    """Extract keys from TOML (regex-based)."""
+    keys = []
+    current_section = ""
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # [section]
+        m = re.match(r'^\[([^\]]+)\]', stripped)
+        if m:
+            current_section = m.group(1)
+            keys.append(current_section)
+            continue
+        # key = value
+        m = re.match(r'^([\w_-]+)\s*=', stripped)
+        if m:
+            key = m.group(1)
+            full_key = f"{current_section}.{key}" if current_section else key
+            keys.append(full_key)
+    return keys
+
+
+def _extract_env_keys(content: str) -> list[str]:
+    """Extract keys from .env files."""
+    keys = []
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = re.match(r'^([A-Z_][A-Z0-9_]*)\s*=', stripped)
+        if m:
+            keys.append(m.group(1))
+    return keys
+
+
+def _extract_ini_keys(content: str) -> list[str]:
+    """Extract keys from INI/CFG files."""
+    keys = []
+    current_section = ""
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith(";"):
+            continue
+        m = re.match(r'^\[([^\]]+)\]', stripped)
+        if m:
+            current_section = m.group(1)
+            keys.append(current_section)
+            continue
+        m = re.match(r'^([\w_-]+)\s*[=:]', stripped)
+        if m:
+            key = m.group(1)
+            full_key = f"{current_section}.{key}" if current_section else key
+            keys.append(full_key)
+    return keys
 
 
 def _iter_tree(node: Node):

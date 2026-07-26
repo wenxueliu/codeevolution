@@ -4,6 +4,7 @@ Ties together Walker → Parser → EntryPointDetector → Matcher → Analyzer 
 """
 
 import logging
+from pathlib import Path
 from typing import Callable
 
 from .analyzer import EvolutionAnalyzer, SnapshotData
@@ -139,7 +140,13 @@ class EvolutionEngine:
 
         # Pass 2: process entry points
         for fpath, parsed in parsed_files.items():
-            self._process_entry_points(parsed, commit_id)
+            if parsed.language != "config":
+                self._process_entry_points(parsed, commit_id)
+
+        # Pass 3: process config changes
+        config_files = {fp: p for fp, p in parsed_files.items() if p.language == "config"}
+        if config_files:
+            self._process_config_changes(config_files, parsed_files, commit_id)
 
     def _process_delta_commit(self, commit: CommitInfo, commit_id: int):
         """Process a delta commit: parse changed files, update cross-file index."""
@@ -175,8 +182,14 @@ class EvolutionEngine:
 
         # Process entry points from changed files only
         for fpath in changed_files:
-            if fpath in parsed_files:
+            if fpath in parsed_files and parsed_files[fpath].language != "config":
                 self._process_entry_points(parsed_files[fpath], commit_id)
+
+        # Process config changes
+        config_changed = {fp: parsed_files[fp] for fp in changed_files
+                          if fp in parsed_files and parsed_files[fp].language == "config"}
+        if config_changed:
+            self._process_config_changes(config_changed, parsed_files, commit_id)
 
         # Handle deleted files
         for fpath in changed_files:
@@ -385,6 +398,65 @@ class EvolutionEngine:
                 if prev_snapshot:
                     ev = self.analyzer.died_event(SnapshotData(**prev_snapshot))
                     self.store.insert_event(feature["id"], commit_id, ev.event_type, ev.detail)
+
+    def _process_config_changes(self, config_files: dict, all_parsed: dict, commit_id: int):
+        """Generate INDIRECT_MODIFIED events for features affected by config changes.
+
+        Strategy: find code files that import or reference the changed config file,
+        then flag all features in those code files.
+        """
+        for config_path, config_parsed in config_files.items():
+            config_basename = Path(config_path).name  # e.g., "settings.py" or "config.yml"
+            config_stem = Path(config_path).stem      # e.g., "settings" or "config"
+            changed_keys = set(config_parsed.config_keys)
+
+            # Find code files that reference this config
+            affected_features = set()
+            for fpath, parsed in all_parsed.items():
+                if parsed.language == "config":
+                    continue
+                # Check if this code file imports the config file
+                imports_config = any(
+                    config_stem in imp or config_basename in imp
+                    for imp in parsed.imports
+                )
+                # Check if any function references changed config keys
+                refs_config_key = False
+                if changed_keys:
+                    for func in parsed.functions:
+                        for key in changed_keys:
+                            if key in func.name:
+                                refs_config_key = True
+                                break
+
+                if imports_config or refs_config_key:
+                    # All features in this file are potentially affected
+                    for ep in parsed.entry_points:
+                        entry_type = self.matcher.classify_entry_type(
+                            ep.name, ep.file_path, ep.params
+                        )
+                        entry_signature = self.matcher.build_signature(
+                            entry_type, ep.name, ep.file_path, ep.line_start
+                        )
+                        match = self.matcher.match(entry_type, entry_signature)
+                        if match.matched_feature_id:
+                            feature = self.store.get_feature(match.matched_feature_id)
+                            if feature:
+                                affected_features.add(feature["id"])
+
+            # Emit INDIRECT_MODIFIED events
+            for feat_id in affected_features:
+                self.store.insert_event(
+                    feat_id, commit_id, "INDIRECT_MODIFIED",
+                    {
+                        "config_file": config_path,
+                        "changed_keys": list(changed_keys)[:20],
+                        "reason": "Config file modification may indirectly affect this feature",
+                    },
+                )
+                logger.debug(
+                    f"INDIRECT_MODIFIED: feature={feat_id} config={config_path}"
+                )
 
     def _is_supported(self, filepath: str) -> bool:
         from .parser import detect_language
