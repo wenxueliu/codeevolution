@@ -629,7 +629,11 @@ def _is_python_entry_point(func: FunctionNode) -> bool:
     Recognizes:
     - Flask/FastAPI decorators: @app.get, @app.post, @router.get, etc.
     - CLI: __main__ module functions, click commands, argparse targets
+
+    Excludes test functions and functions in test files.
     """
+    if func.is_test:
+        return False
     name = func.name.lower()
     # Web framework patterns (heuristic: name matches)
     web_patterns = (
@@ -645,13 +649,9 @@ def _is_python_entry_point(func: FunctionNode) -> bool:
 
 
 def _is_java_entry_point(root: Node, func: FunctionNode) -> bool:
-    """Detect Java entry points.
-
-    Recognizes:
-    - @RestController, @Controller class methods with @GetMapping, @PostMapping
-    - JAX-RS: @Path, @GET, @POST annotations
-    - main() methods
-    """
+    """Detect Java entry points. Excludes test functions."""
+    if func.is_test:
+        return False
     if func.name == "main" and func.params and "String" in str(func.params):
         return True
     if func.name.startswith("get") or func.name.startswith("post") or \
@@ -661,14 +661,9 @@ def _is_java_entry_point(root: Node, func: FunctionNode) -> bool:
 
 
 def _is_js_entry_point(func: FunctionNode) -> bool:
-    """Detect JS/TS/Vue entry points.
-
-    Recognizes:
-    - Exported functions in api/controllers/routes/handlers/services directories
-    - Express/Koa/Hono/Fastify route handlers: (req, res) pattern
-    - Next.js API routes, page components, getServerSideProps etc.
-    - Vue composables (useXxx), setup functions, component exports
-    """
+    """Detect JS/TS/Vue entry points. Excludes test functions."""
+    if func.is_test:
+        return False
     name = func.name.lower()
     path_lower = func.file_path.lower()
 
