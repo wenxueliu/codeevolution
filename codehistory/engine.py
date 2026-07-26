@@ -460,8 +460,36 @@ class EvolutionEngine:
 
     def _is_supported(self, filepath: str) -> bool:
         from .parser import detect_language
+        if self._is_test_file(filepath):
+            return False
         lang = detect_language(filepath)
         return lang in self.config.languages
+
+    @staticmethod
+    def _is_test_file(filepath: str) -> bool:
+        """Check if a file is a test file and should be skipped.
+
+        Patterns:
+        - Directories: tests/, test/, __tests__/, spec/, specs/, fixtures/
+        - Filenames: test_*, *_test, *.test.*, *.spec.*
+        """
+        path = Path(filepath)
+        parts = path.parts
+        name = path.name.lower()
+
+        # Test directories anywhere in the path
+        test_dirs = {"tests", "test", "__tests__", "spec", "specs", "fixtures",
+                     "e2e", "integration", "__mocks__"}
+        if any(p.lower() in test_dirs for p in parts[:-1]):  # exclude filename
+            return True
+
+        # Test filename patterns
+        if name.startswith("test_") or name.endswith("_test.py") or name.endswith("_test.java"):
+            return True
+        if ".test." in name or ".spec." in name:
+            return True
+
+        return False
 
     def _resolve_call_target(self, call, parsed, cross_index) -> str | None:
         """Resolve a call to its target qualified name, using 8-step emit order."""
