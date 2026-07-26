@@ -71,8 +71,9 @@ class ParsedFile:
     language: str
     functions: list[FunctionNode]
     calls: list[CallEdge]
-    imports: list[str]  # import strings
-    entry_points: list[FunctionNode]  # functions that are entry points
+    imports: list[str]
+    entry_points: list[FunctionNode]
+    inheritance: list[dict] = field(default_factory=list)  # [{class, bases}]
 
 
 class SnapshotParser:
@@ -112,9 +113,11 @@ class SnapshotParser:
         calls = _extract_calls(root, functions, lang)
         imports = _extract_imports(root, lang)
         entry_points = [f for f in functions if _is_entry_point(root, f, lang)]
+        inheritance = _extract_inheritance(root, content if lang != "vue" else (script_content or content), lang)
 
         result = ParsedFile(filepath, "vue" if detect_language(filepath) == "vue" else lang,
-                           functions, calls, imports, entry_points)
+                           functions, calls, imports, entry_points,
+                           inheritance=inheritance)
         self._parsed_cache[cache_key] = result
         return result
 
@@ -686,6 +689,76 @@ def _is_js_entry_point(func: FunctionNode) -> bool:
         return True
 
     return False
+
+
+def _extract_inheritance(root: Node, source: str, lang: str) -> list[dict]:
+    """Extract class inheritance relationships.
+
+    Returns [{class: 'Foo', bases: ['Bar', 'Baz']}, ...]
+    """
+    result = []
+    source_bytes = source.encode() if isinstance(source, str) else source
+
+    if lang == "python":
+        # Python: class Foo(Bar, Baz):
+        for node in _iter_tree(root):
+            if node.type == "class_definition":
+                name_node = node.child_by_field_name("name")
+                if name_node:
+                    class_name = name_node.text.decode()
+                    bases = []
+                    superclass_node = node.child_by_field_name("superclasses")
+                    if superclass_node:
+                        for child in superclass_node.children:
+                            if child.type == "identifier":
+                                bases.append(child.text.decode())
+                            elif child.type == "attribute":
+                                bases.append(child.text.decode())
+                    if bases:
+                        result.append({"class": class_name, "bases": bases})
+
+    elif lang in ("javascript", "typescript", "tsx"):
+        # JS/TS: class Foo extends Bar implements Baz
+        for node in _iter_tree(root):
+            if node.type == "class_declaration":
+                name_node = node.child_by_field_name("name")
+                if name_node:
+                    class_name = name_node.text.decode()
+                    bases = []
+                    for child in node.children:
+                        if child.type == "extends_clause":
+                            for c in child.children:
+                                if c.type == "identifier":
+                                    bases.append(c.text.decode())
+                        if child.type == "implements_clause":
+                            for c in child.children:
+                                if c.type == "identifier":
+                                    bases.append(c.text.decode())
+                    if bases:
+                        result.append({"class": class_name, "bases": bases})
+
+    elif lang == "java":
+        # Java: class Foo extends Bar implements Baz
+        for node in _iter_tree(root):
+            if node.type == "class_declaration":
+                name_node = node.child_by_field_name("name")
+                if name_node:
+                    class_name = name_node.text.decode()
+                    bases = []
+                    superclass = node.child_by_field_name("superclass")
+                    if superclass:
+                        for c in superclass.children:
+                            if c.type == "type_identifier":
+                                bases.append(c.text.decode())
+                    interfaces = node.child_by_field_name("interfaces")
+                    if interfaces:
+                        for c in interfaces.children:
+                            if c.type == "type_identifier":
+                                bases.append(c.text.decode())
+                    if bases:
+                        result.append({"class": class_name, "bases": bases})
+
+    return result
 
 
 def _iter_tree(node: Node):

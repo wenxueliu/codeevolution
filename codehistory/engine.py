@@ -129,6 +129,10 @@ class EvolutionEngine:
         cross_index = CrossFileIndex()
         for parsed in parsed_files.values():
             cross_index.add_file(parsed)
+        # Register inheritance relationships
+        for parsed in parsed_files.values():
+            for inh in parsed.inheritance:
+                cross_index.add_inheritance(inh["class"], inh["bases"])
 
         # Store for _get_call_tree to use
         self._cross_index = cross_index
@@ -164,6 +168,9 @@ class EvolutionEngine:
         cross_index = CrossFileIndex()
         for parsed in parsed_files.values():
             cross_index.add_file(parsed)
+        for parsed in parsed_files.values():
+            for inh in parsed.inheritance:
+                cross_index.add_inheritance(inh["class"], inh["bases"])
         self._cross_index = cross_index
 
         # Process entry points from changed files only
@@ -385,11 +392,19 @@ class EvolutionEngine:
         return lang in self.config.languages
 
     def _resolve_call_target(self, call, parsed, cross_index) -> str | None:
-        """Resolve a call to its target qualified name, using cross-file index if needed."""
+        """Resolve a call to its target qualified name, using 8-step emit order."""
         if call.is_resolved and call.resolved_to:
             return call.resolved_to
         if cross_index:
-            return cross_index.resolve_call(parsed.file_path, call.callee_name)
+            # Extract caller's class from qualified name
+            caller_class = None
+            if "::" in call.caller:
+                func_part = call.caller.split("::")[-1]
+                if "." in func_part:
+                    caller_class = func_part.rsplit(".", 1)[0]
+            return cross_index.resolve_call(
+                parsed.file_path, caller_class, call.callee_name
+            )
         return None
 
     def _get_call_tree(self, entry_point, parsed, cross_index=None) -> set:
