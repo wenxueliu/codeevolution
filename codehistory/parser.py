@@ -45,7 +45,7 @@ def detect_language(filepath: str) -> str | None:
         return "javascript"
     if ext in (".vue"):
         return "vue"
-    if ext in (".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf"):
+    if ext in (".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".properties", ".xml"):
         return "config"
     return None
 
@@ -803,6 +803,10 @@ def _parse_config_keys(filepath: str, content: str) -> list[str]:
             return _extract_toml_keys(content)
         elif ext in (".ini", ".cfg", ".conf"):
             return _extract_ini_keys(content)
+        elif ext in (".properties",):
+            return _extract_properties_keys(content)
+        elif ext in (".xml",):
+            return _extract_xml_keys(content)
     except Exception:
         pass
     return []
@@ -897,6 +901,70 @@ def _extract_ini_keys(content: str) -> list[str]:
             full_key = f"{current_section}.{key}" if current_section else key
             keys.append(full_key)
     return keys
+
+
+def _extract_properties_keys(content: str) -> list[str]:
+    """Extract keys from Java .properties files.
+
+    Format: key=value or key:value, with dot-separated hierarchical keys.
+    Lines starting with # or ! are comments.
+    """
+    keys = []
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("!"):
+            continue
+        m = re.match(r'^([\w.\\-]+)\s*[=:]', stripped)
+        if m:
+            key = m.group(1).strip()
+            # Unescape Java properties: \: → :, \= → =
+            key = key.replace("\\:", ":").replace("\\=", "=").replace("\\ ", " ")
+            keys.append(key)
+    return keys
+
+
+def _extract_xml_keys(content: str) -> list[str]:
+    """Extract structured keys from XML config files.
+
+    Extracts:
+    - Element names (tag names)
+    - Key attributes: name, key, id, property, bean, class
+    - Spring-style property paths: <property name="x" value="y"/>
+    - Text content for leaf elements
+    """
+    keys = []
+
+    # Pattern 1: Tag names as hierarchical paths
+    tag_stack = []
+    for match in re.finditer(r'</?([\w:.-]+)[^>]*>', content):
+        tag = match.group(1)
+        is_closing = match.group(0).startswith("</")
+        is_self_closing = match.group(0).endswith("/>")
+
+        if is_closing:
+            if tag_stack and tag_stack[-1] == tag:
+                tag_stack.pop()
+        else:
+            if tag not in ("?xml",):
+                tag_stack.append(tag)
+                # Build path
+                path = ".".join(tag_stack)
+                keys.append(path)
+            if is_self_closing and tag_stack and tag_stack[-1] == tag:
+                tag_stack.pop()
+
+    # Pattern 2: Extract key attributes (Spring config, Maven, etc.)
+    for m in re.finditer(r'\b(name|key|id|property|ref|class|file)\s*=\s*"([^"]+)"', content):
+        attr_name = m.group(1)
+        attr_value = m.group(2)
+        keys.append(f"{attr_name}={attr_value}")
+
+    # Pattern 3: Spring property placeholders ${...}
+    for m in re.finditer(r'\$\{([^}]+)\}', content):
+        keys.append(f"${{{m.group(1)}}}")
+
+    # Deduplicate
+    return list(dict.fromkeys(keys))
 
 
 def _iter_tree(node: Node):
