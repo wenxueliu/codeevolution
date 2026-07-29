@@ -18,8 +18,9 @@ CodeHistory 通过分析历史 git 提交记录，以"功能"（入口点 + 下�
 
 ## 技术栈
 
-- Python 3.10+ / tree-sitter / SQLite (WAL) / FastMCP
-- 首次支持语言: Python, Java
+- Python 3.10+ / SQLite (WAL) / FastMCP
+- 代码解析委托给 CodeGraph (`@colbymchenry/codegraph`)，使用前需 `codegraph init`
+- 通过直接读取 `.codegraph/codegraph.db` (SQLite) 获取图谱，所有语言自动支持
 
 ## Git 提交规则
 

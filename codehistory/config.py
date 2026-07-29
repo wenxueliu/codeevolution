@@ -1,6 +1,5 @@
 """Configuration management for CodeHistory."""
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -8,6 +7,9 @@ from pathlib import Path
 @dataclass
 class Config:
     """CodeHistory configuration.
+
+    CodeHistory uses CodeGraph for parsing and call resolution.
+    Run ``codegraph init`` on the target repo before running backfill.
 
     All paths are resolved relative to repo_path.
     """
@@ -17,18 +19,14 @@ class Config:
 
     # Analysis scope
     first_parent: bool = True
-    cluster_window_minutes: int = 0  # 0 = disabled
-
-    # Parser
-    languages: list[str] = field(default_factory=lambda: ["python", "java", "javascript", "typescript", "tsx", "vue", "config"])
 
     # Matcher
     l1_match_threshold: float = 0.9
     l2_match_threshold: float = 0.6
 
     # Analyzer
-    growth_threshold_ratio: float = 1.3  # call_tree_nodes 增长 > 1.3x → GROWN 事件
-    shrink_threshold_ratio: float = 0.7  # call_tree_nodes 收缩 < 0.7x → SHRUNK 事件
+    growth_threshold_ratio: float = 1.3
+    shrink_threshold_ratio: float = 0.7
 
     def __post_init__(self):
         repo = Path(self.repo_path).resolve()
@@ -43,3 +41,8 @@ class Config:
             data_dir = repo / ".codehistory"
             data_dir.mkdir(exist_ok=True)
             self.db_path = str(data_dir / "evolution.db")
+
+    @property
+    def codegraph_db_path(self) -> str:
+        """Path to CodeGraph's SQLite database for this repo."""
+        return str(Path(self.repo_path) / ".codegraph" / "codegraph.db")

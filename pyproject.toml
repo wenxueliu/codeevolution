@@ -15,12 +15,13 @@ authors = [
 dependencies = [
     "mcp>=1.0.0,<2",
     "fastmcp>=3.2.4,<4",
-    "tree-sitter>=0.23.0,<1",
-    "tree-sitter-language-pack>=0.3.0,<1",
     "networkx>=3.2,<4",
     "fastapi>=0.100,<1",
     "uvicorn>=0.20,<1",
 ]
+# Code parsing is delegated to CodeGraph (@colbymchenry/codegraph).
+# Install it separately: npm i -g @colbymchenry/codegraph
+# Then run "codegraph init" on the target repo before using codehistory.
 
 [project.scripts]
 codehistory = "codehistory.cli:main"

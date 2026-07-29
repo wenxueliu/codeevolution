@@ -21,11 +21,7 @@ def setup_logging(verbose: bool = False):
 
 def cmd_backfill(args):
     """Run a full backfill analysis from git history."""
-    config = Config(
-        repo_path=args.repo,
-        db_path=args.db,
-        languages=args.languages.split(","),
-    )
+    config = Config(repo_path=args.repo, db_path=args.db)
     engine = EvolutionEngine(config)
     logger = logging.getLogger("codehistory")
 
@@ -47,11 +43,7 @@ def cmd_backfill(args):
 
 def cmd_update(args):
     """Process new commits since last analysis."""
-    config = Config(
-        repo_path=args.repo,
-        db_path=args.db,
-        languages=args.languages.split(","),
-    )
+    config = Config(repo_path=args.repo, db_path=args.db)
     engine = EvolutionEngine(config)
     engine.update()
     stats = engine.store.get_stats()
@@ -61,11 +53,7 @@ def cmd_update(args):
 
 def cmd_serve(args):
     """Start the MCP server."""
-    config = Config(
-        repo_path=args.repo,
-        db_path=args.db,
-        languages=args.languages.split(","),
-    )
+    config = Config(repo_path=args.repo, db_path=args.db)
     store = EvolutionStore(config.db_path)
     stats = store.get_stats()
     print(f"Serving MCP on stdio. DB stats: {stats}")
@@ -144,21 +132,18 @@ def main():
     p = subparsers.add_parser("backfill", help="Full initial analysis from git history")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database (default: .codehistory/evolution.db)")
-    p.add_argument("--languages", "-l", default="python,java,javascript,typescript,tsx,vue", help="Comma-separated language list")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     # update
     p = subparsers.add_parser("update", help="Process new commits since last analysis")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database")
-    p.add_argument("--languages", "-l", default="python,java,javascript,typescript,tsx,vue", help="Comma-separated language list")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     # serve
     p = subparsers.add_parser("serve", help="Start MCP server")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database")
-    p.add_argument("--languages", "-l", default="python,java,javascript,typescript,tsx,vue", help="Comma-separated language list")
     p.add_argument("--transport", "-t", default="stdio",
                    choices=["stdio", "sse", "streamable-http"],
                    help="MCP transport (default: stdio)")
