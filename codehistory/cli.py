@@ -400,6 +400,16 @@ def main():
     # check
     p = subparsers.add_parser("check", help="Health check all registered services")
 
+    # P2: enhanced flow trace
+    p = subparsers.add_parser("flow", help="End-to-end flow trace across all channels (HTTP+MQ+gRPC+DB)")
+    p.add_argument("--service", "-s", required=True, help="Starting service name")
+    p.add_argument("--path", "-p", default="", help="Starting API path (optional)")
+    p.add_argument("--no-cache", action="store_true", help="Force rebuild topology")
+
+    # P2: entity alignment
+    p = subparsers.add_parser("entities", help="Cross-service entity alignment (same concept, different names)")
+    p.add_argument("--llm", action="store_true", help="Use LLM to verify and explain entity mappings")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -434,6 +444,10 @@ def main():
         cmd_discover(args)
     elif args.command == "check":
         cmd_check(args)
+    elif args.command == "flow":
+        cmd_flow(args)
+    elif args.command == "entities":
+        cmd_entities(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -601,6 +615,38 @@ def _print_cached_topology(cached: dict):
         print(f"\nCross-Service Edges ({cached['_edge_count']}):")
         for e in cached["cross_edges"][:20]:
             print(f"  {e['source_service']} ──[{e['http_method']} {e['url_pattern']}]──→ {e['target_service']}")
+
+
+def cmd_flow(args):
+    """End-to-end flow trace across all channels."""
+    from .p2_advanced import P2Analyzer
+
+    entries = list_repos()
+    if not entries:
+        print("No repos registered.")
+        sys.exit(1)
+
+    # Ensure topology is built (for HTTP edges)
+    if not args.no_cache and not is_topology_cache_stale(entries):
+        print("[using cached topology]")
+
+    analyzer = P2Analyzer(entries)
+    flow = analyzer.trace_full_flow(args.service, args.path or "")
+    print(analyzer.format_flow(flow))
+
+
+def cmd_entities(args):
+    """Cross-service entity alignment."""
+    from .p2_advanced import P2Analyzer
+
+    entries = list_repos()
+    if not entries:
+        print("No repos registered.")
+        sys.exit(1)
+
+    analyzer = P2Analyzer(entries)
+    entities = analyzer.align_entities(use_llm=args.llm)
+    print(analyzer.format_entities(entities))
 
 
 if __name__ == "__main__":
