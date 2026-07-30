@@ -343,6 +343,8 @@ class P2Analyzer:
                 for pat in patterns:
                     rows = self._query(db, """
                         SELECT n1.qualified_name AS caller, n1.name,
+                               n1.file_path, n1.start_line,
+                               e.line AS call_line,
                                n2.name AS callee_name
                         FROM edges e
                         JOIN nodes n1 ON n1.id = e.source
@@ -350,9 +352,14 @@ class P2Analyzer:
                         WHERE e.kind = 'calls' AND n2.name LIKE ?
                     """, [f"%{pat}%"])
                     for r in rows:
-                        # Try to extract topic/queue name
-                        # Look for string constants near the call site
-                        topic = self._extract_topic_from_function(db, r["caller"])
+                        # Extract topic from source code near the call
+                        topic = self._extract_topic_from_source(
+                            db, r["caller"], r.get("file_path"),
+                            r.get("call_line") or r.get("start_line")
+                        )
+                        if not topic:
+                            # Fallback: look for topic constants in the function
+                            topic = self._extract_topic_from_function(db, r["caller"])
                         producers[svc_name].append({
                             "mq_type": mq_type,
                             "function": r["caller"],
@@ -363,14 +370,20 @@ class P2Analyzer:
             for mq_type, patterns in MQ_CONSUMER_PATTERNS:
                 for pat in patterns:
                     rows = self._query(db, """
-                        SELECT n1.qualified_name, n1.name, n1.decorators
+                        SELECT n1.qualified_name, n1.name, n1.decorators,
+                               n1.file_path, n1.start_line
                         FROM nodes n1
                         WHERE n1.kind IN ('function', 'method')
                           AND (n1.name LIKE ? OR n1.decorators LIKE ?)
                     """, [f"%{pat}%", f"%{pat}%"])
                     for r in rows:
-                        # Extract topic from decorator or function name
+                        # Extract topic from decorator or function context
                         topic = self._extract_topic_from_decorator(r.get("decorators") or "")
+                        if not topic:
+                            topic = self._extract_topic_from_source(
+                                db, r["qualified_name"],
+                                r.get("file_path"), r.get("start_line")
+                            )
                         if not topic:
                             topic = self._guess_topic(r["name"], mq_type)
                         consumers[svc_name].append({
@@ -380,6 +393,76 @@ class P2Analyzer:
                         })
 
         return dict(producers), dict(consumers)
+
+    def _extract_topic_from_source(
+        self, db_path: str, caller_qname: str,
+        file_path: str | None, line: int | None
+    ) -> str | None:
+        """Read source code around a producer/consumer call to extract topic/queue name.
+
+        Handles:
+          - f-strings: f"order.created" / f"{TOPIC}.created"
+          - plain strings: "order.created"
+          - template literals: `order.${event}`
+          - variable references: topic = "order.created"
+          - decorator args: @KafkaListener(topics=["order.created"])
+        """
+        if not file_path or not line or line < 1:
+            return None
+
+        repo_root = str(Path(db_path).parent.parent)
+        source_path = str(Path(repo_root) / file_path)
+        try:
+            with open(source_path, encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+        except (OSError, FileNotFoundError):
+            return None
+
+        if line > len(lines):
+            return None
+
+        start = max(0, line - 6)
+        end = min(len(lines), line + 3)
+        context = "".join(lines[start:end])
+
+        # Pattern 1: plain topic string — "order.created" or 'payment.completed'
+        m = re.search(r'''['\"]([\w.-]+\.[\w.-]+(?:[\w.-]*))['\"]''', context)
+        if m:
+            candidate = m.group(1)
+            # Filter out things that are clearly not topic names
+            if not candidate.startswith(("http", "https", "//", "./", "../")) and "." in candidate:
+                return candidate
+
+        # Pattern 2: f-string topic — f"{prefix}.created" or f"order.{event}"
+        m = re.search(r'''f['\"][{]?\w+[}]?\.[\w.{}]+['\"]''', context)
+        if m:
+            # Normalize: keep the template-ish format
+            raw = m.group(0).strip("f").strip("\"'")
+            raw = re.sub(r'\{[^}]+\}', '*', raw)  # replace {var} with *
+            return raw
+
+        # Pattern 3: topic from decorator: @KafkaListener(topics=["order.created"])
+        m = re.search(r'''(?:topics?|queues?|destinations?)\s*=\s*\[?\s*['\"]([^'\"]+)['\"]''', context)
+        if m:
+            return m.group(1)
+
+        # Pattern 4: variable assignment before the call: TOPIC = "order.created"
+        m = re.search(
+            r'''(?:TOPIC|QUEUE|EXCHANGE|ROUTING_KEY)\s*=\s*['\"]([\w.-]+)['\"]''',
+            context, re.IGNORECASE
+        )
+        if m:
+            return m.group(1)
+
+        # Pattern 5: routing key / binding key
+        m = re.search(
+            r'''(?:routing_key|binding_key|routingKey|bindingKey)\s*=\s*['\"]([\w.-]+)['\"]''',
+            context, re.IGNORECASE
+        )
+        if m:
+            return m.group(1)
+
+        return None
 
     def _extract_topic_from_function(self, db_path: str, caller_qname: str) -> str | None:
         """Extract topic/queue name from constants near a function."""

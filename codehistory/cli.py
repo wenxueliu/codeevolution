@@ -400,6 +400,9 @@ def main():
     # check
     p = subparsers.add_parser("check", help="Health check all registered services")
 
+    # init-all: batch CodeGraph init
+    p = subparsers.add_parser("init-all", help="Initialize CodeGraph on all registered services")
+
     # P2: enhanced flow trace
     p = subparsers.add_parser("flow", help="End-to-end flow trace across all channels (HTTP+MQ+gRPC+DB)")
     p.add_argument("--service", "-s", required=True, help="Starting service name")
@@ -444,6 +447,8 @@ def main():
         cmd_discover(args)
     elif args.command == "check":
         cmd_check(args)
+    elif args.command == "init-all":
+        cmd_init_all(args)
     elif args.command == "flow":
         cmd_flow(args)
     elif args.command == "entities":
@@ -615,6 +620,45 @@ def _print_cached_topology(cached: dict):
         print(f"\nCross-Service Edges ({cached['_edge_count']}):")
         for e in cached["cross_edges"][:20]:
             print(f"  {e['source_service']} ──[{e['http_method']} {e['url_pattern']}]──→ {e['target_service']}")
+
+
+def cmd_init_all(args):
+    """Initialize CodeGraph on all registered services."""
+    import subprocess as sp
+
+    entries = list_repos()
+    if not entries:
+        print("No repos registered.")
+        sys.exit(1)
+
+    for e in entries:
+        name = e["name"]
+        path = e["path"]
+        cg_db = Path(path) / ".codegraph" / "codegraph.db"
+        if cg_db.exists():
+            print(f"  [skip] {name}: already initialized")
+            continue
+
+        print(f"  [{name}] codegraph init {path} ...")
+        try:
+            result = sp.run(
+                ["codegraph", "init", path],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                # Refresh metadata after init
+                refresh_meta(name)
+                print(f"  [ OK ] {name}")
+            else:
+                last_line = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown error"
+                print(f"  [FAIL] {name}: {last_line[:100]}")
+        except sp.TimeoutExpired:
+            print(f"  [FAIL] {name}: timed out after 120s")
+        except FileNotFoundError:
+            print(f"  [FAIL] codegraph not found in PATH. Install: npm i -g @colbymchenry/codegraph")
+            break
+
+    print("\nDone. Run 'codehistory check' to verify status.")
 
 
 def cmd_flow(args):
