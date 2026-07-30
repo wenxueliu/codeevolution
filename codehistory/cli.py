@@ -240,8 +240,67 @@ def cmd_knowledge(args):
             for h in colds[:10]:
                 print(f"  [{h['heat']:4s}] {h['name']:35s} callers={h['callers']} callees={h['callees']}")
 
+        if args.section == "business" or (args.section == "all" and args.llm):
+            print(f"\n{'='*60}")
+            print(f"Business Descriptions (LLM)")
+            print(f"{'='*60}")
+            descs = extractor.extract_business_descriptions(limit=20)
+            for d in descs:
+                if "error" in d:
+                    print(f"  Error: {d['error']}")
+                    break
+                print(f"\n  [{d.get('role', '?')}] {d['function_name']}")
+                print(f"    EN: {d.get('summary_en', '')}")
+                print(f"    ZH: {d.get('summary_zh', '')}")
+                if d.get("key_responsibilities"):
+                    for r in d["key_responsibilities"]:
+                        print(f"    - {r}")
+
+        if args.section == "rules" or (args.section == "all" and args.llm):
+            print(f"\n{'='*60}")
+            print(f"Business Rules (LLM)")
+            print(f"{'='*60}")
+            rules = extractor.extract_business_rules_llm(limit=15)
+            for r in rules:
+                if "error" in r:
+                    print(f"  Error: {r['error']}")
+                    break
+                print(f"  [{r['rule_type']}] {r['function']}")
+                print(f"    EN: {r.get('description_en', '')}")
+                print(f"    Condition: {r.get('condition', '')}")
+                print(f"    On failure: {r.get('failure_mode', '')}")
+
+        if args.section == "errors" or (args.section == "all" and args.llm):
+            print(f"\n{'='*60}")
+            print(f"Error Catalog (LLM)")
+            print(f"{'='*60}")
+            errors = extractor.extract_error_catalog(limit=20)
+            for e in errors:
+                if "error" in e:
+                    print(f"  Error: {e['error']}")
+                    break
+                print(f"  [{e['error_type']}] in {e['function']}")
+                print(f"    Trigger: {e.get('trigger_condition', '')}")
+                print(f"    Handling: {e.get('handling', '')} | User-facing: {e.get('user_facing', False)}")
+
+        if args.section == "states" or (args.section == "all" and args.llm):
+            print(f"\n{'='*60}")
+            print(f"State Machines (LLM)")
+            print(f"{'='*60}")
+            machines = extractor.extract_state_machines()
+            for sm in machines:
+                if "error" in sm:
+                    print(f"  Error: {sm['error']}")
+                    break
+                print(f"\n  Entity: {sm['entity']}")
+                print(f"  States: [{', '.join(sm['states'])}]")
+                print(f"  Initial: {sm['initial_state']} → Terminal: {sm['terminal_states']}")
+                print(f"  Transitions:")
+                for t in sm.get("transitions", []):
+                    print(f"    {t.get('from', '?')} → {t.get('to', '?')}: {t.get('trigger', '?')}")
+
         if args.output:
-            result = extractor.extract_all()
+            result = extractor.extract_all(include_llm=args.llm)
             with open(args.output, "w") as f:
                 json.dump(result, f, indent=2, default=str)
             print(f"\nFull report written to {args.output}")
@@ -301,8 +360,11 @@ def main():
     p.add_argument("--output", "-o", default="", help="Output JSON file path (default: stdout)")
     p.add_argument("--section", "-s", default="all",
                    choices=["all", "api", "modules", "entities", "tests", "layers",
-                            "config", "deps", "auth", "heatmap"],
+                            "config", "deps", "auth", "heatmap",
+                            "business", "rules", "errors", "states"],
                    help="Which knowledge section to extract (default: all)")
+    p.add_argument("--llm", action="store_true",
+                   help="Enable LLM-powered Phase 3 analysis")
 
     args = parser.parse_args()
 

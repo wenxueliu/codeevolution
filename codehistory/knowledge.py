@@ -625,8 +625,13 @@ class KnowledgeExtractor:
 
     # ── Combined report ─────────────────────────────────────────────────
 
-    def extract_all(self) -> dict:
-        """Run all five extractors, return one report dict."""
+    def extract_all(self, include_llm: bool = False) -> dict:
+        """Run all extractors, return one report dict.
+
+        Args:
+            include_llm: If True, also run Phase 3 LLM-powered extractors.
+                         Requires OPENAI_API_KEY or ANTHROPIC_API_KEY set.
+        """
         api = self.extract_api_contract()
         modules = self.extract_module_topology()
         entities = self.extract_core_entities(30)
@@ -722,6 +727,23 @@ class KnowledgeExtractor:
             ),
             "heat_map": self._serialize_heat_map(
                 self.extract_heat_map()
+            ),
+            # ── Phase 3 (LLM) — only when enabled ──────────────────────
+            "business_descriptions": (
+                self.extract_business_descriptions(limit=15)
+                if include_llm else {"note": "Set --llm flag to enable LLM analysis"}
+            ),
+            "business_rules": (
+                self.extract_business_rules_llm(limit=10)
+                if include_llm else {"note": "Set --llm flag to enable LLM analysis"}
+            ),
+            "error_catalog": (
+                self.extract_error_catalog(limit=15)
+                if include_llm else {"note": "Set --llm flag to enable LLM analysis"}
+            ),
+            "state_machines": (
+                self.extract_state_machines()
+                if include_llm else {"note": "Set --llm flag to enable LLM analysis"}
             ),
         }
 
@@ -1217,6 +1239,276 @@ class KnowledgeExtractor:
         return results
 
     # ── Serialization helpers ───────────────────────────────────────────
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Phase 3 — LLM-powered semantic understanding
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _read_source_snippet(
+        self, file_path: str, start_line: int, end_line: int, context_lines: int = 5
+    ) -> str | None:
+        """Read a function's source code from disk.
+
+        Args:
+            context_lines: extra lines before/after for context.
+        """
+        full_path = Path(self.reader.db_path).parent.parent / file_path
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="ignore")
+        except (OSError, UnicodeDecodeError):
+            return None
+        lines = content.split("\n")
+        lo = max(0, start_line - 1 - context_lines)
+        hi = min(len(lines), end_line + context_lines)
+        return "\n".join(lines[lo:hi])
+
+    def extract_business_descriptions(
+        self, func_names: list[str] | None = None, limit: int = 20
+    ) -> list[dict]:
+        """Generate business-level descriptions for top functions via LLM.
+
+        Args:
+            func_names: Specific function qualified_names to explain (None = top by PageRank)
+            limit: Max functions when using auto-selection
+        """
+        from .llm import batch_explain_functions, is_available as llm_ready
+
+        if not llm_ready():
+            return [{"error": "LLM not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."}]
+
+        # Select functions to explain
+        if func_names:
+            funcs = []
+            for qname in func_names:
+                f = self.reader.get_function_by_qname(qname)
+                if f:
+                    funcs.append(f)
+        else:
+            entities = self.extract_core_entities(limit)
+            funcs = []
+            for e in entities:
+                f = self.reader.get_function_by_id(e.node_id)
+                if f:
+                    funcs.append(f)
+
+        if not funcs:
+            return []
+
+        # Build batch input
+        batch = []
+        for f in funcs:
+            callees = self.reader.get_callees(f.node_id)
+            callers = self.reader.get_callers(f.node_id)
+            source = self._read_source_snippet(
+                f.file_path, f.start_line, f.end_line
+            )
+            batch.append({
+                "name": f.name,
+                "qualified_name": f.qualified_name,
+                "signature": f.signature,
+                "docstring": None,  # CodeGraph captures this in the 'docstring' column
+                "decorators": f.decorators,
+                "file_path": f.file_path,
+                "source_snippet": source,
+                "callee_names": [c.callee_name for c in callees[:10]],
+                "caller_names": [c.callee_name for c in callers[:5]],
+            })
+
+        return batch_explain_functions(batch)
+
+    def extract_business_rules_llm(
+        self, func_names: list[str] | None = None, limit: int = 15
+    ) -> list[dict]:
+        """Extract business rules from function bodies via LLM.
+
+        Targets business-logic functions (identified by naming patterns
+        and layer classification) rather than getters/setters/utilities.
+        """
+        from .llm import extract_business_rules, is_available as llm_ready
+
+        if not llm_ready():
+            return [{"error": "LLM not configured."}]
+
+        # Select business-logic functions
+        if func_names:
+            funcs = [self.reader.get_function_by_qname(q) for q in func_names]
+            funcs = [f for f in funcs if f is not None]
+        else:
+            # Heuristic: functions in application/domain layers, or with
+            # business-sounding names (verbs, not get_/set_ prefixes)
+            all_funcs = self.reader.get_all_functions()
+            funcs = [
+                f for f in all_funcs
+                if not f.name.startswith(("get_", "set_", "__"))
+                and self._classify_file_layer(f.file_path) in ("application", "domain", "")
+                and not f.is_test
+            ][:limit * 2]  # Over-sample, LLM will filter
+
+        if not funcs:
+            return []
+
+        all_rules: list[dict] = []
+        for f in funcs[:limit]:
+            source = self._read_source_snippet(f.file_path, f.start_line, f.end_line)
+            if not source:
+                continue
+            rules = extract_business_rules(
+                func_name=f.qualified_name,
+                source_snippet=source,
+                file_path=f.file_path,
+            )
+            for r in rules:
+                all_rules.append({
+                    "function": r.function_name,
+                    "rule_type": r.rule_type,
+                    "description_en": r.description_en,
+                    "description_zh": r.description_zh,
+                    "condition": r.condition,
+                    "failure_mode": r.failure_mode,
+                })
+
+        return all_rules
+
+    def extract_error_catalog(
+        self, func_names: list[str] | None = None, limit: int = 20
+    ) -> list[dict]:
+        """Extract error scenarios from function bodies via LLM."""
+        from .llm import extract_error_scenarios, is_available as llm_ready
+
+        if not llm_ready():
+            return [{"error": "LLM not configured."}]
+
+        if func_names:
+            funcs = [self.reader.get_function_by_qname(q) for q in func_names]
+            funcs = [f for f in funcs if f is not None]
+        else:
+            # Focus on entry points and hot functions (most likely to have errors)
+            entities = self.extract_core_entities(30)
+            funcs = []
+            for e in entities:
+                f = self.reader.get_function_by_id(e.node_id)
+                if f and not f.is_test and not f.name.startswith("_"):
+                    funcs.append(f)
+
+        if not funcs:
+            return []
+
+        all_errors: list[dict] = []
+        for f in funcs[:limit]:
+            source = self._read_source_snippet(f.file_path, f.start_line, f.end_line)
+            if not source:
+                continue
+            scenarios = extract_error_scenarios(
+                func_name=f.qualified_name,
+                source_snippet=source,
+                file_path=f.file_path,
+            )
+            for s in scenarios:
+                all_errors.append({
+                    "function": s.function_name,
+                    "error_type": s.error_type,
+                    "trigger_condition": s.trigger_condition,
+                    "handling": s.handling,
+                    "user_facing": s.user_facing,
+                })
+
+        return all_errors
+
+    def extract_state_machines(self) -> list[dict]:
+        """Detect state machines from enum definitions + usage patterns via LLM."""
+        from .llm import detect_state_machine, is_available as llm_ready
+
+        if not llm_ready():
+            return [{"error": "LLM not configured."}]
+
+        # Find enum nodes from CodeGraph
+        enum_nodes = self._query("""
+            SELECT id, name, qualified_name, file_path, start_line, end_line
+            FROM nodes
+            WHERE kind = 'enum'
+        """)
+
+        if not enum_nodes:
+            return []
+
+        state_machines: list[dict] = []
+        for enum in enum_nodes:
+            # Find enum members
+            members = self._query("""
+                SELECT n.name FROM edges e
+                JOIN nodes n ON n.id = e.target
+                WHERE e.source = ? AND e.kind = 'contains' AND n.kind = 'enum_member'
+            """, [enum["id"]])
+
+            member_names = [m["name"] for m in members]
+            if len(member_names) < 2:
+                continue  # Need at least 2 states
+
+            # Skip non-state enums (heuristic: state-related naming)
+            enum_name = enum["name"].lower()
+            if not any(kw in enum_name for kw in ("status", "state", "stage", "phase", "type")):
+                continue
+
+            # Find functions that reference this enum's members
+            ref_funcs: list[dict] = []
+            for member_name in member_names[:20]:
+                rows = self._query("""
+                    SELECT DISTINCT n.qualified_name, n.file_path, n.start_line, n.end_line
+                    FROM nodes n
+                    WHERE n.name LIKE ? AND n.kind IN ('function', 'method')
+                """, [f"%{member_name}%"])
+                for r in rows:
+                    if r["qualified_name"] not in {f.get("name") for f in ref_funcs}:
+                        ref_funcs.append({
+                            "name": r["qualified_name"],
+                            "file_path": r["file_path"],
+                            "start_line": r["start_line"],
+                            "end_line": r["end_line"],
+                        })
+
+            if not ref_funcs:
+                continue
+
+            # Read snippets for context
+            for rf in ref_funcs[:8]:
+                source = self._read_source_snippet(
+                    rf["file_path"], rf["start_line"], rf["end_line"]
+                )
+                rf["relevant_lines"] = (
+                    self._extract_enum_usage_lines(source, member_names)
+                    if source else ""
+                )
+
+            sm = detect_state_machine(
+                entity_name=enum["name"],
+                enum_name=enum["qualified_name"],
+                enum_members=member_names,
+                transition_functions=ref_funcs,
+            )
+            if sm and sm.states:
+                state_machines.append({
+                    "entity": sm.entity,
+                    "states": sm.states,
+                    "initial_state": sm.initial_state,
+                    "terminal_states": sm.terminal_states,
+                    "transitions": sm.transitions,
+                })
+
+        return state_machines
+
+    @staticmethod
+    def _extract_enum_usage_lines(source: str | None, member_names: list[str]) -> str:
+        """Extract lines from source that reference enum members."""
+        if not source:
+            return ""
+        relevant = []
+        for line in source.split("\n"):
+            line_stripped = line.strip()
+            for m in member_names:
+                if m in line_stripped:
+                    relevant.append(line_stripped)
+                    break
+        return "\n".join(relevant[:15])
 
     @staticmethod
     def _serialize_config_consumption(data: list[dict]) -> dict:
