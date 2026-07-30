@@ -83,6 +83,7 @@ codehistory knowledge -r /path/to/repo -o report.json     # 导出 JSON
 # ═══ Multi-Repo Cross-Service ═══
 codehistory register -n <name> -r /path/to/repo   # 注册服务（自动检测语言/角色/DB/MQ）
 codehistory discover -d /path/to/repos              # 扫描目录发现 git 仓库
+codehistory init-all                                # 一键初始化所有注册服务的 CodeGraph
 codehistory check                                   # 所有服务健康检查
 codehistory topology                                # 统一服务拓扑（首次构建，后续缓存）
 codehistory impact -s <service>                     # 跨服务变更影响（秒级缓存）
@@ -113,6 +114,29 @@ files (path, content_hash, language, size, modified_at, indexed_at, node_count)
 ```
 
 关键查询模式见 `codegraph_reader.py` 的 `CodeGraphReader` 类。
+
+## 能力矩阵（18 维 × 5 角色）
+
+| # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
+|---|------|:---:|:---:|:---:|:---:|:---:|------|
+| 1 | API 契约 | x | x | x | x | | `knowledge -s api` |
+| 2 | 模块拓扑 | | x | x | | | `knowledge -s modules` |
+| 3 | 核心实体 (PageRank) | | x | x | | | `knowledge -s entities` |
+| 4 | 测试缺口 | | | | x | | `knowledge -s tests` |
+| 5 | 分层违规 | | x | | | | `knowledge -s layers` |
+| 6 | 配置消费图 | | | | | x | `knowledge -s config` |
+| 7 | 外部依赖清单 | | x | | | x | `knowledge -s deps` |
+| 8 | 权限模型 | | x | | | x | `knowledge -s auth` |
+| 9 | 热力图 | | x | x | | | `knowledge -s heatmap` |
+| 10 | 业务描述 | x | | x | | | `knowledge -s business --llm` |
+| 11 | 业务规则 | x | | | x | | `knowledge -s rules --llm` |
+| 12 | 错误目录 | | | | x | x | `knowledge -s errors --llm` |
+| 13 | 状态机 | x | | | x | | `knowledge -s states --llm` |
+| 14 | 统一服务拓扑 | | x | x | | x | `topology` |
+| 15 | 跨仓变更影响 | | x | x | x | | `impact -s <svc>` |
+| 16 | 全通道流程追踪 | | x | x | x | x | `flow -s <svc>` |
+| 17 | 跨服务实体对齐 | | x | x | | | `entities [--llm]` |
+| 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
 
 ## Git 提交规则
 
