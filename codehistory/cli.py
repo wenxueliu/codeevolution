@@ -1,13 +1,14 @@
 """CLI entry point for CodeHistory."""
 
 import argparse
+import json
 import logging
 import sys
-
-import json
+from pathlib import Path
 
 from .codegraph_reader import CodeGraphReader
 from .config import Config
+from .cross_repo import CrossRepoAnalyzer
 from .engine import EvolutionEngine
 from .knowledge import KnowledgeExtractor
 from .mcp_server import run_server
@@ -366,6 +367,20 @@ def main():
     p.add_argument("--llm", action="store_true",
                    help="Enable LLM-powered Phase 3 analysis")
 
+    # cross-repo topology
+    p = subparsers.add_parser("topology", help="Build unified multi-service topology from registered repos")
+    p.add_argument("--service", "-s", default="",
+                   help="Single service name to analyze (default: all registered)")
+
+    # cross-repo impact
+    p = subparsers.add_parser("impact", help="Cross-service change impact analysis")
+    p.add_argument("--service", "-s", required=True, help="Service name to analyze impact for")
+
+    # cross-repo trace
+    p = subparsers.add_parser("trace", help="Trace end-to-end flow across services")
+    p.add_argument("--service", "-s", required=True, help="Starting service name")
+    p.add_argument("--path", "-p", default="", help="Starting API path (optional)")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -390,9 +405,73 @@ def main():
         cmd_status(args)
     elif args.command == "knowledge":
         cmd_knowledge(args)
+    elif args.command == "topology":
+        cmd_topology(args)
+    elif args.command == "impact":
+        cmd_impact(args)
+    elif args.command == "trace":
+        cmd_trace(args)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def cmd_topology(args):
+    """Build and display unified multi-service topology."""
+    from .registry import list_repos, get_repo
+
+    if args.service:
+        entries = [get_repo(args.service)]
+        if not entries[0]:
+            print(f"Service '{args.service}' not registered. Use 'codehistory register' first.")
+            sys.exit(1)
+    else:
+        entries = list_repos()
+
+    if not entries:
+        print("No repos registered. Use 'codehistory register' first.")
+        print("Example: codehistory register -n my-svc -r /path/to/repo")
+        sys.exit(1)
+
+    print(f"Analyzing {len(entries)} services...")
+    for e in entries:
+        cg_db = Path(e["path"]) / ".codegraph" / "codegraph.db"
+        if not cg_db.exists():
+            print(f"  [!] {e['name']}: CodeGraph not initialized. Run: cd {e['path']} && codegraph init")
+
+    analyzer = CrossRepoAnalyzer(entries)
+    topology = analyzer.analyze()
+    print(analyzer.format_topology(topology))
+
+
+def cmd_impact(args):
+    """Cross-service change impact analysis."""
+    from .registry import list_repos
+
+    entries = list_repos()
+    if not entries:
+        print("No repos registered.")
+        sys.exit(1)
+
+    analyzer = CrossRepoAnalyzer(entries)
+    topology = analyzer.analyze()
+    impact = analyzer.impact_analysis(topology, args.service)
+    print(analyzer.format_impact(impact))
+
+
+def cmd_trace(args):
+    """Trace end-to-end flow across services."""
+    from .registry import list_repos
+
+    entries = list_repos()
+    if not entries:
+        print("No repos registered.")
+        sys.exit(1)
+
+    analyzer = CrossRepoAnalyzer(entries)
+    topology = analyzer.analyze()
+    chain = analyzer.trace_flow(topology, args.service, args.path or None)
+    print(analyzer.format_trace(chain))
 
 
 if __name__ == "__main__":
