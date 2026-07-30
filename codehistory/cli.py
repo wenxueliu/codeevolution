@@ -4,8 +4,12 @@ import argparse
 import logging
 import sys
 
+import json
+
+from .codegraph_reader import CodeGraphReader
 from .config import Config
 from .engine import EvolutionEngine
+from .knowledge import KnowledgeExtractor
 from .mcp_server import run_server
 from .store import EvolutionStore
 
@@ -121,6 +125,80 @@ def cmd_status(args):
     store.close()
 
 
+def cmd_knowledge(args):
+    """Extract business knowledge from code via CodeGraph."""
+    config = Config(repo_path=args.repo)
+
+    cg_db = config.codegraph_db_path
+    from pathlib import Path as P
+    if not P(cg_db).exists():
+        print(f"Error: CodeGraph database not found at {cg_db}")
+        print(f"Run: cd {args.repo} && codegraph init")
+        sys.exit(1)
+
+    reader = CodeGraphReader(cg_db)
+    extractor = KnowledgeExtractor(reader)
+
+    try:
+        if args.section == "api" or args.section == "all":
+            api = extractor.extract_api_contract()
+            print(f"\n{'='*60}")
+            print(f"API Contract: {len(api.endpoints)} endpoints")
+            print(f"{'='*60}")
+            for ep in api.endpoints:
+                print(f"  {ep.method:6s} {ep.path:40s} → {ep.handler_name}")
+
+        if args.section == "modules" or args.section == "all":
+            mod = extractor.extract_module_topology()
+            print(f"\n{'='*60}")
+            print(f"Module Topology: {len(mod.modules)} modules, coupling={mod.coupling_score}")
+            print(f"{'='*60}")
+            for m in mod.modules:
+                deps = mod.dependency_graph.get(m["id"], [])
+                print(f"  {m['id']}: \"{m['name']}\" ({m['file_count']} files, {m['primary_language']}) → {deps}")
+
+        if args.section == "entities" or args.section == "all":
+            ents = extractor.extract_core_entities(20)
+            print(f"\n{'='*60}")
+            print(f"Core Entities (Top 20 by PageRank)")
+            print(f"{'='*60}")
+            for e in ents:
+                print(f"  {e.pagerank:.4f}  {e.name:35s}  kind={e.kind:8s}  in={e.in_degree:3d}  out={e.out_degree:3d}")
+
+        if args.section == "tests" or args.section == "all":
+            cov = extractor.extract_test_coverage_stats()
+            print(f"\n{'='*60}")
+            print(f"Test Coverage")
+            print(f"{'='*60}")
+            print(f"  Test functions:       {cov['test_functions']}")
+            print(f"  Production functions: {cov['production_functions']}")
+            print(f"  Covered:              {cov['covered_functions']} ({cov['coverage_pct']}%)")
+            print(f"  Uncovered (gaps):     {cov['gap_count']}")
+
+            if args.section == "tests":
+                gaps = extractor.extract_test_gaps()
+                for g in gaps[:20]:
+                    print(f"  [!] {g.qualified_name} ({g.file_path}:{g.line})")
+
+        if args.section == "layers" or args.section == "all":
+            viols = extractor.extract_layer_violations()
+            print(f"\n{'='*60}")
+            print(f"Layer Violations: {len(viols)}")
+            print(f"{'='*60}")
+            for v in viols:
+                print(f"  [{v.source_layer}] {v.source_file} → [{v.target_layer}] {v.target_file}")
+                print(f"    {v.source_name} → {v.target_name}")
+
+        if args.output:
+            result = extractor.extract_all()
+            with open(args.output, "w") as f:
+                json.dump(result, f, indent=2, default=str)
+            print(f"\nFull report written to {args.output}")
+
+    finally:
+        reader.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="codehistory",
@@ -166,6 +244,14 @@ def main():
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database")
 
+    # knowledge
+    p = subparsers.add_parser("knowledge", help="Extract business knowledge from code (Phase 1)")
+    p.add_argument("--repo", "-r", required=True, help="Path to git repository with CodeGraph initialized")
+    p.add_argument("--output", "-o", default="", help="Output JSON file path (default: stdout)")
+    p.add_argument("--section", "-s", default="all",
+                   choices=["all", "api", "modules", "entities", "tests", "layers"],
+                   help="Which knowledge section to extract (default: all)")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -188,6 +274,12 @@ def main():
         cmd_repos(args)
     elif args.command == "status":
         cmd_status(args)
+    elif args.command == "knowledge":
+        cmd_knowledge(args)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

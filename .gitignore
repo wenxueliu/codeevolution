@@ -6,3 +6,4 @@ dist/
 .codehistory/
 web/node_modules/
 web/dist/
+.codegraph/
