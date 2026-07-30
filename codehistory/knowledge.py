@@ -1,12 +1,17 @@
-"""Phase 1: code-to-knowledge extraction from CodeGraph SQLite.
+"""Code-to-knowledge extraction from CodeGraph SQLite.
 
-Five knowledge artifacts — purely graph-derived, no LLM required:
-
-  1. API contract  — route → handler → request/response shape
-  2. Module topology — community detection on imports + calls
-  3. Core entities  — PageRank centrality on the call graph
-  4. Test gaps      — production functions with no test coverage
+Phase 1 — purely graph-derived, no LLM required:
+  1. API contract     — route → handler → request/response shape
+  2. Module topology  — community detection on imports + calls
+  3. Core entities    — PageRank centrality on the call graph
+  4. Test gaps        — production functions with no test coverage
   5. Layer violations — directory-naming convention checks
+
+Phase 2 — graph + simple rules, no LLM required:
+  6. Config consumption — trace which functions consume which config keys
+  7. External deps      — HTTP/DB/cache/message-queue dependency inventory
+  8. Authorization model — role-permission matrix from decorators/middleware
+  9. Heat map           — call-frequency hot/warm/cold categorization
 
 All queries read from CodeGraph's SQLite via CodeGraphReader.
 """
@@ -705,6 +710,559 @@ class KnowledgeExtractor:
                     for v in violations[:50]
                 ],
             },
+            # ── Phase 2 additions ──────────────────────────────────────
+            "config_consumption": self._serialize_config_consumption(
+                self.extract_config_consumption()
+            ),
+            "external_dependencies": self._serialize_external_deps(
+                self.extract_external_dependencies()
+            ),
+            "authorization_model": self._serialize_auth_model(
+                self.extract_authorization_model()
+            ),
+            "heat_map": self._serialize_heat_map(
+                self.extract_heat_map()
+            ),
+        }
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Phase 2 — graph + simple rules
+    # ═══════════════════════════════════════════════════════════════════
+
+    # ── 6. Config consumption ──────────────────────────────────────────
+
+    # Known config-file extensions (from CodeGraph files table)
+    CONFIG_EXTS = {".yaml", ".yml", ".json", ".toml", ".ini", ".cfg",
+                   ".conf", ".properties", ".env", ".xml"}
+
+    # Patterns for detecting config-key usage in code
+    CONFIG_ACCESS_PATTERNS = [
+        # Python: os.getenv("KEY"), os.environ["KEY"], config["key"], settings.KEY
+        "os.getenv", "os.environ", "config[", "settings.",
+        # JS/TS: process.env.KEY, config.KEY, Config.get("KEY")
+        "process.env", "config.", "Config.get",
+        # Java: @Value("${...}"), System.getenv, Properties.getProperty
+        "@Value", "System.getenv", "getProperty",
+        # Go: os.Getenv, viper.Get, config.Get
+        "os.Getenv", "viper.Get", "config.Get",
+        # General: getenv, get_config, get_env, env.
+        "getenv", "get_config", "get_env",
+    ]
+
+    def extract_config_consumption(self) -> list[dict]:
+        """Identify config files and trace which functions consume which keys.
+
+        Strategy:
+          1. Find config files in the repo (from CodeGraph's files table)
+          2. Read their keys (from disk — lightweight regex extraction)
+          3. Find functions/constants that reference those keys
+          4. Trace the call chain from config consumers to business logic
+        """
+        results: list[dict] = []
+
+        # Step 1: Find config files
+        config_files = self._query(
+            "SELECT path, language FROM files WHERE language = 'yaml' OR language = 'properties'"
+        )
+        # Also detect by extension for files CodeGraph classified as 'unknown'
+        all_files = self._query("SELECT path, language FROM files")
+        config_paths: list[str] = [r["path"] for r in config_files]
+        for f in all_files:
+            ext = Path(f["path"]).suffix.lower()
+            if ext in self.CONFIG_EXTS and f["path"] not in config_paths:
+                config_paths.append(f["path"])
+
+        # Step 2: Extract keys from config files (lightweight, regex-based)
+        config_keys: dict[str, list[str]] = {}  # file_path → [key1, key2, ...]
+        for cf in config_paths:
+            keys = self._extract_config_keys(cf)
+            if keys:
+                config_keys[cf] = keys
+
+        # Step 3: Find functions/constants whose names or signatures match config keys
+        all_key_names: set[str] = set()
+        for keys in config_keys.values():
+            all_key_names.update(k.lower() for k in keys)
+
+        # Find variable and constant nodes that look like config references
+        config_ref_nodes = self._query("""
+            SELECT id, name, qualified_name, file_path, kind, start_line, decorators
+            FROM nodes
+            WHERE kind IN ('variable', 'constant', 'function', 'method')
+        """)
+
+        # Match: function name contains a config key, or function references env vars
+        consumer_map: dict[str, list[str]] = defaultdict(list)  # config_key → [node_ids]
+        for node in config_ref_nodes:
+            name_lower = node["name"].lower()
+            # Direct name match
+            for key in all_key_names:
+                if key in name_lower or name_lower in key:
+                    consumer_map[key].append(node["id"])
+            # Check decorators for @Value / config annotations
+            decos = node.get("decorators") or ""
+            if decos:
+                import re as _re
+                # Spring @Value("${config.key}")
+                for m in _re.finditer(r'\$\{([^}]+)\}', str(decos)):
+                    consumer_map[m.group(1).lower()].append(node["id"])
+
+        # Step 4: Build consumption report per config file
+        for cf, keys in sorted(config_keys.items()):
+            file_consumers: list[dict] = []
+            for key in keys:
+                consumers = consumer_map.get(key.lower(), [])
+                if consumers:
+                    # Get consumer details
+                    for cid in consumers[:5]:  # cap per key
+                        func = self.reader.get_function_by_id(cid)
+                        if func:
+                            file_consumers.append({
+                                "config_key": key,
+                                "consumer_name": func.qualified_name,
+                                "consumer_file": func.file_path,
+                                "consumer_line": func.start_line,
+                            })
+
+            if file_consumers:
+                results.append({
+                    "config_file": cf,
+                    "key_count": len(keys),
+                    "consumed_keys": len({c["config_key"] for c in file_consumers}),
+                    "consumers": file_consumers[:50],
+                })
+
+        return results
+
+    def _extract_config_keys(self, file_path: str) -> list[str]:
+        """Lightweight config-key extraction without parsing the full file."""
+        full_path = Path(self.reader.db_path).parent.parent / file_path
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="ignore")
+        except (OSError, UnicodeDecodeError):
+            return []
+
+        ext = Path(file_path).suffix.lower()
+        import re as _re
+
+        keys: list[str] = []
+        for line in content.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("//") or line.startswith(";"):
+                continue
+
+            if ext in (".yaml", ".yml"):
+                m = _re.match(r'^(\s*)([\w_-]+)\s*:', line)
+                if m:
+                    keys.append(m.group(2))
+
+            elif ext == ".json":
+                m = _re.match(r'^\s*"([^"]+)"\s*:', line)
+                if m:
+                    keys.append(m.group(1))
+
+            elif ext in (".env",):
+                m = _re.match(r'^([A-Z_][A-Z0-9_]*)\s*=', line)
+                if m:
+                    keys.append(m.group(1))
+
+            elif ext in (".toml", ".ini", ".cfg", ".conf"):
+                m = _re.match(r'^([\w_-]+)\s*[=:]', line)
+                if m:
+                    keys.append(m.group(1))
+                m = _re.match(r'^\[([^\]]+)\]', line)
+                if m:
+                    keys.append(m.group(1))
+
+            elif ext in (".properties",):
+                m = _re.match(r'^([\w.\\-]+)\s*[=:]', line)
+                if m:
+                    keys.append(m.group(1).strip())
+
+        return sorted(set(keys))
+
+    # ── 7. External dependencies ────────────────────────────────────────
+
+    # Third-party package prefixes — not from the project itself
+    KNOWN_SERVICE_PATTERNS = {
+        # HTTP clients
+        "requests.": ("http-client", "Python requests"),
+        "httpx.": ("http-client", "Python httpx"),
+        "fetch(": ("http-client", "JS fetch"),
+        "axios.": ("http-client", "JS axios"),
+        "HttpClient": ("http-client", "Java HttpClient"),
+        "RestTemplate": ("http-client", "Spring RestTemplate"),
+        "WebClient": ("http-client", "Spring WebClient"),
+        "OkHttp": ("http-client", "Java OkHttp"),
+        "got(": ("http-client", "JS got"),
+        "node-fetch": ("http-client", "JS node-fetch"),
+        # Database
+        "sqlalchemy": ("database", "SQLAlchemy"),
+        "psycopg": ("database", "PostgreSQL driver"),
+        "pymongo": ("database", "MongoDB driver"),
+        "redis.": ("database", "Redis client"),
+        "aioredis": ("database", "Redis async"),
+        "jdbc:": ("database", "JDBC"),
+        "jpa.": ("database", "JPA"),
+        "hibernate": ("database", "Hibernate"),
+        "mongoose": ("database", "Mongoose ODM"),
+        "prisma": ("database", "Prisma ORM"),
+        "typeorm": ("database", "TypeORM"),
+        "drizzle": ("database", "Drizzle ORM"),
+        "knex": ("database", "Knex query builder"),
+        "sequelize": ("database", "Sequelize ORM"),
+        "gorm.": ("database", "GORM"),
+        "sqlx.": ("database", "SQLx"),
+        "diesel": ("database", "Diesel ORM"),
+        # Message queue
+        "kafka": ("message-queue", "Apache Kafka"),
+        "rabbitmq": ("message-queue", "RabbitMQ"),
+        "amqp.": ("message-queue", "AMQP"),
+        "pulsar": ("message-queue", "Apache Pulsar"),
+        "nats.": ("message-queue", "NATS"),
+        "celery": ("message-queue", "Celery task queue"),
+        "bull.": ("message-queue", "Bull queue"),
+        "sqs.": ("message-queue", "AWS SQS"),
+        "pubsub": ("message-queue", "Google PubSub"),
+        # Cache
+        "memcached": ("cache", "Memcached"),
+        "cache.": ("cache", "Cache library"),
+        "lru_cache": ("cache", "LRU Cache"),
+        # Cloud / storage
+        "boto3": ("cloud", "AWS SDK (boto3)"),
+        "aws-sdk": ("cloud", "AWS SDK"),
+        "google-cloud": ("cloud", "Google Cloud SDK"),
+        "azure-": ("cloud", "Azure SDK"),
+        "minio.": ("cloud", "MinIO object storage"),
+        # Search
+        "elasticsearch": ("search", "Elasticsearch"),
+        "opensearch": ("search", "OpenSearch"),
+        "meilisearch": ("search", "Meilisearch"),
+        "algolia": ("search", "Algolia"),
+        # Observability
+        "prometheus": ("observability", "Prometheus"),
+        "opentelemetry": ("observability", "OpenTelemetry"),
+        "sentry": ("observability", "Sentry error tracking"),
+        "datadog": ("observability", "Datadog"),
+        "newrelic": ("observability", "New Relic"),
+        "logging.": ("observability", "Logging library"),
+        # Auth
+        "oauth": ("auth", "OAuth"),
+        "jwt.": ("auth", "JWT"),
+        "passport": ("auth", "Passport.js"),
+        "bcrypt": ("auth", "bcrypt"),
+    }
+
+    def extract_external_dependencies(self) -> list[dict]:
+        """Inventory external service dependencies from import + call patterns.
+
+        Identifies which services/libraries the code depends on, grouped by
+        category (database, http-client, message-queue, cache, cloud, etc.).
+        """
+        # Collect all import statements and function calls that go to externals
+        categories: dict[str, dict[str, list[dict]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+
+        # From imports
+        import_rows = self._query("""
+            SELECT n1.name AS import_name, n1.file_path AS importer_file,
+                   n1.start_line, n1.signature
+            FROM nodes n1
+            WHERE n1.kind = 'import'
+        """)
+        for r in import_rows:
+            name = (r.get("signature") or r["import_name"]).lower()
+            cat, label = self._classify_import(name)
+            if cat:
+                categories[cat][label].append({
+                    "file": r["importer_file"],
+                    "line": r["start_line"],
+                    "source": "import",
+                })
+
+        # From decorators (framework annotations like @EnableJpaRepositories)
+        deco_rows = self._query("""
+            SELECT DISTINCT decorators, file_path, start_line
+            FROM nodes
+            WHERE decorators IS NOT NULL
+        """)
+        for r in deco_rows:
+            try:
+                decos = json.loads(r["decorators"]) if isinstance(r["decorators"], str) else r["decorators"]
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for deco in decos:
+                cat, label = self._classify_import(deco.lower())
+                if cat:
+                    categories[cat][label].append({
+                        "file": r["file_path"],
+                        "line": r["start_line"],
+                        "source": "decorator",
+                    })
+
+        # Build result
+        result: list[dict] = []
+        for cat in sorted(categories):
+            deps = categories[cat]
+            items: list[dict] = []
+            for label, uses in deps.items():
+                # Unique files
+                files = sorted(set(u["file"] for u in uses))
+                items.append({
+                    "label": label,
+                    "file_count": len(files),
+                    "files": files[:10],
+                })
+            result.append({
+                "category": cat,
+                "dependency_count": len(items),
+                "dependencies": items,
+            })
+
+        return result
+
+    @staticmethod
+    def _classify_import(name: str) -> tuple[str | None, str | None]:
+        """Classify an import/call name into (category, label)."""
+        name_lower = name.lower()
+        for pattern, (cat, label) in KnowledgeExtractor.KNOWN_SERVICE_PATTERNS.items():
+            if pattern.lower() in name_lower:
+                return cat, label
+        return None, None
+
+    # ── 8. Authorization model ──────────────────────────────────────────
+
+    # Permission/role decorator patterns across frameworks
+    AUTH_DECORATOR_PATTERNS = {
+        # Python: Flask/Django/FastAPI
+        "login_required": "authenticated",
+        "permission_required": None,      # extract argument
+        "has_permission": None,
+        "has_role": None,
+        "requires_auth": "authenticated",
+        "require_auth": "authenticated",
+        "authenticated": "authenticated",
+        # Java: Spring Security
+        "preauthorize": None,
+        "postauthorize": None,
+        "secured": None,
+        "rolesallowed": None,
+        "permitall": "public",
+        "denyall": "denied",
+        # JS/TS: NestJS/Passport
+        "useguards": None,
+        "roles": None,
+        "requireauth": "authenticated",
+        "public": "public",
+        "authenticated": "authenticated",
+        # Middleware patterns (function names)
+        "auth_middleware": "authenticated",
+        "authmiddleware": "authenticated",
+        "requirepermission": None,
+        "authorize": None,
+    }
+
+    def extract_authorization_model(self) -> list[dict]:
+        """Extract role-permission matrix from decorators and middleware.
+
+        Returns list of {endpoint, roles, permissions, auth_mechanism}.
+        """
+        results: list[dict] = []
+
+        # Find all functions/methods with auth-related decorators
+        auth_rows = self._query("""
+            SELECT id, name, qualified_name, file_path, start_line, decorators, kind
+            FROM nodes
+            WHERE kind IN ('function', 'method') AND decorators IS NOT NULL
+        """)
+
+        for r in auth_rows:
+            try:
+                decos = json.loads(r["decorators"]) if isinstance(r["decorators"], str) else r["decorators"]
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            roles: list[str] = []
+            permissions: list[str] = []
+            auth_level = "unknown"
+
+            for deco in decos:
+                deco_lower = deco.lstrip("@").lower()
+                # Extract decorator base name and arguments
+                import re as _re
+                m = _re.match(r'([\w.]+)(?:\(([^)]*)\))?', deco_lower)
+                if not m:
+                    continue
+                deco_name = m.group(1).split(".")[-1]
+                deco_args = m.group(2) or ""
+
+                if deco_name in self.AUTH_DECORATOR_PATTERNS:
+                    level = self.AUTH_DECORATOR_PATTERNS[deco_name]
+                    if level and level != "unknown":
+                        auth_level = level
+
+                    # Extract role/permission strings from decorator arguments
+                    if deco_args:
+                        args = [a.strip().strip("\"'") for a in deco_args.split(",")]
+                        for a in args:
+                            a_clean = a.strip("[]()\"' ")
+                            if a_clean and a_clean not in ("", " "):
+                                if deco_name in ("has_role", "rolesallowed", "roles"):
+                                    roles.append(a_clean)
+                                else:
+                                    permissions.append(a_clean)
+
+            if auth_level != "unknown" or roles or permissions:
+                results.append({
+                    "function": r["qualified_name"],
+                    "file": r["file_path"],
+                    "line": r["start_line"],
+                    "auth_level": auth_level,
+                    "roles": sorted(set(roles)),
+                    "permissions": sorted(set(permissions)),
+                })
+
+        # Also detect middleware functions by name
+        mid_rows = self._query("""
+            SELECT id, name, qualified_name, file_path, start_line, kind
+            FROM nodes
+            WHERE kind IN ('function', 'method')
+              AND (name LIKE '%auth%middleware%'
+                OR name LIKE '%auth%guard%'
+                OR name LIKE '%permission%check%'
+                OR name LIKE '%authorize%'
+                OR name LIKE '%authenticate%')
+        """)
+        for r in mid_rows:
+            results.append({
+                "function": r["qualified_name"],
+                "file": r["file_path"],
+                "line": r["start_line"],
+                "auth_level": "middleware",
+                "roles": [],
+                "permissions": [],
+            })
+
+        # Sort: authenticated first, then by file
+        results.sort(key=lambda x: (
+            0 if x["auth_level"] == "authenticated"
+            else 1 if x["auth_level"] == "middleware"
+            else 2 if x["auth_level"] == "public"
+            else 3,
+            x["file"],
+        ))
+
+        return results
+
+    # ── 9. Heat map ─────────────────────────────────────────────────────
+
+    def extract_heat_map(self) -> list[dict]:
+        """Categorize functions by call frequency into hot/warm/cold.
+
+        Hot  = top 10% of callers (high in-degree) — core infrastructure
+        Warm = middle 40-90% — regular business logic
+        Cold = bottom 40% — leaf functions, rarely called
+        """
+        G = self._get_call_graph()
+        if G.number_of_nodes() == 0:
+            return []
+
+        # Compute in-degree (callers) for all functions
+        func_degrees: list[tuple[str, int, int, int]] = []
+        for node_id in G.nodes():
+            in_d = G.in_degree(node_id)
+            out_d = G.out_degree(node_id)
+            func_degrees.append((node_id, in_d, out_d, in_d + out_d))
+
+        if not func_degrees:
+            return []
+
+        # Sort by total degree descending
+        func_degrees.sort(key=lambda x: -x[3])
+        n = len(func_degrees)
+
+        # Percentile thresholds
+        hot_cutoff = max(1, int(n * 0.10))
+        warm_cutoff = max(hot_cutoff + 1, int(n * 0.60))
+
+        results: list[dict] = []
+        categories = {"hot": 0, "warm": 0, "cold": 0}
+
+        for idx, (node_id, in_d, out_d, total_d) in enumerate(func_degrees):
+            if idx < hot_cutoff:
+                heat = "hot"
+            elif idx < warm_cutoff:
+                heat = "warm"
+            else:
+                heat = "cold"
+
+            func = self.reader.get_function_by_id(node_id)
+            if func is None:
+                continue
+
+            categories[heat] += 1
+            results.append({
+                "name": func.name,
+                "qualified_name": func.qualified_name,
+                "file_path": func.file_path,
+                "kind": func.kind,
+                "heat": heat,
+                "callers": in_d,
+                "callees": out_d,
+                "total_degree": total_d,
+                "layer": self._classify_file_layer(func.file_path),
+            })
+
+        return results
+
+    # ── Serialization helpers ───────────────────────────────────────────
+
+    @staticmethod
+    def _serialize_config_consumption(data: list[dict]) -> dict:
+        total_keys = sum(d["key_count"] for d in data)
+        total_consumed = sum(d["consumed_keys"] for d in data)
+        return {
+            "config_files": len(data),
+            "total_keys": total_keys,
+            "consumed_keys": total_consumed,
+            "files": data[:20],
+        }
+
+    @staticmethod
+    def _serialize_external_deps(data: list[dict]) -> dict:
+        total_deps = sum(d["dependency_count"] for d in data)
+        return {
+            "categories": len(data),
+            "total_dependencies": total_deps,
+            "by_category": data,
+        }
+
+    @staticmethod
+    def _serialize_auth_model(data: list[dict]) -> dict:
+        endpoints = [d for d in data if d["auth_level"] not in ("middleware",)]
+        roles = sorted(set(r for d in data for r in d["roles"]))
+        perms = sorted(set(p for d in data for p in d["permissions"]))
+        return {
+            "protected_endpoints": len(endpoints),
+            "middleware_count": len(data) - len(endpoints),
+            "roles": roles,
+            "permissions": perms,
+            "entries": data[:100],
+        }
+
+    @staticmethod
+    def _serialize_heat_map(data: list[dict]) -> dict:
+        counts = defaultdict(int)
+        for d in data:
+            counts[d["heat"]] += 1
+        return {
+            "total_functions": len(data),
+            "hot": counts["hot"],
+            "warm": counts["warm"],
+            "cold": counts["cold"],
+            "hot_functions": [d for d in data if d["heat"] == "hot"][:30],
+            "warm_functions": [d for d in data if d["heat"] == "warm"][:30],
         }
 
     @staticmethod

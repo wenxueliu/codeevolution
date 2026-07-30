@@ -189,6 +189,57 @@ def cmd_knowledge(args):
                 print(f"  [{v.source_layer}] {v.source_file} → [{v.target_layer}] {v.target_file}")
                 print(f"    {v.source_name} → {v.target_name}")
 
+        if args.section == "config" or args.section == "all":
+            configs = extractor.extract_config_consumption()
+            print(f"\n{'='*60}")
+            print(f"Config Consumption: {len(configs)} config files with consumers")
+            print(f"{'='*60}")
+            for cf in configs:
+                print(f"\n  [{cf['config_file']}] ({cf['key_count']} keys, {cf['consumed_keys']} consumed)")
+                for c in cf["consumers"][:10]:
+                    print(f"    key={c['config_key']:30s} → {c['consumer_name']}")
+
+        if args.section == "deps" or args.section == "all":
+            deps = extractor.extract_external_dependencies()
+            print(f"\n{'='*60}")
+            print(f"External Dependencies")
+            print(f"{'='*60}")
+            for cat in deps:
+                print(f"\n  [{cat['category']}] ({cat['dependency_count']} dependencies)")
+                for d in cat["dependencies"]:
+                    print(f"    {d['label']:30s} → {d['file_count']} files")
+
+        if args.section == "auth" or args.section == "all":
+            auth = extractor.extract_authorization_model()
+            print(f"\n{'='*60}")
+            print(f"Authorization Model: {len(auth)} protected endpoints/middleware")
+            print(f"{'='*60}")
+            for a in auth[:20]:
+                extras = ""
+                if a["roles"]:
+                    extras += f" roles={a['roles']}"
+                if a["permissions"]:
+                    extras += f" perms={a['permissions']}"
+                print(f"  [{a['auth_level']:12s}] {a['function']}{extras}")
+
+        if args.section == "heatmap" or args.section == "all":
+            heat = extractor.extract_heat_map()
+            counts = {"hot": 0, "warm": 0, "cold": 0}
+            for h in heat:
+                counts[h["heat"]] += 1
+            print(f"\n{'='*60}")
+            print(f"Heat Map: {len(heat)} functions (hot={counts['hot']} warm={counts['warm']} cold={counts['cold']})")
+            print(f"{'='*60}")
+            print(f"\n  {'HOT (top 10%)':-^50}")
+            for h in heat[:15]:
+                if h["heat"] != "hot":
+                    break
+                print(f"  [{h['heat']:4s}] {h['name']:35s} callers={h['callers']} callees={h['callees']} [{h.get('layer', '')}]")
+            print(f"\n  {'COLD (bottom 40%)':-^50}")
+            colds = [h for h in heat if h["heat"] == "cold"]
+            for h in colds[:10]:
+                print(f"  [{h['heat']:4s}] {h['name']:35s} callers={h['callers']} callees={h['callees']}")
+
         if args.output:
             result = extractor.extract_all()
             with open(args.output, "w") as f:
@@ -249,7 +300,8 @@ def main():
     p.add_argument("--repo", "-r", required=True, help="Path to git repository with CodeGraph initialized")
     p.add_argument("--output", "-o", default="", help="Output JSON file path (default: stdout)")
     p.add_argument("--section", "-s", default="all",
-                   choices=["all", "api", "modules", "entities", "tests", "layers"],
+                   choices=["all", "api", "modules", "entities", "tests", "layers",
+                            "config", "deps", "auth", "heatmap"],
                    help="Which knowledge section to extract (default: all)")
 
     args = parser.parse_args()
