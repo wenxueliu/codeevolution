@@ -9,6 +9,12 @@ from pathlib import Path
 from .codegraph_reader import CodeGraphReader
 from .config import Config
 from .cross_repo import CrossRepoAnalyzer
+from .registry import (
+    list_repos, register_repo, get_repo, refresh_meta,
+    discover_repos, check_services,
+    load_topology_cache, is_topology_cache_stale, build_topology_cache,
+    get_cached_impact, get_cached_trace,
+)
 from .engine import EvolutionEngine
 from .knowledge import KnowledgeExtractor
 from .mcp_server import run_server
@@ -371,15 +377,28 @@ def main():
     p = subparsers.add_parser("topology", help="Build unified multi-service topology from registered repos")
     p.add_argument("--service", "-s", default="",
                    help="Single service name to analyze (default: all registered)")
+    p.add_argument("--no-cache", action="store_true",
+                   help="Force rebuild topology (don't use cache)")
 
     # cross-repo impact
     p = subparsers.add_parser("impact", help="Cross-service change impact analysis")
     p.add_argument("--service", "-s", required=True, help="Service name to analyze impact for")
+    p.add_argument("--no-cache", action="store_true",
+                   help="Force rebuild topology (don't use cache)")
 
     # cross-repo trace
     p = subparsers.add_parser("trace", help="Trace end-to-end flow across services")
     p.add_argument("--service", "-s", required=True, help="Starting service name")
     p.add_argument("--path", "-p", default="", help="Starting API path (optional)")
+    p.add_argument("--no-cache", action="store_true",
+                   help="Force rebuild topology (don't use cache)")
+
+    # discover
+    p = subparsers.add_parser("discover", help="Scan directory for git repos and suggest registrations")
+    p.add_argument("--dir", "-d", default=".", help="Root directory to scan (default: current)")
+
+    # check
+    p = subparsers.add_parser("check", help="Health check all registered services")
 
     args = parser.parse_args()
 
@@ -411,6 +430,10 @@ def main():
         cmd_impact(args)
     elif args.command == "trace":
         cmd_trace(args)
+    elif args.command == "discover":
+        cmd_discover(args)
+    elif args.command == "check":
+        cmd_check(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -418,60 +441,166 @@ def main():
 
 def cmd_topology(args):
     """Build and display unified multi-service topology."""
-    from .registry import list_repos, get_repo
-
-    if args.service:
-        entries = [get_repo(args.service)]
-        if not entries[0]:
-            print(f"Service '{args.service}' not registered. Use 'codehistory register' first.")
-            sys.exit(1)
-    else:
-        entries = list_repos()
+    entries = _get_services(args)
 
     if not entries:
         print("No repos registered. Use 'codehistory register' first.")
-        print("Example: codehistory register -n my-svc -r /path/to/repo")
         sys.exit(1)
 
-    print(f"Analyzing {len(entries)} services...")
+    # Check prerequisites
     for e in entries:
         cg_db = Path(e["path"]) / ".codegraph" / "codegraph.db"
         if not cg_db.exists():
-            print(f"  [!] {e['name']}: CodeGraph not initialized. Run: cd {e['path']} && codegraph init")
+            print(f"  [!] {e['name']}: run: cd {e['path']} && codegraph init")
 
+    # Use cache if available
+    if not args.no_cache and not is_topology_cache_stale(entries):
+        cached = load_topology_cache()
+        if cached:
+            print(f"[from cache, built {_format_age(cached.get('_built_at', 0))}]")
+            _print_cached_topology(cached)
+            return
+
+    print(f"Analyzing {len(entries)} services...")
     analyzer = CrossRepoAnalyzer(entries)
     topology = analyzer.analyze()
+    build_topology_cache()  # update cache
     print(analyzer.format_topology(topology))
 
 
 def cmd_impact(args):
     """Cross-service change impact analysis."""
-    from .registry import list_repos
-
     entries = list_repos()
     if not entries:
         print("No repos registered.")
         sys.exit(1)
 
+    # Use cache if available
+    if not args.no_cache and not is_topology_cache_stale(entries):
+        impact = get_cached_impact(args.service)
+        if impact:
+            print(f"[from cache]")
+            print(f"  Upstream (who calls us):   {impact['upstream_impact']}")
+            print(f"  Downstream (who we call):  {impact['downstream_impact']}")
+            print(f"  Affected cross-edges: {len(impact['affected_cross_edges'])}")
+            for e in impact["affected_cross_edges"][:15]:
+                print(f"    {e['source_service']} → {e['target_service']}: {e['http_method']} {e['url_pattern']}")
+            return
+
     analyzer = CrossRepoAnalyzer(entries)
     topology = analyzer.analyze()
+    build_topology_cache()
     impact = analyzer.impact_analysis(topology, args.service)
     print(analyzer.format_impact(impact))
 
 
 def cmd_trace(args):
     """Trace end-to-end flow across services."""
-    from .registry import list_repos
-
     entries = list_repos()
     if not entries:
         print("No repos registered.")
         sys.exit(1)
 
+    if not args.no_cache and not is_topology_cache_stale(entries):
+        chain = get_cached_trace(args.service, args.path or None)
+        if chain is not None:
+            print(f"[from cache]")
+            for step in chain:
+                indent = "  " * step.get("depth", 0)
+                print(f"{indent}[{step['http_method']} {step['url_pattern']}]")
+                print(f"{indent}  {step['source_service']} → {step['target_service']}")
+            return
+
     analyzer = CrossRepoAnalyzer(entries)
     topology = analyzer.analyze()
+    build_topology_cache()
     chain = analyzer.trace_flow(topology, args.service, args.path or None)
     print(analyzer.format_trace(chain))
+
+
+def cmd_discover(args):
+    """Scan for git repos and suggest registrations."""
+    root = str(Path(args.dir).resolve())
+    print(f"Scanning {root} ...")
+    repos = discover_repos(root)
+    if not repos:
+        print("No unregistered git repositories found.")
+        return
+
+    print(f"\nFound {len(repos)} unregistered repo(s):\n")
+    for r in repos:
+        print(f"  [{r['role']:10s}] {r['name']:30s} ({r['language']})")
+        print(f"         Path: {r['path']}")
+        print(f"         {r['suggestion']}")
+        print(f"         To register: codehistory register -n {r['name']} -r {r['path']}")
+        print()
+
+
+def cmd_check(args):
+    """Health check all registered services."""
+    results = check_services()
+    if not results:
+        print("No repos registered.")
+        return
+
+    ok = sum(1 for r in results if r["status"] == "ok")
+    warn = sum(1 for r in results if r["status"] == "warning")
+    err = sum(1 for r in results if r["status"] == "error")
+
+    print(f"\nService Health: {ok} OK, {warn} warning, {err} error\n")
+    for r in results:
+        icon = {"ok": "[OK]", "warning": "[!!]", "error": "[XX]", "info": "[i ]"}[r["status"]]
+        print(f"  {icon} {r['name']:25s} | lang={r['language']:10s} role={r['role']:10s} "
+              f"symbols={r['cg_symbols']:5d} edges={r['cg_edges']:5d}")
+        if r["db_types"]:
+            print(f"       DB: {', '.join(r['db_types'])}")
+        if r["mq_types"]:
+            print(f"       MQ: {', '.join(r['mq_types'])}")
+        for issue in r["issues"]:
+            print(f"       → {issue}")
+    print()
+
+
+def _get_services(args):
+    """Get service entries from args or registry."""
+    if getattr(args, 'service', ''):
+        entry = get_repo(args.service)
+        return [entry] if entry else []
+    return list_repos()
+
+
+def _format_age(timestamp: float) -> str:
+    """Format a timestamp as human-readable age."""
+    import time
+    age = time.time() - timestamp
+    if age < 60:
+        return f"{int(age)}s ago"
+    if age < 3600:
+        return f"{int(age / 60)}m ago"
+    if age < 86400:
+        return f"{int(age / 3600)}h ago"
+    return f"{int(age / 86400)}d ago"
+
+
+def _print_cached_topology(cached: dict):
+    """Print cached topology in the same format as format_topology."""
+    print(f"\nServices ({cached['_service_count']}):")
+    for s in cached["services"]:
+        db_str = f" DB={s['db_types']}" if s.get("db_types") else ""
+        mq_str = f" MQ={s['mq_types']}" if s.get("mq_types") else ""
+        print(f"  [{s['language']:6s}] {s['name']:20s} ({s['role']})"
+              f"  APIs={s['api_count']} deps={s['dependencies']}{db_str}{mq_str}")
+
+    if cached.get("dependency_graph"):
+        print(f"\nDependency Graph:")
+        for svc, deps in sorted(cached["dependency_graph"].items()):
+            for d in deps:
+                print(f"  {svc} → {d}")
+
+    if cached.get("cross_edges"):
+        print(f"\nCross-Service Edges ({cached['_edge_count']}):")
+        for e in cached["cross_edges"][:20]:
+            print(f"  {e['source_service']} ──[{e['http_method']} {e['url_pattern']}]──→ {e['target_service']}")
 
 
 if __name__ == "__main__":
