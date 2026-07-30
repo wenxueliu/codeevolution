@@ -1,11 +1,11 @@
 ---
 name: codehistory-exploring
-description: Explore code structure via direct CodeGraph SQLite queries. Use when user asks "how does X work?", "who calls this?", "what does this function call?", "show me the call chain", "find functions by name", or "what's in this file?". Works on any repo with CodeGraph initialized. Faster than grep/read for structural questions."
+description: Explore code structure via direct CodeGraph SQLite queries. Use when user asks "how does X work?", "who calls this?", "what does this function call?", "show me the call chain", "find functions by name", "what's in this file?", or "what cross-service calls exist?". Works on any repo with CodeGraph initialized.
 ---
 
 # Code Exploring via CodeGraph SQLite
 
-Directly query CodeGraph's knowledge graph (SQLite) for code navigation. No need to grep or read files for structural questions.
+Directly query CodeGraph's knowledge graph (SQLite) for code navigation. Also works across multiple registered services for cross-repo queries.
 
 ## Prerequisites
 
@@ -13,9 +13,9 @@ Directly query CodeGraph's knowledge graph (SQLite) for code navigation. No need
 cd /path/to/repo && codegraph init   # one-time per repo
 ```
 
-## Quick Queries
+## Single-Repo Queries
 
-Run these from the target repo directory. Replace `<term>` with the user's search term.
+All queries read `.codegraph/codegraph.db` in the target repo.
 
 ### Find a function/class by name
 ```bash
@@ -70,7 +70,7 @@ db.close()
 "
 ```
 
-### Call chain (BFS, N hops)
+### Call chain (BFS, 5 hops)
 ```bash
 python -c "
 import sqlite3
@@ -125,40 +125,50 @@ db.close()
 "
 ```
 
-### Find all HTTP endpoints (routes)
+### Find all HTTP endpoints
 ```bash
-python -c "
-import sqlite3, json
-db = sqlite3.connect('.codegraph/codegraph.db')
-# Route nodes
-routes = db.execute(\"SELECT name, file_path, start_line FROM nodes WHERE kind = 'route'\").fetchall()
-for r in routes: print(f'  {r[0]:40s} @ {r[1]}:{r[2]}')
-# Decorated endpoints
-decos = db.execute(\"\"\"
-  SELECT name, qualified_name, file_path, start_line, decorators
-  FROM nodes WHERE kind IN ('function','method') AND decorators IS NOT NULL
-\"\"\").fetchall()
-http_decos = {'get','post','put','delete','patch','getmapping','postmapping','putmapping','deletemapping','patchmapping'}
-for r in decos:
-    try:
-        ds = json.loads(r[4]) if isinstance(r[4], str) else r[4]
-        for d in ds:
-            name = d.lstrip('@').split('.')[-1].lower()
-            if name in http_decos:
-                print(f'  {name.upper():6s} {r[1]:45s} @ {r[2]}:{r[3]}')
-    except: pass
-db.close()
-"
+python -m codehistory.cli knowledge -r . -s api
 ```
 
-## When to use this skill vs codehistory-knowledge
+## Multi-Repo Cross-Service Queries
+
+Use the `codehistory` CLI for cross-service analysis:
+
+### Service dependency graph
+```bash
+cd /home/chengnanfeng/code/harness/services/codehistory
+python -m codehistory.cli topology
+```
+
+### Cross-service impact (what breaks if I change X?)
+```bash
+python -m codehistory.cli impact -s <service-name>
+```
+
+### End-to-end HTTP call trace
+```bash
+python -m codehistory.cli trace -s <service-name>
+```
+
+### Full flow trace (HTTP + MQ + gRPC)
+```bash
+python -m codehistory.cli flow -s <service-name>
+```
+
+### Cross-service entity mapping (same concept, different names)
+```bash
+python -m codehistory.cli entities
+python -m codehistory.cli entities --llm    # with LLM verification
+```
+
+## When to use which skill
 
 | Question | Use |
 |----------|-----|
-| "Who calls X?" / "What does X call?" | **codehistory-exploring** (this skill) |
-| "What's in file Y?" / "Find function Z" | **codehistory-exploring** (this skill) |
+| "Who calls X?" / "What does X call?" | **codehistory-exploring** (direct SQL) |
+| "What's in file Y?" / "Find function Z" | **codehistory-exploring** (direct SQL) |
 | "What APIs does this project have?" | **codehistory-knowledge** (`-s api`) |
-| "What's the module structure?" | **codehistory-knowledge** (`-s modules`) |
-| "What are the core business entities?" | **codehistory-knowledge** (`-s entities`) |
-| "What tests cover this?" | **codehistory-knowledge** (`-s tests`) |
-| "What does this function do in business terms?" | **codehistory-knowledge** (`-s business --llm`) |
+| "How are services connected?" | **codehistory-knowledge** (`topology`) |
+| "What breaks if I change service X?" | **codehistory-knowledge** (`impact -s X`) |
+| "Trace the complete order flow" | **codehistory-knowledge** (`flow -s order-svc`) |
+| "Which entities are shared across services?" | **codehistory-knowledge** (`entities --llm`) |
