@@ -13,96 +13,177 @@ Reads from each service's .codegraph/codegraph.db via CodeGraphReader.
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .infrastructure.codegraph_sqlite import read_rows
 
-
 # ── MQ producer/consumer patterns ──────────────────────────────────────
 
 MQ_PRODUCER_PATTERNS = [
-    ("kafka", [
-        "KafkaProducer.send", "kafka.produce", "producer.send",
-        "kafka-go.Writer.WriteMessages", "kafka.SendMessage",
-        "confluent_kafka.Producer.produce",
-    ]),
-    ("rabbitmq", [
-        "basic_publish", "channel.publish", "exchange.publish",
-        "pika.BasicProperties", "amqp.Channel.publish",
-        "amqplib.Channel.publish",
-    ]),
-    ("nats", [
-        "nats.publish", "stan.publish", "js.publish",
-        "nats.Conn.Publish", "nats.go",
-    ]),
-    ("celery", [
-        "celery.task.send_task", "apply_async", "delay(",
-        "task.delay", "task.apply_async",
-    ]),
-    ("sqs", [
-        "SQS.send_message", "sqs.sendMessage", "sqs-client.send",
-    ]),
-    ("pubsub", [
-        "pubsub.publish", "topic.publish", "Publisher.publish",
-    ]),
+    (
+        "kafka",
+        [
+            "KafkaProducer.send",
+            "kafka.produce",
+            "producer.send",
+            "kafka-go.Writer.WriteMessages",
+            "kafka.SendMessage",
+            "confluent_kafka.Producer.produce",
+        ],
+    ),
+    (
+        "rabbitmq",
+        [
+            "basic_publish",
+            "channel.publish",
+            "exchange.publish",
+            "pika.BasicProperties",
+            "amqp.Channel.publish",
+            "amqplib.Channel.publish",
+        ],
+    ),
+    (
+        "nats",
+        [
+            "nats.publish",
+            "stan.publish",
+            "js.publish",
+            "nats.Conn.Publish",
+            "nats.go",
+        ],
+    ),
+    (
+        "celery",
+        [
+            "celery.task.send_task",
+            "apply_async",
+            "delay(",
+            "task.delay",
+            "task.apply_async",
+        ],
+    ),
+    (
+        "sqs",
+        [
+            "SQS.send_message",
+            "sqs.sendMessage",
+            "sqs-client.send",
+        ],
+    ),
+    (
+        "pubsub",
+        [
+            "pubsub.publish",
+            "topic.publish",
+            "Publisher.publish",
+        ],
+    ),
 ]
 
 MQ_CONSUMER_PATTERNS = [
-    ("kafka", [
-        "KafkaConsumer", "kafka.consume", "consumer.subscribe",
-        "kafka-go.Reader.FetchMessage", "kafka.ReadMessage",
-        "confluent_kafka.Consumer.consume",
-        "@KafkaListener", "kafka_listener",
-    ]),
-    ("rabbitmq", [
-        "basic_consume", "channel.consume", "queue.consume",
-        "pika.BlockingConnection.consume",
-        "@RabbitListener", "rabbitmq_listener",
-    ]),
-    ("nats", [
-        "nats.subscribe", "stan.subscribe", "js.subscribe",
-        "nats.Conn.Subscribe",
-    ]),
-    ("celery", [
-        "@celery.task", "@shared_task", "celery_app.task",
-        "@app.task", "@task(",
-    ]),
-    ("sqs", [
-        "SQS.receive_message", "sqs.receiveMessage",
-        "@SqsListener", "sqs_listener",
-    ]),
-    ("pubsub", [
-        "pubsub.subscribe", "subscription.create",
-        "@PubSubListener", "pubsub_listener",
-    ]),
+    (
+        "kafka",
+        [
+            "KafkaConsumer",
+            "kafka.consume",
+            "consumer.subscribe",
+            "kafka-go.Reader.FetchMessage",
+            "kafka.ReadMessage",
+            "confluent_kafka.Consumer.consume",
+            "@KafkaListener",
+            "kafka_listener",
+        ],
+    ),
+    (
+        "rabbitmq",
+        [
+            "basic_consume",
+            "channel.consume",
+            "queue.consume",
+            "pika.BlockingConnection.consume",
+            "@RabbitListener",
+            "rabbitmq_listener",
+        ],
+    ),
+    (
+        "nats",
+        [
+            "nats.subscribe",
+            "stan.subscribe",
+            "js.subscribe",
+            "nats.Conn.Subscribe",
+        ],
+    ),
+    (
+        "celery",
+        [
+            "@celery.task",
+            "@shared_task",
+            "celery_app.task",
+            "@app.task",
+            "@task(",
+        ],
+    ),
+    (
+        "sqs",
+        [
+            "SQS.receive_message",
+            "sqs.receiveMessage",
+            "@SqsListener",
+            "sqs_listener",
+        ],
+    ),
+    (
+        "pubsub",
+        [
+            "pubsub.subscribe",
+            "subscription.create",
+            "@PubSubListener",
+            "pubsub_listener",
+        ],
+    ),
 ]
 
 # gRPC / RPC patterns
 RPC_PATTERNS = [
-    "grpc.", "grpc::", "grpc-", "_pb2", "_grpc.", "Stub(",
-    "Channel(", "GrpcClient", "RpcClient",
-    "ServiceClient", "BlockingStub", "FutureStub",
-    "Thrift.", "TBinaryProtocol", "TCompactProtocol",
+    "grpc.",
+    "grpc::",
+    "grpc-",
+    "_pb2",
+    "_grpc.",
+    "Stub(",
+    "Channel(",
+    "GrpcClient",
+    "RpcClient",
+    "ServiceClient",
+    "BlockingStub",
+    "FutureStub",
+    "Thrift.",
+    "TBinaryProtocol",
+    "TCompactProtocol",
 ]
 
 # ── Output types ───────────────────────────────────────────────────────
 
+
 @dataclass
 class FlowStep:
     """A single step in an end-to-end flow."""
+
     depth: int
-    channel: str           # "http" | "kafka" | "rabbitmq" | "grpc" | "db" | "internal"
+    channel: str  # "http" | "kafka" | "rabbitmq" | "grpc" | "db" | "internal"
     from_service: str
     from_function: str
     to_service: str
     to_function: str
-    detail: str            # URL, topic name, SQL table, etc.
+    detail: str  # URL, topic name, SQL table, etc.
 
 
 @dataclass
 class FlowDiagram:
     """Complete end-to-end flow trace with all communication channels."""
+
     entry_service: str
     entry_api: str
     steps: list[FlowStep]
@@ -114,25 +195,28 @@ class FlowDiagram:
 @dataclass
 class EntityMapping:
     """Two entities from different services that represent the same concept."""
+
     source_service: str
     source_entity: str
     target_service: str
     target_entity: str
-    confidence: float            # 0-1: similarity score
-    relationship: str            # "same" | "subset" | "related" | "wrapper"
-    description: str = ""        # LLM-generated explanation
+    confidence: float  # 0-1: similarity score
+    relationship: str  # "same" | "subset" | "related" | "wrapper"
+    description: str = ""  # LLM-generated explanation
 
 
 @dataclass
 class CrossServiceEntities:
     """All cross-service entity mappings."""
+
     services: list[str]
     entities_per_service: dict[str, list[str]]  # service → [entity_names]
     mappings: list[EntityMapping]
-    unmapped_entities: dict[str, list[str]]     # service → entities without matches
+    unmapped_entities: dict[str, list[str]]  # service → entities without matches
 
 
 # ── P2 Analyzer ────────────────────────────────────────────────────────
+
 
 class P2Analyzer:
     """Advanced multi-service analysis.
@@ -220,7 +304,9 @@ class P2Analyzer:
                     if consumer_svc == svc:
                         continue
                     for sub in subs:
-                        if sub["mq_type"] == mq_type and self._topics_match(topic, sub.get("topic", "")):
+                        if sub["mq_type"] == mq_type and self._topics_match(
+                            topic, sub.get("topic", "")
+                        ):
                             step_pub = FlowStep(
                                 depth=depth,
                                 channel=mq_type,
@@ -307,18 +393,21 @@ class P2Analyzer:
     def _collect_http_edges(self) -> dict[str, list[dict]]:
         """Collect HTTP cross-service edges from all repos."""
         from .cross_repo import CrossRepoAnalyzer
+
         analyzer = CrossRepoAnalyzer(self.repos)
         topology = analyzer.analyze()
 
         edges: dict[str, list[dict]] = defaultdict(list)
         for e in topology.cross_edges:
-            edges[e.source_service].append({
-                "source_function": e.source_function,
-                "target_service": e.target_service,
-                "target_function": e.target_function,
-                "http_method": e.http_method,
-                "url_pattern": e.url_pattern,
-            })
+            edges[e.source_service].append(
+                {
+                    "source_function": e.source_function,
+                    "target_service": e.target_service,
+                    "target_function": e.target_function,
+                    "http_method": e.http_method,
+                    "url_pattern": e.url_pattern,
+                }
+            )
         return dict(edges)
 
     def _collect_mq_channels(self) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
@@ -335,7 +424,9 @@ class P2Analyzer:
             # Find producers
             for mq_type, patterns in MQ_PRODUCER_PATTERNS:
                 for pat in patterns:
-                    rows = self._query(db, """
+                    rows = self._query(
+                        db,
+                        """
                         SELECT n1.qualified_name AS caller, n1.name,
                                n1.file_path, n1.start_line,
                                e.line AS call_line,
@@ -344,53 +435,63 @@ class P2Analyzer:
                         JOIN nodes n1 ON n1.id = e.source
                         JOIN nodes n2 ON n2.id = e.target
                         WHERE e.kind = 'calls' AND n2.name LIKE ?
-                    """, [f"%{pat}%"])
+                    """,
+                        [f"%{pat}%"],
+                    )
                     for r in rows:
                         # Extract topic from source code near the call
                         topic = self._extract_topic_from_source(
-                            db, r["caller"], r.get("file_path"),
-                            r.get("call_line") or r.get("start_line")
+                            db,
+                            r["caller"],
+                            r.get("file_path"),
+                            r.get("call_line") or r.get("start_line"),
                         )
                         if not topic:
                             # Fallback: look for topic constants in the function
                             topic = self._extract_topic_from_function(db, r["caller"])
-                        producers[svc_name].append({
-                            "mq_type": mq_type,
-                            "function": r["caller"],
-                            "topic": topic or pat.split(".")[-1],
-                        })
+                        producers[svc_name].append(
+                            {
+                                "mq_type": mq_type,
+                                "function": r["caller"],
+                                "topic": topic or pat.split(".")[-1],
+                            }
+                        )
 
             # Find consumers
             for mq_type, patterns in MQ_CONSUMER_PATTERNS:
                 for pat in patterns:
-                    rows = self._query(db, """
+                    rows = self._query(
+                        db,
+                        """
                         SELECT n1.qualified_name, n1.name, n1.decorators,
                                n1.file_path, n1.start_line
                         FROM nodes n1
                         WHERE n1.kind IN ('function', 'method')
                           AND (n1.name LIKE ? OR n1.decorators LIKE ?)
-                    """, [f"%{pat}%", f"%{pat}%"])
+                    """,
+                        [f"%{pat}%", f"%{pat}%"],
+                    )
                     for r in rows:
                         # Extract topic from decorator or function context
                         topic = self._extract_topic_from_decorator(r.get("decorators") or "")
                         if not topic:
                             topic = self._extract_topic_from_source(
-                                db, r["qualified_name"],
-                                r.get("file_path"), r.get("start_line")
+                                db, r["qualified_name"], r.get("file_path"), r.get("start_line")
                             )
                         if not topic:
                             topic = self._guess_topic(r["name"], mq_type)
-                        consumers[svc_name].append({
-                            "mq_type": mq_type,
-                            "function": r["qualified_name"],
-                            "topic": topic,
-                        })
+                        consumers[svc_name].append(
+                            {
+                                "mq_type": mq_type,
+                                "function": r["qualified_name"],
+                                "topic": topic,
+                            }
+                        )
 
         return dict(producers), dict(consumers)
 
     def _extract_topic_from_source(
-        self, db_path: str, caller_qname: str,
-        file_path: str | None, line: int | None
+        self, db_path: str, caller_qname: str, file_path: str | None, line: int | None
     ) -> str | None:
         """Read source code around a producer/consumer call to extract topic/queue name.
 
@@ -420,7 +521,7 @@ class P2Analyzer:
         context = "".join(lines[start:end])
 
         # Pattern 1: plain topic string — "order.created" or 'payment.completed'
-        m = re.search(r'''['\"]([\w.-]+\.[\w.-]+(?:[\w.-]*))['\"]''', context)
+        m = re.search(r"""['\"]([\w.-]+\.[\w.-]+(?:[\w.-]*))['\"]""", context)
         if m:
             candidate = m.group(1)
             # Filter out things that are clearly not topic names
@@ -428,30 +529,34 @@ class P2Analyzer:
                 return candidate
 
         # Pattern 2: f-string topic — f"{prefix}.created" or f"order.{event}"
-        m = re.search(r'''f['\"][{]?\w+[}]?\.[\w.{}]+['\"]''', context)
+        m = re.search(r"""f['\"][{]?\w+[}]?\.[\w.{}]+['\"]""", context)
         if m:
             # Normalize: keep the template-ish format
             raw = m.group(0).strip("f").strip("\"'")
-            raw = re.sub(r'\{[^}]+\}', '*', raw)  # replace {var} with *
+            raw = re.sub(r"\{[^}]+\}", "*", raw)  # replace {var} with *
             return raw
 
         # Pattern 3: topic from decorator: @KafkaListener(topics=["order.created"])
-        m = re.search(r'''(?:topics?|queues?|destinations?)\s*=\s*\[?\s*['\"]([^'\"]+)['\"]''', context)
+        m = re.search(
+            r"""(?:topics?|queues?|destinations?)\s*=\s*\[?\s*['\"]([^'\"]+)['\"]""", context
+        )
         if m:
             return m.group(1)
 
         # Pattern 4: variable assignment before the call: TOPIC = "order.created"
         m = re.search(
-            r'''(?:TOPIC|QUEUE|EXCHANGE|ROUTING_KEY)\s*=\s*['\"]([\w.-]+)['\"]''',
-            context, re.IGNORECASE
+            r"""(?:TOPIC|QUEUE|EXCHANGE|ROUTING_KEY)\s*=\s*['\"]([\w.-]+)['\"]""",
+            context,
+            re.IGNORECASE,
         )
         if m:
             return m.group(1)
 
         # Pattern 5: routing key / binding key
         m = re.search(
-            r'''(?:routing_key|binding_key|routingKey|bindingKey)\s*=\s*['\"]([\w.-]+)['\"]''',
-            context, re.IGNORECASE
+            r"""(?:routing_key|binding_key|routingKey|bindingKey)\s*=\s*['\"]([\w.-]+)['\"]""",
+            context,
+            re.IGNORECASE,
         )
         if m:
             return m.group(1)
@@ -464,23 +569,25 @@ class P2Analyzer:
         if len(parts) < 2:
             return None
         file_path = parts[0]
-        func_name = parts[-1].split(".")[-1]
-
-        rows = self._query(db_path, """
+        rows = self._query(
+            db_path,
+            """
             SELECT name FROM nodes
             WHERE file_path = ? AND kind IN ('variable', 'constant')
               AND (name LIKE '%topic%' OR name LIKE '%queue%'
                    OR name LIKE '%TOPIC%' OR name LIKE '%QUEUE%'
                    OR name LIKE '%exchange%' OR name LIKE '%EXCHANGE%')
             LIMIT 10
-        """, [file_path])
+        """,
+            [file_path],
+        )
         for r in rows:
             # Return the variable value if it looks like a topic name
             name = r["name"]
             # Extract string value from variable assignment
             m = re.search(rf'{re.escape(name)}\s*=\s*["\']([^"\']+)["\']', name)
             if not m:
-                return name.strip('"\'').split("=")[-1].strip().strip('"\'')
+                return name.strip("\"'").split("=")[-1].strip().strip("\"'")
         return None
 
     @staticmethod
@@ -489,11 +596,15 @@ class P2Analyzer:
         if not decorators_raw:
             return None
         try:
-            decos = json.loads(decorators_raw) if isinstance(decorators_raw, str) else decorators_raw
+            decos = (
+                json.loads(decorators_raw) if isinstance(decorators_raw, str) else decorators_raw
+            )
         except (json.JSONDecodeError, TypeError):
             decos = [decorators_raw]
         for d in decos:
-            m = re.search(r'''['\"]([^'\"]+(?:topic|queue|exchange)[^'\"]*)['\"]''', str(d), re.IGNORECASE)
+            m = re.search(
+                r"""['\"]([^'\"]+(?:topic|queue|exchange)[^'\"]*)['\"]""", str(d), re.IGNORECASE
+            )
             if m:
                 return m.group(1)
         return None
@@ -503,7 +614,7 @@ class P2Analyzer:
         """Guess topic name from function naming convention."""
         for prefix in ("handle_", "process_", "consume_", "listen_", "on_"):
             if func_name.startswith(prefix):
-                return func_name[len(prefix):]
+                return func_name[len(prefix) :]
         return func_name
 
     def _collect_rpc_edges(self) -> dict[str, list[dict]]:
@@ -517,29 +628,37 @@ class P2Analyzer:
             svc_name = repo["name"]
 
             for pat in RPC_PATTERNS:
-                rows = self._query(db, """
+                rows = self._query(
+                    db,
+                    """
                     SELECT n1.qualified_name AS caller, n2.name AS callee_name
                     FROM edges e
                     JOIN nodes n1 ON n1.id = e.source
                     JOIN nodes n2 ON n2.id = e.target
                     WHERE e.kind = 'calls' AND n2.name LIKE ?
                     LIMIT 20
-                """, [f"%{pat}%"])
+                """,
+                    [f"%{pat}%"],
+                )
                 for r in rows:
                     # Guess target service from callee name
                     callee = r["callee_name"].lower()
                     target = "unknown"
                     for other in self.repos:
-                        if other["name"] != svc_name and other["name"].replace("-", "") in callee.replace("_", "").replace("-", ""):
+                        if other["name"] != svc_name and other["name"].replace(
+                            "-", ""
+                        ) in callee.replace("_", "").replace("-", ""):
                             target = other["name"]
                             break
 
-                    edges[svc_name].append({
-                        "source_function": r["caller"],
-                        "target_service": target,
-                        "target_function": r["callee_name"],
-                        "service_method": r["callee_name"],
-                    })
+                    edges[svc_name].append(
+                        {
+                            "source_function": r["caller"],
+                            "target_service": target,
+                            "target_function": r["callee_name"],
+                            "service_method": r["callee_name"],
+                        }
+                    )
 
         return dict(edges)
 
@@ -560,7 +679,9 @@ class P2Analyzer:
                 continue
 
             # Get classes, structs, interfaces, enums
-            rows = self._query(db, """
+            rows = self._query(
+                db,
+                """
                 SELECT name, kind, qualified_name, file_path
                 FROM nodes
                 WHERE kind IN ('class', 'struct', 'interface', 'enum', 'type_alias')
@@ -568,10 +689,10 @@ class P2Analyzer:
                   AND name NOT LIKE '%Test' AND name NOT LIKE '%Tests'
                   AND file_path NOT LIKE '%test%' AND file_path NOT LIKE '%Test%'
                 ORDER BY name
-            """)
+            """,
+            )
             entities_per_service[repo["name"]] = [
-                {"name": r["name"], "kind": r["kind"],
-                 "qualified_name": r["qualified_name"]}
+                {"name": r["name"], "kind": r["kind"], "qualified_name": r["qualified_name"]}
                 for r in rows
             ]
 
@@ -600,16 +721,18 @@ class P2Analyzer:
 
                     if best_entity:
                         matched_b.add(best_entity["name"])
-                        mappings.append(EntityMapping(
-                            source_service=svc_a,
-                            source_entity=ea["name"],
-                            target_service=svc_b,
-                            target_entity=best_entity["name"],
-                            confidence=round(best_score, 2),
-                            relationship=self._infer_relationship(
-                                ea["name"], best_entity["name"], best_score
-                            ),
-                        ))
+                        mappings.append(
+                            EntityMapping(
+                                source_service=svc_a,
+                                source_entity=ea["name"],
+                                target_service=svc_b,
+                                target_entity=best_entity["name"],
+                                confidence=round(best_score, 2),
+                                relationship=self._infer_relationship(
+                                    ea["name"], best_entity["name"], best_score
+                                ),
+                            )
+                        )
                     else:
                         unmapped[svc_a].append(ea["name"])
 
@@ -624,8 +747,7 @@ class P2Analyzer:
         return CrossServiceEntities(
             services=svc_names,
             entities_per_service={
-                svc: [e["name"] for e in ents]
-                for svc, ents in entities_per_service.items()
+                svc: [e["name"] for e in ents] for svc, ents in entities_per_service.items()
             },
             mappings=mappings,
             unmapped_entities=dict(unmapped),
@@ -644,8 +766,6 @@ class P2Analyzer:
         if name_a == name_b:
             return 1.0
 
-        a, b = name_a.lower(), name_b.lower()
-
         # CamelCase/underscore splitting — must be done on the ORIGINAL case
         def split_name(original: str) -> set[str]:
             # Split by underscore first
@@ -653,7 +773,7 @@ class P2Analyzer:
             words = set()
             for p in parts:
                 # Split camelCase: "OrderService" → ["Order", "Service"]
-                camel_parts = re.findall(r'[A-Z]?[a-z0-9]+', p)
+                camel_parts = re.findall(r"[A-Z]?[a-z0-9]+", p)
                 for cp in camel_parts:
                     if cp:
                         words.add(cp.lower())
@@ -688,16 +808,17 @@ class P2Analyzer:
             "metadata": {"meta", "metadata"},
             "application": {"app", "application"},
         }
+
         def strip_suffix(name: str, suffixes: set[str]) -> str:
             for s in sorted(suffixes, key=len, reverse=True):
                 suf_lower = s.lower()
                 suf_title = s[0].upper() + s[1:] if s else ""
                 # snake_case: _suffix
                 if name.endswith(f"_{suf_lower}"):
-                    return name[:-len(f"_{suf_lower}")]
+                    return name[: -len(f"_{suf_lower}")]
                 # TitleCase: Suffix
                 if suf_title and name.endswith(suf_title):
-                    stem = name[:-len(suf_title)]
+                    stem = name[: -len(suf_title)]
                     if stem:
                         return stem
             return name
@@ -730,7 +851,8 @@ class P2Analyzer:
 
     def _llm_verify_mappings(self, mappings: list[EntityMapping]) -> list[EntityMapping]:
         """Use LLM to verify and explain entity mappings."""
-        from .llm import is_available as llm_ready, _call_llm, _parse_json
+        from .llm import _call_llm, _parse_json
+        from .llm import is_available as llm_ready
 
         if not llm_ready():
             return mappings
@@ -781,8 +903,10 @@ JSON:"""
         # Apply LLM corrections
         for m in mappings:
             for v in verified:
-                if (v.get("source_entity") == m.source_entity and
-                        v.get("target_entity") == m.target_entity):
+                if (
+                    v.get("source_entity") == m.source_entity
+                    and v.get("target_entity") == m.target_entity
+                ):
                     m.relationship = v.get("relationship", m.relationship)
                     m.description = v.get("description", "")
                     if v.get("relationship") == "false":
@@ -796,9 +920,9 @@ JSON:"""
     def format_flow(self, flow: FlowDiagram) -> str:
         """Render the end-to-end flow diagram as text."""
         lines = [
-            f"{'='*70}",
+            f"{'=' * 70}",
             f"End-to-End Flow: {flow.entry_service}",
-            f"{'='*70}",
+            f"{'=' * 70}",
             f"  Entry API: {flow.entry_api or '(all APIs)'}",
             f"  Services involved: {flow.services_involved}",
             f"  Cross-service calls: {flow.total_cross_service_calls}",
@@ -814,9 +938,15 @@ JSON:"""
         for step in flow.steps:
             indent = "  " * step.depth
             icon = {
-                "http": "🌐", "kafka": "📨", "rabbitmq": "🐰",
-                "nats": "✉️", "celery": "🥬", "sqs": "📦",
-                "pubsub": "📢", "grpc": "🔌", "db": "🗄️",
+                "http": "🌐",
+                "kafka": "📨",
+                "rabbitmq": "🐰",
+                "nats": "✉️",
+                "celery": "🥬",
+                "sqs": "📦",
+                "pubsub": "📢",
+                "grpc": "🔌",
+                "db": "🗄️",
                 "internal": "→",
             }.get(step.channel, "→")
 
@@ -840,9 +970,9 @@ JSON:"""
     def format_entities(self, entities: CrossServiceEntities) -> str:
         """Render cross-service entity mappings."""
         lines = [
-            f"{'='*70}",
-            f"Cross-Service Entity Alignment",
-            f"{'='*70}",
+            f"{'=' * 70}",
+            "Cross-Service Entity Alignment",
+            f"{'=' * 70}",
             f"  Services: {entities.services}",
             f"  Entity mappings found: {len(entities.mappings)}",
             "",
@@ -861,7 +991,7 @@ JSON:"""
                     lines.append(f"      {m.description}")
 
         if entities.unmapped_entities:
-            lines.append(f"\n  Unmapped Entities:")
+            lines.append("\n  Unmapped Entities:")
             for svc, names in sorted(entities.unmapped_entities.items()):
                 if names:
                     lines.append(f"    [{svc}] ({len(names)} entities)")

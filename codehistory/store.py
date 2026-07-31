@@ -132,7 +132,15 @@ class EvolutionStore:
         cur = self.conn.execute(
             """INSERT OR IGNORE INTO commits (hash, parent_hash, timestamp, author, message, semantic_type, tags)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (hash_, parent_hash, timestamp, author, message, semantic_type, json.dumps(tags) if tags else None),
+            (
+                hash_,
+                parent_hash,
+                timestamp,
+                author,
+                message,
+                semantic_type,
+                json.dumps(tags) if tags else None,
+            ),
         )
         self._commit_if_needed()
         if cur.rowcount == 1:
@@ -149,9 +157,14 @@ class EvolutionStore:
         if not row:
             return None
         return {
-            "id": row[0], "hash": row[1], "parent_hash": row[2],
-            "timestamp": row[3], "author": row[4], "message": row[5],
-            "semantic_type": row[6], "tags": json.loads(row[7]) if row[7] else None,
+            "id": row[0],
+            "hash": row[1],
+            "parent_hash": row[2],
+            "timestamp": row[3],
+            "author": row[4],
+            "message": row[5],
+            "semantic_type": row[6],
+            "tags": json.loads(row[7]) if row[7] else None,
         }
 
     def get_latest_commit_id(self) -> int | None:
@@ -165,21 +178,36 @@ class EvolutionStore:
     # --- features ---
 
     def insert_feature(
-        self, stable_id: str, canonical_name: str, entry_type: str,
-        entry_signature: str, first_seen_at: int,
-        description: str = "", description_zh: str = "",
+        self,
+        stable_id: str,
+        canonical_name: str,
+        entry_type: str,
+        entry_signature: str,
+        first_seen_at: int,
+        description: str = "",
+        description_zh: str = "",
     ) -> int:
         cur = self.conn.execute(
             """INSERT OR IGNORE INTO features
                (stable_id, canonical_name, entry_type, entry_signature, first_seen_at, last_seen_at, description, description_zh)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (stable_id, canonical_name, entry_type, entry_signature,
-             first_seen_at, first_seen_at, description, description_zh),
+            (
+                stable_id,
+                canonical_name,
+                entry_type,
+                entry_signature,
+                first_seen_at,
+                first_seen_at,
+                description,
+                description_zh,
+            ),
         )
         self._commit_if_needed()
         if cur.rowcount == 1:
             return cur.lastrowid
-        row = self.conn.execute("SELECT id FROM features WHERE stable_id = ?", (stable_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT id FROM features WHERE stable_id = ?", (stable_id,)
+        ).fetchone()
         assert row
         return row[0]
 
@@ -193,10 +221,16 @@ class EvolutionStore:
         if not row:
             return None
         return {
-            "id": row[0], "stable_id": row[1], "canonical_name": row[2],
-            "entry_type": row[3], "entry_signature": row[4],
-            "first_seen_at": row[5], "last_seen_at": row[6], "status": row[7],
-            "description": row[8] or "", "description_zh": row[9] or "",
+            "id": row[0],
+            "stable_id": row[1],
+            "canonical_name": row[2],
+            "entry_type": row[3],
+            "entry_signature": row[4],
+            "first_seen_at": row[5],
+            "last_seen_at": row[6],
+            "status": row[7],
+            "description": row[8] or "",
+            "description_zh": row[9] or "",
         }
 
     def get_all_features(self) -> list[dict]:
@@ -206,10 +240,18 @@ class EvolutionStore:
                FROM features WHERE status != 'removed'"""
         ).fetchall()
         return [
-            {"id": r[0], "stable_id": r[1], "canonical_name": r[2],
-             "entry_type": r[3], "entry_signature": r[4],
-             "first_seen_at": r[5], "last_seen_at": r[6], "status": r[7],
-             "description": r[8] or "", "description_zh": r[9] or ""}
+            {
+                "id": r[0],
+                "stable_id": r[1],
+                "canonical_name": r[2],
+                "entry_type": r[3],
+                "entry_signature": r[4],
+                "first_seen_at": r[5],
+                "last_seen_at": r[6],
+                "status": r[7],
+                "description": r[8] or "",
+                "description_zh": r[9] or "",
+            }
             for r in rows
         ]
 
@@ -247,7 +289,8 @@ class EvolutionStore:
                 cyclomatic_complexity, file_path, line_start, line_end, entry_point_node_id, test_nodes, call_chain)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                feature_id, commit_id,
+                feature_id,
+                commit_id,
                 snapshot_data["call_tree_nodes"],
                 snapshot_data["call_tree_edges"],
                 snapshot_data["call_tree_depth"],
@@ -274,15 +317,20 @@ class EvolutionStore:
         if not row:
             return None
         return {
-            "call_tree_nodes": row[0], "call_tree_edges": row[1],
-            "call_tree_depth": row[2], "file_path": row[3],
-            "line_start": row[4], "line_end": row[5],
+            "call_tree_nodes": row[0],
+            "call_tree_edges": row[1],
+            "call_tree_depth": row[2],
+            "file_path": row[3],
+            "line_start": row[4],
+            "line_end": row[5],
             "call_chain": json.loads(row[6]) if row[6] else [],
         }
 
     # --- events ---
 
-    def insert_event(self, feature_id: int, commit_id: int, event_type: str, detail: dict | None = None):
+    def insert_event(
+        self, feature_id: int, commit_id: int, event_type: str, detail: dict | None = None
+    ):
         self.conn.execute(
             "INSERT OR IGNORE INTO evolution_events (feature_id, commit_id, event_type, detail) VALUES (?, ?, ?, ?)",
             (feature_id, commit_id, event_type, json.dumps(detail) if detail else None),
@@ -302,8 +350,14 @@ class EvolutionStore:
             (feature["id"],),
         ).fetchall()
         return [
-            {"event_type": r[0], "detail": json.loads(r[1]) if r[1] else None,
-             "commit_hash": r[2], "timestamp": r[3], "author": r[4], "message": r[5]}
+            {
+                "event_type": r[0],
+                "detail": json.loads(r[1]) if r[1] else None,
+                "commit_hash": r[2],
+                "timestamp": r[3],
+                "author": r[4],
+                "message": r[5],
+            }
             for r in rows
         ]
 
@@ -361,13 +415,20 @@ class EvolutionStore:
             ).fetchone()
 
             if not died:
-                result.append({
-                    "id": r[0], "stable_id": r[1], "canonical_name": r[2],
-                    "entry_type": r[3], "entry_signature": r[4], "status": r[5],
-                    "first_seen_at": r[6], "last_seen_at": r[7],
-                    "call_tree_nodes": r[8],
-                    "call_chain": json.loads(r[9]) if r[9] else [],
-                })
+                result.append(
+                    {
+                        "id": r[0],
+                        "stable_id": r[1],
+                        "canonical_name": r[2],
+                        "entry_type": r[3],
+                        "entry_signature": r[4],
+                        "status": r[5],
+                        "first_seen_at": r[6],
+                        "last_seen_at": r[7],
+                        "call_tree_nodes": r[8],
+                        "call_chain": json.loads(r[9]) if r[9] else [],
+                    }
+                )
 
         return result
 
@@ -436,7 +497,11 @@ class EvolutionStore:
                         g1["modules"].update(g2["modules"])
                         g1["all_callees"].update(g2["all_callees"])
                         # Update primary class to the larger one
-                        g1["primary_class"] = g1["primary_class"] if len(g1["features"]) >= len(g2["features"]) else g2["primary_class"]
+                        g1["primary_class"] = (
+                            g1["primary_class"]
+                            if len(g1["features"]) >= len(g2["features"])
+                            else g2["primary_class"]
+                        )
                         groups.pop(j)
                         merged = True
                         break
@@ -450,17 +515,19 @@ class EvolutionStore:
                 len(self.get_feature_timeline(f["stable_id"])) for f in g["features"]
             )
             stats = self._capability_stats(g["features"])
-            result.append({
-                "id": "cap-" + str(i + 1),
-                "name": g["primary_class"],
-                "name_zh": self._capability_name_zh(g["primary_class"], list(g["modules"])),
-                "module": sorted(g["modules"])[0] if g["modules"] else "",
-                "modules": sorted(g["modules"]),
-                "feature_count": len(g["features"]),
-                "event_count": total_events,
-                "features": sorted(g["features"], key=lambda f: f["canonical_name"]),
-                "stats": stats,
-            })
+            result.append(
+                {
+                    "id": "cap-" + str(i + 1),
+                    "name": g["primary_class"],
+                    "name_zh": self._capability_name_zh(g["primary_class"], list(g["modules"])),
+                    "module": sorted(g["modules"])[0] if g["modules"] else "",
+                    "modules": sorted(g["modules"]),
+                    "feature_count": len(g["features"]),
+                    "event_count": total_events,
+                    "features": sorted(g["features"], key=lambda f: f["canonical_name"]),
+                    "stats": stats,
+                }
+            )
 
         # Sort by feature count desc
         result.sort(key=lambda c: c["feature_count"], reverse=True)

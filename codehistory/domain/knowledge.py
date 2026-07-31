@@ -109,4 +109,3 @@ class LayerViolation:
     target_file: str
     target_layer: str
     call_line: int | None = None
-

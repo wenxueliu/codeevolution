@@ -9,15 +9,22 @@ from pathlib import Path
 from .codegraph_reader import CodeGraphReader
 from .config import Config
 from .cross_repo import CrossRepoAnalyzer
-from .registry import (
-    list_repos, register_repo, get_repo, refresh_meta,
-    discover_repos, check_services,
-    load_topology_cache, is_topology_cache_stale, build_topology_cache,
-    get_cached_impact, get_cached_trace,
-)
 from .engine import EvolutionEngine
 from .knowledge import KnowledgeExtractor
 from .mcp_server import run_server
+from .registry import (
+    build_topology_cache,
+    check_services,
+    discover_repos,
+    get_cached_impact,
+    get_cached_trace,
+    get_repo,
+    is_topology_cache_stale,
+    list_repos,
+    load_topology_cache,
+    refresh_meta,
+    register_repo,
+)
 from .store import EvolutionStore
 
 
@@ -44,7 +51,7 @@ def cmd_backfill(args):
     engine.backfill(progress_callback=progress)
 
     stats = engine.store.get_stats()
-    print(f"\nBackfill complete. Stats:")
+    print("\nBackfill complete. Stats:")
     print(f"  Commits processed: {stats['total_commits']}")
     print(f"  Features discovered: {stats['total_features']}")
     print(f"  Events generated: {stats['total_events']}")
@@ -77,13 +84,14 @@ def cmd_serve(args):
 def cmd_web(args):
     """Start the web dashboard (multi-repo)."""
     from .api import serve
+
     print(f"Starting CodeHistory web server at http://{args.host}:{args.port}")
     serve(host=args.host, port=args.port)
 
 
 def cmd_register(args):
     """Register a repo in the multi-repo registry."""
-    from .registry import register_repo
+
     try:
         entry = register_repo(args.name, args.repo)
         print(f"Registered: {entry['name']} -> {entry['path']}")
@@ -95,6 +103,7 @@ def cmd_register(args):
 def cmd_repos(args):
     """List registered repos."""
     from .registry import list_repos
+
     repos = list_repos()
     if not repos:
         print("No repos registered.")
@@ -123,7 +132,7 @@ def cmd_status(args):
     # Show features
     features = store.get_all_features()
     if features:
-        print(f"\nFeatures:")
+        print("\nFeatures:")
         for f in features[:20]:
             print(f"  [{f['entry_type']}] {f['canonical_name']} ({f['status']})")
         if len(features) > 20:
@@ -138,6 +147,7 @@ def cmd_knowledge(args):
 
     cg_db = config.codegraph_db_path
     from pathlib import Path as P
+
     if not P(cg_db).exists():
         print(f"Error: CodeGraph database not found at {cg_db}")
         print(f"Run: cd {args.repo} && codegraph init")
@@ -149,34 +159,38 @@ def cmd_knowledge(args):
     try:
         if args.section == "api" or args.section == "all":
             api = extractor.extract_api_contract()
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"API Contract: {len(api.endpoints)} endpoints")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             for ep in api.endpoints:
                 print(f"  {ep.method:6s} {ep.path:40s} → {ep.handler_name}")
 
         if args.section == "modules" or args.section == "all":
             mod = extractor.extract_module_topology()
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Module Topology: {len(mod.modules)} modules, coupling={mod.coupling_score}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             for m in mod.modules:
                 deps = mod.dependency_graph.get(m["id"], [])
-                print(f"  {m['id']}: \"{m['name']}\" ({m['file_count']} files, {m['primary_language']}) → {deps}")
+                print(
+                    f'  {m["id"]}: "{m["name"]}" ({m["file_count"]} files, {m["primary_language"]}) → {deps}'
+                )
 
         if args.section == "entities" or args.section == "all":
             ents = extractor.extract_core_entities(20)
-            print(f"\n{'='*60}")
-            print(f"Core Entities (Top 20 by PageRank)")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print("Core Entities (Top 20 by PageRank)")
+            print(f"{'=' * 60}")
             for e in ents:
-                print(f"  {e.pagerank:.4f}  {e.name:35s}  kind={e.kind:8s}  in={e.in_degree:3d}  out={e.out_degree:3d}")
+                print(
+                    f"  {e.pagerank:.4f}  {e.name:35s}  kind={e.kind:8s}  in={e.in_degree:3d}  out={e.out_degree:3d}"
+                )
 
         if args.section == "tests" or args.section == "all":
             cov = extractor.extract_test_coverage_stats()
-            print(f"\n{'='*60}")
-            print(f"Test Coverage")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print("Test Coverage")
+            print(f"{'=' * 60}")
             print(f"  Test functions:       {cov['test_functions']}")
             print(f"  Production functions: {cov['production_functions']}")
             print(f"  Covered:              {cov['covered_functions']} ({cov['coverage_pct']}%)")
@@ -189,28 +203,30 @@ def cmd_knowledge(args):
 
         if args.section == "layers" or args.section == "all":
             viols = extractor.extract_layer_violations()
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Layer Violations: {len(viols)}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             for v in viols:
                 print(f"  [{v.source_layer}] {v.source_file} → [{v.target_layer}] {v.target_file}")
                 print(f"    {v.source_name} → {v.target_name}")
 
         if args.section == "config" or args.section == "all":
             configs = extractor.extract_config_consumption()
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Config Consumption: {len(configs)} config files with consumers")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             for cf in configs:
-                print(f"\n  [{cf['config_file']}] ({cf['key_count']} keys, {cf['consumed_keys']} consumed)")
+                print(
+                    f"\n  [{cf['config_file']}] ({cf['key_count']} keys, {cf['consumed_keys']} consumed)"
+                )
                 for c in cf["consumers"][:10]:
                     print(f"    key={c['config_key']:30s} → {c['consumer_name']}")
 
         if args.section == "deps" or args.section == "all":
             deps = extractor.extract_external_dependencies()
-            print(f"\n{'='*60}")
-            print(f"External Dependencies")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print("External Dependencies")
+            print(f"{'=' * 60}")
             for cat in deps:
                 print(f"\n  [{cat['category']}] ({cat['dependency_count']} dependencies)")
                 for d in cat["dependencies"]:
@@ -218,9 +234,9 @@ def cmd_knowledge(args):
 
         if args.section == "auth" or args.section == "all":
             auth = extractor.extract_authorization_model()
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Authorization Model: {len(auth)} protected endpoints/middleware")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             for a in auth[:20]:
                 extras = ""
                 if a["roles"]:
@@ -234,23 +250,29 @@ def cmd_knowledge(args):
             counts = {"hot": 0, "warm": 0, "cold": 0}
             for h in heat:
                 counts[h["heat"]] += 1
-            print(f"\n{'='*60}")
-            print(f"Heat Map: {len(heat)} functions (hot={counts['hot']} warm={counts['warm']} cold={counts['cold']})")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print(
+                f"Heat Map: {len(heat)} functions (hot={counts['hot']} warm={counts['warm']} cold={counts['cold']})"
+            )
+            print(f"{'=' * 60}")
             print(f"\n  {'HOT (top 10%)':-^50}")
             for h in heat[:15]:
                 if h["heat"] != "hot":
                     break
-                print(f"  [{h['heat']:4s}] {h['name']:35s} callers={h['callers']} callees={h['callees']} [{h.get('layer', '')}]")
+                print(
+                    f"  [{h['heat']:4s}] {h['name']:35s} callers={h['callers']} callees={h['callees']} [{h.get('layer', '')}]"
+                )
             print(f"\n  {'COLD (bottom 40%)':-^50}")
             colds = [h for h in heat if h["heat"] == "cold"]
             for h in colds[:10]:
-                print(f"  [{h['heat']:4s}] {h['name']:35s} callers={h['callers']} callees={h['callees']}")
+                print(
+                    f"  [{h['heat']:4s}] {h['name']:35s} callers={h['callers']} callees={h['callees']}"
+                )
 
         if args.section == "business" or (args.section == "all" and args.llm):
-            print(f"\n{'='*60}")
-            print(f"Business Descriptions (LLM)")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print("Business Descriptions (LLM)")
+            print(f"{'=' * 60}")
             descs = extractor.extract_business_descriptions(limit=20)
             for d in descs:
                 if "error" in d:
@@ -264,9 +286,9 @@ def cmd_knowledge(args):
                         print(f"    - {r}")
 
         if args.section == "rules" or (args.section == "all" and args.llm):
-            print(f"\n{'='*60}")
-            print(f"Business Rules (LLM)")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print("Business Rules (LLM)")
+            print(f"{'=' * 60}")
             rules = extractor.extract_business_rules_llm(limit=15)
             for r in rules:
                 if "error" in r:
@@ -278,9 +300,9 @@ def cmd_knowledge(args):
                 print(f"    On failure: {r.get('failure_mode', '')}")
 
         if args.section == "errors" or (args.section == "all" and args.llm):
-            print(f"\n{'='*60}")
-            print(f"Error Catalog (LLM)")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print("Error Catalog (LLM)")
+            print(f"{'=' * 60}")
             errors = extractor.extract_error_catalog(limit=20)
             for e in errors:
                 if "error" in e:
@@ -288,12 +310,14 @@ def cmd_knowledge(args):
                     break
                 print(f"  [{e['error_type']}] in {e['function']}")
                 print(f"    Trigger: {e.get('trigger_condition', '')}")
-                print(f"    Handling: {e.get('handling', '')} | User-facing: {e.get('user_facing', False)}")
+                print(
+                    f"    Handling: {e.get('handling', '')} | User-facing: {e.get('user_facing', False)}"
+                )
 
         if args.section == "states" or (args.section == "all" and args.llm):
-            print(f"\n{'='*60}")
-            print(f"State Machines (LLM)")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print("State Machines (LLM)")
+            print(f"{'=' * 60}")
             machines = extractor.extract_state_machines()
             for sm in machines:
                 if "error" in sm:
@@ -302,7 +326,7 @@ def cmd_knowledge(args):
                 print(f"\n  Entity: {sm['entity']}")
                 print(f"  States: [{', '.join(sm['states'])}]")
                 print(f"  Initial: {sm['initial_state']} → Terminal: {sm['terminal_states']}")
-                print(f"  Transitions:")
+                print("  Transitions:")
                 for t in sm.get("transitions", []):
                     print(f"    {t.get('from', '?')} → {t.get('to', '?')}: {t.get('trigger', '?')}")
 
@@ -326,7 +350,9 @@ def main():
     # backfill
     p = subparsers.add_parser("backfill", help="Full initial analysis from git history")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
-    p.add_argument("--db", "-d", default="", help="Path to database (default: .codehistory/evolution.db)")
+    p.add_argument(
+        "--db", "-d", default="", help="Path to database (default: .codehistory/evolution.db)"
+    )
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     p.set_defaults(handler=cmd_backfill)
 
@@ -341,9 +367,13 @@ def main():
     p = subparsers.add_parser("serve", help="Start MCP server")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database")
-    p.add_argument("--transport", "-t", default="stdio",
-                   choices=["stdio", "sse", "streamable-http"],
-                   help="MCP transport (default: stdio)")
+    p.add_argument(
+        "--transport",
+        "-t",
+        default="stdio",
+        choices=["stdio", "sse", "streamable-http"],
+        help="MCP transport (default: stdio)",
+    )
     p.set_defaults(handler=cmd_serve)
 
     # web
@@ -370,42 +400,71 @@ def main():
 
     # knowledge
     p = subparsers.add_parser("knowledge", help="Extract business knowledge from code (Phase 1)")
-    p.add_argument("--repo", "-r", required=True, help="Path to git repository with CodeGraph initialized")
+    p.add_argument(
+        "--repo", "-r", required=True, help="Path to git repository with CodeGraph initialized"
+    )
     p.add_argument("--output", "-o", default="", help="Output JSON file path (default: stdout)")
-    p.add_argument("--section", "-s", default="all",
-                   choices=["all", "api", "modules", "entities", "tests", "layers",
-                            "config", "deps", "auth", "heatmap",
-                            "business", "rules", "errors", "states"],
-                   help="Which knowledge section to extract (default: all)")
-    p.add_argument("--llm", action="store_true",
-                   help="Enable LLM-powered Phase 3 analysis")
+    p.add_argument(
+        "--section",
+        "-s",
+        default="all",
+        choices=[
+            "all",
+            "api",
+            "modules",
+            "entities",
+            "tests",
+            "layers",
+            "config",
+            "deps",
+            "auth",
+            "heatmap",
+            "business",
+            "rules",
+            "errors",
+            "states",
+        ],
+        help="Which knowledge section to extract (default: all)",
+    )
+    p.add_argument("--llm", action="store_true", help="Enable LLM-powered Phase 3 analysis")
     p.set_defaults(handler=cmd_knowledge)
 
     # cross-repo topology
-    p = subparsers.add_parser("topology", help="Build unified multi-service topology from registered repos")
-    p.add_argument("--service", "-s", default="",
-                   help="Single service name to analyze (default: all registered)")
-    p.add_argument("--no-cache", action="store_true",
-                   help="Force rebuild topology (don't use cache)")
+    p = subparsers.add_parser(
+        "topology", help="Build unified multi-service topology from registered repos"
+    )
+    p.add_argument(
+        "--service",
+        "-s",
+        default="",
+        help="Single service name to analyze (default: all registered)",
+    )
+    p.add_argument(
+        "--no-cache", action="store_true", help="Force rebuild topology (don't use cache)"
+    )
     p.set_defaults(handler=cmd_topology)
 
     # cross-repo impact
     p = subparsers.add_parser("impact", help="Cross-service change impact analysis")
     p.add_argument("--service", "-s", required=True, help="Service name to analyze impact for")
-    p.add_argument("--no-cache", action="store_true",
-                   help="Force rebuild topology (don't use cache)")
+    p.add_argument(
+        "--no-cache", action="store_true", help="Force rebuild topology (don't use cache)"
+    )
     p.set_defaults(handler=cmd_impact)
 
     # cross-repo trace
     p = subparsers.add_parser("trace", help="Trace end-to-end flow across services")
     p.add_argument("--service", "-s", required=True, help="Starting service name")
     p.add_argument("--path", "-p", default="", help="Starting API path (optional)")
-    p.add_argument("--no-cache", action="store_true",
-                   help="Force rebuild topology (don't use cache)")
+    p.add_argument(
+        "--no-cache", action="store_true", help="Force rebuild topology (don't use cache)"
+    )
     p.set_defaults(handler=cmd_trace)
 
     # discover
-    p = subparsers.add_parser("discover", help="Scan directory for git repos and suggest registrations")
+    p = subparsers.add_parser(
+        "discover", help="Scan directory for git repos and suggest registrations"
+    )
     p.add_argument("--dir", "-d", default=".", help="Root directory to scan (default: current)")
     p.set_defaults(handler=cmd_discover)
 
@@ -418,15 +477,21 @@ def main():
     p.set_defaults(handler=cmd_init_all)
 
     # P2: enhanced flow trace
-    p = subparsers.add_parser("flow", help="End-to-end flow trace across all channels (HTTP+MQ+gRPC+DB)")
+    p = subparsers.add_parser(
+        "flow", help="End-to-end flow trace across all channels (HTTP+MQ+gRPC+DB)"
+    )
     p.add_argument("--service", "-s", required=True, help="Starting service name")
     p.add_argument("--path", "-p", default="", help="Starting API path (optional)")
     p.add_argument("--no-cache", action="store_true", help="Force rebuild topology")
     p.set_defaults(handler=cmd_flow)
 
     # P2: entity alignment
-    p = subparsers.add_parser("entities", help="Cross-service entity alignment (same concept, different names)")
-    p.add_argument("--llm", action="store_true", help="Use LLM to verify and explain entity mappings")
+    p = subparsers.add_parser(
+        "entities", help="Cross-service entity alignment (same concept, different names)"
+    )
+    p.add_argument(
+        "--llm", action="store_true", help="Use LLM to verify and explain entity mappings"
+    )
     p.set_defaults(handler=cmd_entities)
 
     args = parser.parse_args()
@@ -480,12 +545,14 @@ def cmd_impact(args):
     if not args.no_cache and not is_topology_cache_stale(entries):
         impact = get_cached_impact(args.service)
         if impact:
-            print(f"[from cache]")
+            print("[from cache]")
             print(f"  Upstream (who calls us):   {impact['upstream_impact']}")
             print(f"  Downstream (who we call):  {impact['downstream_impact']}")
             print(f"  Affected cross-edges: {len(impact['affected_cross_edges'])}")
             for e in impact["affected_cross_edges"][:15]:
-                print(f"    {e['source_service']} → {e['target_service']}: {e['http_method']} {e['url_pattern']}")
+                print(
+                    f"    {e['source_service']} → {e['target_service']}: {e['http_method']} {e['url_pattern']}"
+                )
             return
 
     analyzer = CrossRepoAnalyzer(entries)
@@ -505,7 +572,7 @@ def cmd_trace(args):
     if not args.no_cache and not is_topology_cache_stale(entries):
         chain = get_cached_trace(args.service, args.path or None)
         if chain is not None:
-            print(f"[from cache]")
+            print("[from cache]")
             for step in chain:
                 indent = "  " * step.get("depth", 0)
                 print(f"{indent}[{step['http_method']} {step['url_pattern']}]")
@@ -551,8 +618,10 @@ def cmd_check(args):
     print(f"\nService Health: {ok} OK, {warn} warning, {err} error\n")
     for r in results:
         icon = {"ok": "[OK]", "warning": "[!!]", "error": "[XX]", "info": "[i ]"}[r["status"]]
-        print(f"  {icon} {r['name']:25s} | lang={r['language']:10s} role={r['role']:10s} "
-              f"symbols={r['cg_symbols']:5d} edges={r['cg_edges']:5d}")
+        print(
+            f"  {icon} {r['name']:25s} | lang={r['language']:10s} role={r['role']:10s} "
+            f"symbols={r['cg_symbols']:5d} edges={r['cg_edges']:5d}"
+        )
         if r["db_types"]:
             print(f"       DB: {', '.join(r['db_types'])}")
         if r["mq_types"]:
@@ -564,7 +633,7 @@ def cmd_check(args):
 
 def _get_services(args):
     """Get service entries from args or registry."""
-    if getattr(args, 'service', ''):
+    if getattr(args, "service", ""):
         entry = get_repo(args.service)
         return [entry] if entry else []
     return list_repos()
@@ -573,6 +642,7 @@ def _get_services(args):
 def _format_age(timestamp: float) -> str:
     """Format a timestamp as human-readable age."""
     import time
+
     age = time.time() - timestamp
     if age < 60:
         return f"{int(age)}s ago"
@@ -589,11 +659,13 @@ def _print_cached_topology(cached: dict):
     for s in cached["services"]:
         db_str = f" DB={s['db_types']}" if s.get("db_types") else ""
         mq_str = f" MQ={s['mq_types']}" if s.get("mq_types") else ""
-        print(f"  [{s['language']:6s}] {s['name']:20s} ({s['role']})"
-              f"  APIs={s['api_count']} deps={s['dependencies']}{db_str}{mq_str}")
+        print(
+            f"  [{s['language']:6s}] {s['name']:20s} ({s['role']})"
+            f"  APIs={s['api_count']} deps={s['dependencies']}{db_str}{mq_str}"
+        )
 
     if cached.get("dependency_graph"):
-        print(f"\nDependency Graph:")
+        print("\nDependency Graph:")
         for svc, deps in sorted(cached["dependency_graph"].items()):
             for d in deps:
                 print(f"  {svc} → {d}")
@@ -601,7 +673,9 @@ def _print_cached_topology(cached: dict):
     if cached.get("cross_edges"):
         print(f"\nCross-Service Edges ({cached['_edge_count']}):")
         for e in cached["cross_edges"][:20]:
-            print(f"  {e['source_service']} ──[{e['http_method']} {e['url_pattern']}]──→ {e['target_service']}")
+            print(
+                f"  {e['source_service']} ──[{e['http_method']} {e['url_pattern']}]──→ {e['target_service']}"
+            )
 
 
 def cmd_init_all(args):
@@ -625,19 +699,25 @@ def cmd_init_all(args):
         try:
             result = sp.run(
                 ["codegraph", "init", path],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             if result.returncode == 0:
                 # Refresh metadata after init
                 refresh_meta(name)
                 print(f"  [ OK ] {name}")
             else:
-                last_line = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown error"
+                last_line = (
+                    result.stderr.strip().split("\n")[-1] if result.stderr else "unknown error"
+                )
                 print(f"  [FAIL] {name}: {last_line[:100]}")
         except sp.TimeoutExpired:
             print(f"  [FAIL] {name}: timed out after 120s")
         except FileNotFoundError:
-            print(f"  [FAIL] codegraph not found in PATH. Install: npm i -g @colbymchenry/codegraph")
+            print(
+                "  [FAIL] codegraph not found in PATH. Install: npm i -g @colbymchenry/codegraph"
+            )
             break
 
     print("\nDone. Run 'codehistory check' to verify status.")

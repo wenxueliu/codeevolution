@@ -10,29 +10,30 @@ P0 capabilities:
 All reads from each service's `.codegraph/codegraph.db` SQLite.
 """
 
-import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
 
-from .infrastructure.codegraph_sqlite import read_rows
 from .analysis.topology.matching import PathMatcher
-
+from .infrastructure.codegraph_sqlite import read_rows
 
 # ── HTTP client call patterns per language ─────────────────────────────
 
 # (function_name_pattern, http_method_inference)
 HTTP_CLIENT_CALLERS: dict[str, list[tuple[str, str]]] = {
     "python": [
-        ("requests.get", "GET"), ("requests.post", "POST"),
-        ("requests.put", "PUT"), ("requests.delete", "DELETE"),
-        ("requests.patch", "PATCH"), ("requests.head", "HEAD"),
+        ("requests.get", "GET"),
+        ("requests.post", "POST"),
+        ("requests.put", "PUT"),
+        ("requests.delete", "DELETE"),
+        ("requests.patch", "PATCH"),
+        ("requests.head", "HEAD"),
         ("requests.request", None),  # method is first arg
-        ("httpx.get", "GET"), ("httpx.post", "POST"),
-        ("httpx.put", "PUT"), ("httpx.delete", "DELETE"),
+        ("httpx.get", "GET"),
+        ("httpx.post", "POST"),
+        ("httpx.put", "PUT"),
+        ("httpx.delete", "DELETE"),
         ("httpx.patch", "PATCH"),
         ("urllib.request.urlopen", None),
         ("urllib3.PoolManager.request", None),
@@ -41,94 +42,116 @@ HTTP_CLIENT_CALLERS: dict[str, list[tuple[str, str]]] = {
     ],
     "javascript": [
         ("fetch", None),  # method is in options
-        ("axios.get", "GET"), ("axios.post", "POST"),
-        ("axios.put", "PUT"), ("axios.delete", "DELETE"),
+        ("axios.get", "GET"),
+        ("axios.post", "POST"),
+        ("axios.put", "PUT"),
+        ("axios.delete", "DELETE"),
         ("axios.patch", "PATCH"),
         ("got(", "GET"),  # got.post, got.get etc. — check callee name
     ],
     "typescript": [
-        ("fetch", None), ("axios.get", "GET"), ("axios.post", "POST"),
-        ("axios.put", "PUT"), ("axios.delete", "DELETE"), ("axios.patch", "PATCH"),
+        ("fetch", None),
+        ("axios.get", "GET"),
+        ("axios.post", "POST"),
+        ("axios.put", "PUT"),
+        ("axios.delete", "DELETE"),
+        ("axios.patch", "PATCH"),
         ("got(", "GET"),
     ],
     "java": [
         ("RestTemplate.getForObject", "GET"),
         ("RestTemplate.postForObject", "POST"),
-        ("RestTemplate.put", "PUT"), ("RestTemplate.delete", "DELETE"),
+        ("RestTemplate.put", "PUT"),
+        ("RestTemplate.delete", "DELETE"),
         ("RestTemplate.exchange", None),
-        ("WebClient.get", "GET"), ("WebClient.post", "POST"),
-        ("WebClient.put", "PUT"), ("WebClient.delete", "DELETE"),
+        ("WebClient.get", "GET"),
+        ("WebClient.post", "POST"),
+        ("WebClient.put", "PUT"),
+        ("WebClient.delete", "DELETE"),
         ("HttpClient.send", None),
         ("OkHttpClient.newCall", None),
         ("HttpURLConnection", None),
     ],
     "go": [
-        ("http.Get", "GET"), ("http.Post", "POST"),
-        ("http.PostForm", "POST"), ("http.Head", "HEAD"),
+        ("http.Get", "GET"),
+        ("http.Post", "POST"),
+        ("http.PostForm", "POST"),
+        ("http.Head", "HEAD"),
         ("http.NewRequest", None),
         ("http.NewRequestWithContext", None),
     ],
     "rust": [
-        ("reqwest::get", "GET"), ("reqwest::Client.get", "GET"),
-        ("reqwest::Client.post", "POST"), ("reqwest::Client.put", "PUT"),
+        ("reqwest::get", "GET"),
+        ("reqwest::Client.get", "GET"),
+        ("reqwest::Client.post", "POST"),
+        ("reqwest::Client.put", "PUT"),
         ("reqwest::Client.delete", "DELETE"),
-        ("ureq::get", "GET"), ("ureq::post", "POST"),
+        ("ureq::get", "GET"),
+        ("ureq::post", "POST"),
     ],
     "ruby": [
-        ("Net::HTTP.get", "GET"), ("Net::HTTP.post", "POST"),
-        ("Faraday.get", "GET"), ("Faraday.post", "POST"),
-        ("HTTParty.get", "GET"), ("HTTParty.post", "POST"),
+        ("Net::HTTP.get", "GET"),
+        ("Net::HTTP.post", "POST"),
+        ("Faraday.get", "GET"),
+        ("Faraday.post", "POST"),
+        ("HTTParty.get", "GET"),
+        ("HTTParty.post", "POST"),
     ],
 }
 
 
 # ── Output types ───────────────────────────────────────────────────────
 
+
 @dataclass
 class OutboundCall:
     """An HTTP call made by a function to another service."""
+
     caller_service: str
-    caller_function: str      # qualified_name
+    caller_function: str  # qualified_name
     caller_file: str
     caller_line: int
-    http_method: str | None   # GET/POST/PUT/DELETE or None (inferred from context)
-    url_or_pattern: str       # raw URL string from source if extractable
-    callee_name: str          # the HTTP client function name
+    http_method: str | None  # GET/POST/PUT/DELETE or None (inferred from context)
+    url_or_pattern: str  # raw URL string from source if extractable
+    callee_name: str  # the HTTP client function name
 
 
 @dataclass
 class CrossServiceEdge:
     """A matched cross-service call."""
+
     source_service: str
     source_function: str
     source_file: str
     source_line: int
     target_service: str
-    target_function: str      # handler qualified_name
+    target_function: str  # handler qualified_name
     target_file: str
     target_line: int
     http_method: str
-    url_pattern: str          # matched route template, e.g. /api/users/:id
-    raw_url: str              # raw URL from the caller
+    url_pattern: str  # matched route template, e.g. /api/users/:id
+    raw_url: str  # raw URL from the caller
 
 
 @dataclass
 class ServiceNode:
     """A service in the unified topology."""
+
     name: str
     repo_path: str
     language: str
-    role: str = ""             # gateway/backend/worker/cron/unknown
-    apis: list[dict] = field(default_factory=list)            # inbound API list
+    role: str = ""  # gateway/backend/worker/cron/unknown
+    apis: list[dict] = field(default_factory=list)  # inbound API list
     outbound_calls: list[dict] = field(default_factory=list)  # outbound HTTP calls
-    dependencies: list[str] = field(default_factory=list)     # other service names
-    db_type: str = ""          # postgres/mysql/mongodb/redis/...
-    mq_type: str = ""          # kafka/rabbitmq/nats/...
+    dependencies: list[str] = field(default_factory=list)  # other service names
+    db_type: str = ""  # postgres/mysql/mongodb/redis/...
+    mq_type: str = ""  # kafka/rabbitmq/nats/...
 
 
 @dataclass
 class UnifiedTopology:
     """The complete multi-service call topology."""
+
     services: list[ServiceNode]
     cross_edges: list[CrossServiceEdge]
     # adjacency: service → [dependent_service_names]
@@ -138,6 +161,7 @@ class UnifiedTopology:
 
 
 # ── Cross-repo analyzer ────────────────────────────────────────────────
+
 
 class CrossRepoAnalyzer:
     """Analyzes multiple code repos as a unified microservice system.
@@ -187,14 +211,20 @@ class CrossRepoAnalyzer:
             all_outbound.extend(outbound)
 
             # We'll collect inbound APIs from each service for matching
-            from .knowledge import KnowledgeExtractor
             from .codegraph_reader import CodeGraphReader
+            from .knowledge import KnowledgeExtractor
+
             reader = CodeGraphReader(db_path)
             ke = KnowledgeExtractor(reader)
             api = ke.extract_api_contract()
             all_inbound[repo["name"]] = [
-                {"method": ep.method, "path": ep.path, "handler": ep.handler_name,
-                 "file": ep.file_path, "line": ep.line}
+                {
+                    "method": ep.method,
+                    "path": ep.path,
+                    "handler": ep.handler_name,
+                    "file": ep.file_path,
+                    "line": ep.line,
+                }
                 for ep in api.endpoints
             ]
             reader.close()
@@ -228,11 +258,14 @@ class CrossRepoAnalyzer:
     def _analyze_service(self, name: str, path: str, db_path: str) -> ServiceNode:
         """Classify a service by its tech stack and role."""
         # Detect primary language
-        lang_rows = self._query(db_path, """
+        lang_rows = self._query(
+            db_path,
+            """
             SELECT language, COUNT(*) AS cnt FROM files
             WHERE language != 'unknown'
             GROUP BY language ORDER BY cnt DESC LIMIT 1
-        """)
+        """,
+        )
         language = lang_rows[0]["language"] if lang_rows else "unknown"
 
         # Detect service role by path patterns
@@ -274,9 +307,13 @@ class CrossRepoAnalyzer:
         }
         for db_type, patterns in db_patterns.items():
             for p in patterns:
-                rows = self._query(db_path, """
+                rows = self._query(
+                    db_path,
+                    """
                     SELECT 1 FROM nodes WHERE name LIKE ? LIMIT 1
-                """, [f"%{p}%"])
+                """,
+                    [f"%{p}%"],
+                )
                 if rows:
                     return db_type
         return ""
@@ -293,9 +330,13 @@ class CrossRepoAnalyzer:
         }
         for mq, patterns in mq_patterns.items():
             for p in patterns:
-                rows = self._query(db_path, """
+                rows = self._query(
+                    db_path,
+                    """
                     SELECT 1 FROM nodes WHERE name LIKE ? LIMIT 1
-                """, [f"%{p}%"])
+                """,
+                    [f"%{p}%"],
+                )
                 if rows:
                     return mq
         return ""
@@ -308,11 +349,14 @@ class CrossRepoAnalyzer:
 
         # Get the language pattern set for this service
         # First detect language
-        lang_row = self._query(db_path, """
+        lang_row = self._query(
+            db_path,
+            """
             SELECT language FROM files
             WHERE language != 'unknown'
             GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1
-        """)
+        """,
+        )
         language = lang_row[0]["language"] if lang_row else ""
         patterns = HTTP_CLIENT_CALLERS.get(language, [])
 
@@ -321,7 +365,9 @@ class CrossRepoAnalyzer:
 
         # Find all call edges where the callee matches an HTTP client pattern
         for pattern, method in patterns:
-            rows = self._query(db_path, """
+            rows = self._query(
+                db_path,
+                """
                 SELECT n1.name AS caller_name, n1.qualified_name AS caller_qname,
                        n1.file_path, n1.start_line AS caller_line,
                        n2.name AS callee_name,
@@ -331,23 +377,25 @@ class CrossRepoAnalyzer:
                 JOIN nodes n2 ON n2.id = e.target
                 WHERE e.kind = 'calls'
                   AND n2.name LIKE ?
-            """, [f"%{pattern}%"])
+            """,
+                [f"%{pattern}%"],
+            )
 
             for r in rows:
                 # Try to extract URL from the call context
-                url = self._extract_url_from_context(
-                    db_path, r["caller_qname"], r["call_line"]
-                )
+                url = self._extract_url_from_context(db_path, r["caller_qname"], r["call_line"])
 
-                results.append(OutboundCall(
-                    caller_service=service_name,
-                    caller_function=r["caller_qname"],
-                    caller_file=r["file_path"],
-                    caller_line=r["caller_line"],
-                    http_method=method,
-                    url_or_pattern=url or "",
-                    callee_name=r["callee_name"],
-                ))
+                results.append(
+                    OutboundCall(
+                        caller_service=service_name,
+                        caller_function=r["caller_qname"],
+                        caller_file=r["file_path"],
+                        caller_line=r["caller_line"],
+                        http_method=method,
+                        url_or_pattern=url or "",
+                        callee_name=r["callee_name"],
+                    )
+                )
 
         return results
 
@@ -366,10 +414,14 @@ class CrossRepoAnalyzer:
             return None
 
         # Find the caller context
-        caller_row = self._query(db_path, """
+        caller_row = self._query(
+            db_path,
+            """
             SELECT file_path, start_line, end_line FROM nodes
             WHERE qualified_name = ? AND kind IN ('function', 'method')
-        """, [caller_qname])
+        """,
+            [caller_qname],
+        )
         if not caller_row:
             return None
 
@@ -384,7 +436,9 @@ class CrossRepoAnalyzer:
         # Strategy 2: look for variable assignments on preceding lines
         func_start = c["start_line"]
         func_end = c["end_line"]
-        candidates = self._query(db_path, """
+        candidates = self._query(
+            db_path,
+            """
             SELECT name, start_line FROM nodes
             WHERE file_path = ?
               AND start_line BETWEEN ? AND ?
@@ -395,22 +449,19 @@ class CrossRepoAnalyzer:
                 OR name LIKE '%host%' OR name LIKE '%service_url%'
               )
             ORDER BY start_line
-        """, [file_path, func_start, func_end])
+        """,
+            [file_path, func_start, func_end],
+        )
 
         for cand in candidates:
             name = cand["name"]
-            url_match = re.search(
-                r'(?:https?://[^\s\'",;]+|/[a-z]+/[^\s\'",;]+)',
-                name
-            )
+            url_match = re.search(r'(?:https?://[^\s\'",;]+|/[a-z]+/[^\s\'",;]+)', name)
             if url_match:
                 return url_match.group(0)
 
         return None
 
-    def _extract_url_from_source(
-        self, file_path: str, call_line: int, db_path: str
-    ) -> str | None:
+    def _extract_url_from_source(self, file_path: str, call_line: int, db_path: str) -> str | None:
         """Read source code around the call line and extract URL from arguments.
 
         Handles:
@@ -421,7 +472,6 @@ class CrossRepoAnalyzer:
           - variable references where the variable is a URL
         """
         # Read ~10 lines around the call
-        full_path = Path(self.repos[0]["path"]).parent  # repo root
         # Actually, we need the actual repo path. Let's derive from db_path.
         repo_root = str(Path(db_path).parent.parent)
         source_path = str(Path(repo_root) / file_path)
@@ -445,7 +495,7 @@ class CrossRepoAnalyzer:
         # Pattern 1: f-string / template literal with URL
         # f"http://{host}/api/users/{id}" or f'http://{host}/api/users/{id}'
         for pat in [
-            r'''f["'](https?://[^"'{]+)''',
+            r"""f["'](https?://[^"'{]+)""",
             r"""f['"](https?://[^'"}{]+)""",
         ]:
             m = re.search(pat, context)
@@ -453,7 +503,7 @@ class CrossRepoAnalyzer:
                 return m.group(1).rstrip("/")
 
         # Pattern 2: JS template literal `http://${host}/...`
-        m = re.search(r'`(https?://[^`]+)`', context)
+        m = re.search(r"`(https?://[^`]+)`", context)
         if m:
             return m.group(1).rstrip("/")
 
@@ -468,8 +518,7 @@ class CrossRepoAnalyzer:
 
         # Pattern 4: string concatenation — "http://" + host + "/api/users/" + id
         m = re.search(
-            r'''["'](https?://)["']\s*\+\s*([^+]+?)\s*\+\s*["']((?:/[^"']*)?)["']''',
-            context
+            r"""["'](https?://)["']\s*\+\s*([^+]+?)\s*\+\s*["']((?:/[^"']*)?)["']""", context
         )
         if m:
             # Return f-string style: keep the concat as readable URL
@@ -478,18 +527,18 @@ class CrossRepoAnalyzer:
         # Pattern 5: URL constructed from a constant variable
         # Look for variable names like USER_SERVICE_URL, API_BASE, etc.
         m = re.search(
-            r'(?:requests\.\w+|fetch|axios\.\w+|httpx\.\w+)\((?:'
+            r"(?:requests\.\w+|fetch|axios\.\w+|httpx\.\w+)\((?:"
             r'f["\']?(https?://[^"\'{]+)|'
             r'["\']?(https?://[^"\'{]+)|'
-            r'(\w+(?:_URL|_HOST|_ENDPOINT|_BASE))'
-            r')',
-            call_text
+            r"(\w+(?:_URL|_HOST|_ENDPOINT|_BASE))"
+            r")",
+            call_text,
         )
         if m:
             return m.group(1) or m.group(2) or m.group(3) or ""
 
         # Pattern 6: URL path-only pattern (relative URL)
-        m = re.search(r'''["'](/api/[^\s"'*,;)]+)["']''', context)
+        m = re.search(r"""["'](/api/[^\s"'*,;)]+)["']""", context)
         if m:
             return m.group(1)
 
@@ -532,19 +581,21 @@ class CrossRepoAnalyzer:
 
                     # Path matching
                     if self._paths_match(path, api_path):
-                        edges.append(CrossServiceEdge(
-                            source_service=call.caller_service,
-                            source_function=call.caller_function,
-                            source_file=call.caller_file,
-                            source_line=call.caller_line,
-                            target_service=svc_name,
-                            target_function=api.get("handler", ""),
-                            target_file=api.get("file", ""),
-                            target_line=api.get("line", 0),
-                            http_method=api_method or method or "UNKNOWN",
-                            url_pattern=api_path,
-                            raw_url=url,
-                        ))
+                        edges.append(
+                            CrossServiceEdge(
+                                source_service=call.caller_service,
+                                source_function=call.caller_function,
+                                source_file=call.caller_file,
+                                source_line=call.caller_line,
+                                target_service=svc_name,
+                                target_function=api.get("handler", ""),
+                                target_file=api.get("file", ""),
+                                target_line=api.get("line", 0),
+                                http_method=api_method or method or "UNKNOWN",
+                                url_pattern=api_path,
+                                raw_url=url,
+                            )
+                        )
                         break  # first match wins
 
         return edges
@@ -582,8 +633,7 @@ class CrossRepoAnalyzer:
         Useful for surfacing calls that might be to external services
         or where URL extraction failed to produce a matchable pattern.
         """
-        matched_callers = {(e.source_service, e.source_function, e.raw_url)
-                          for e in matched}
+        matched_callers = {(e.source_service, e.source_function, e.raw_url) for e in matched}
 
         potential = []
         for call in outbound:
@@ -598,18 +648,20 @@ class CrossRepoAnalyzer:
             # Guess target service from URL hostname
             host = self._extract_host(url)
             if host:
-                potential.append({
-                    "source_service": call.caller_service,
-                    "source_function": call.caller_function,
-                    "source_file": call.caller_file,
-                    "source_line": call.caller_line,
-                    "http_method": call.http_method,
-                    "url": url,
-                    "suspected_target": host,
-                    "reason": "URL hostname matched a known service name"
-                    if any(r["name"] in host for r in self.repos)
-                    else "Possible external service",
-                })
+                potential.append(
+                    {
+                        "source_service": call.caller_service,
+                        "source_function": call.caller_function,
+                        "source_file": call.caller_file,
+                        "source_line": call.caller_line,
+                        "http_method": call.http_method,
+                        "url": url,
+                        "suspected_target": host,
+                        "reason": "URL hostname matched a known service name"
+                        if any(r["name"] in host for r in self.repos)
+                        else "Possible external service",
+                    }
+                )
 
         return potential
 
@@ -632,21 +684,19 @@ class CrossRepoAnalyzer:
         downstream = dep_graph.get(changed_service, [])
 
         # Upstream: services that call THIS service
-        upstream = [
-            svc for svc, deps in dep_graph.items()
-            if changed_service in deps
-        ]
+        upstream = [svc for svc, deps in dep_graph.items() if changed_service in deps]
 
         # Affected edges (cross-service edges involving this service)
         affected_edges = [
-            e for e in topology.cross_edges
+            e
+            for e in topology.cross_edges
             if e.source_service == changed_service or e.target_service == changed_service
         ]
 
         return {
             "service": changed_service,
-            "upstream_impact": upstream,          # who calls us
-            "downstream_impact": downstream,       # who we call
+            "upstream_impact": upstream,  # who calls us
+            "downstream_impact": downstream,  # who we call
             "affected_cross_edges": [
                 {
                     "from": f"{e.source_service}::{e.source_function}",
@@ -675,10 +725,7 @@ class CrossRepoAnalyzer:
             max_depth: Max cross-service hops.
         """
         # Find matching edges from start_service
-        edges = [
-            e for e in topology.cross_edges
-            if e.source_service == start_service
-        ]
+        edges = [e for e in topology.cross_edges if e.source_service == start_service]
         if start_api_path:
             edges = [e for e in edges if e.url_pattern == start_api_path]
 
@@ -690,10 +737,7 @@ class CrossRepoAnalyzer:
                 return
 
             # Get all outbound edges from this service
-            outgoing = [
-                e for e in topology.cross_edges
-                if e.source_service == service
-            ]
+            outgoing = [e for e in topology.cross_edges if e.source_service == service]
 
             for e in outgoing:
                 edge_key = (e.source_service, e.target_service, e.url_pattern)
@@ -701,15 +745,17 @@ class CrossRepoAnalyzer:
                     continue
                 visited_edges.add(edge_key)
 
-                chain.append({
-                    "depth": depth,
-                    "from_service": e.source_service,
-                    "from_function": e.source_function,
-                    "to_service": e.target_service,
-                    "to_function": e.target_function,
-                    "method": e.http_method,
-                    "url": e.url_pattern,
-                })
+                chain.append(
+                    {
+                        "depth": depth,
+                        "from_service": e.source_service,
+                        "from_function": e.source_function,
+                        "to_service": e.target_service,
+                        "to_function": e.target_function,
+                        "method": e.http_method,
+                        "url": e.url_pattern,
+                    }
+                )
 
                 # Follow into the target service
                 follow(e.target_service, depth + 1, e.url_pattern)
@@ -722,9 +768,11 @@ class CrossRepoAnalyzer:
     def format_topology(self, t: UnifiedTopology) -> str:
         """Render the unified topology as text."""
         lines = []
-        lines.append(f"{'='*70}")
-        lines.append(f"Unified Topology: {len(t.services)} services, {len(t.cross_edges)} cross-service edges")
-        lines.append(f"{'='*70}")
+        lines.append(f"{'=' * 70}")
+        lines.append(
+            f"Unified Topology: {len(t.services)} services, {len(t.cross_edges)} cross-service edges"
+        )
+        lines.append(f"{'=' * 70}")
 
         # Service list
         lines.append("\nServices:")
@@ -776,9 +824,9 @@ class CrossRepoAnalyzer:
     def format_impact(self, impact: dict) -> str:
         """Render impact analysis as text."""
         lines = [
-            f"{'='*60}",
+            f"{'=' * 60}",
             f"Impact Analysis: {impact['service']}",
-            f"{'='*60}",
+            f"{'=' * 60}",
             f"  Upstream (who calls us):   {impact['upstream_impact']}",
             f"  Downstream (who we call):  {impact['downstream_impact']}",
             f"  Affected cross-edges: {len(impact['affected_cross_edges'])}",
@@ -792,7 +840,7 @@ class CrossRepoAnalyzer:
         if not chain:
             return "No cross-service flow found."
 
-        lines = [f"{'='*60}", "End-to-End Flow Trace", f"{'='*60}"]
+        lines = [f"{'=' * 60}", "End-to-End Flow Trace", f"{'=' * 60}"]
         for step in chain:
             indent = "  " * step["depth"]
             lines.append(

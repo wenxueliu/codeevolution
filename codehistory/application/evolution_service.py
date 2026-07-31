@@ -26,4 +26,3 @@ class EvolutionQueryService:
 
     def list_events(self, stable_id: str) -> list[dict]:
         return self.store.get_feature_timeline(stable_id)
-

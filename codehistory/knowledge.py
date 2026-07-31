@@ -23,7 +23,7 @@ from pathlib import Path
 import networkx as nx
 from networkx.algorithms.community import louvain_communities
 
-from .codegraph_reader import CodeGraphReader, FunctionDef, HTTP_DECORATORS
+from .codegraph_reader import HTTP_DECORATORS, CodeGraphReader, FunctionDef
 from .domain.knowledge import (
     ApiContract,
     ApiEndpoint,
@@ -34,7 +34,6 @@ from .domain.knowledge import (
 )
 from .infrastructure.source_filesystem import FileSystemSourceProvider
 from .ports import SourceProvider
-
 
 # ── Layer classification ──────────────────────────────────────────────
 
@@ -93,24 +92,40 @@ LAYER_ALLOWED = {
     ("presentation", "infrastructure"): False,  # violation
     ("application", "domain"): True,
     ("application", "infrastructure"): True,
-    ("domain", "presentation"): False,          # violation
-    ("domain", "application"): False,            # violation
-    ("domain", "infrastructure"): True,          # via interface/port
-    ("infrastructure", "presentation"): False,   # violation
-    ("infrastructure", "application"): False,    # violation
-    ("infrastructure", "domain"): False,         # violation
+    ("domain", "presentation"): False,  # violation
+    ("domain", "application"): False,  # violation
+    ("domain", "infrastructure"): True,  # via interface/port
+    ("infrastructure", "presentation"): False,  # violation
+    ("infrastructure", "application"): False,  # violation
+    ("infrastructure", "domain"): False,  # violation
 }
 
 # File-path patterns for test detection
 TEST_PATH_PATTERNS = (
-    "/tests/", "/test/", "/__tests__/", "/spec/", "/specs/",
-    "/fixtures/", "/e2e/", "/integration/", "/__mocks__/",
-    ".test.", ".spec.", "_test.py", "_test.java", "test_", "_test.go",
-    "Test.java", "Tests.java", "Test.kt", "Tests.kt",
+    "/tests/",
+    "/test/",
+    "/__tests__/",
+    "/spec/",
+    "/specs/",
+    "/fixtures/",
+    "/e2e/",
+    "/integration/",
+    "/__mocks__/",
+    ".test.",
+    ".spec.",
+    "_test.py",
+    "_test.java",
+    "test_",
+    "_test.go",
+    "Test.java",
+    "Tests.java",
+    "Test.kt",
+    "Tests.kt",
 )
 
 
 # ── Knowledge extractor ────────────────────────────────────────────────
+
 
 class KnowledgeExtractor:
     """Extracts business knowledge from CodeGraph's knowledge graph."""
@@ -137,13 +152,15 @@ class KnowledgeExtractor:
             method, _, path = rn["name"].partition(" ")
             if not method or not path:
                 continue
-            endpoints.append(ApiEndpoint(
-                method=method.upper(),
-                path=path,
-                handler_name="",
-                file_path=rn["file_path"],
-                line=rn["start_line"],
-            ))
+            endpoints.append(
+                ApiEndpoint(
+                    method=method.upper(),
+                    path=path,
+                    handler_name="",
+                    file_path=rn["file_path"],
+                    line=rn["start_line"],
+                )
+            )
 
         # Source 2: functions with HTTP decorators
         http_funcs = self._query("""
@@ -174,16 +191,18 @@ class KnowledgeExtractor:
                 # Parse params from signature
                 params = self._parse_params(f.get("signature", ""))
 
-                endpoints.append(ApiEndpoint(
-                    method=method or "ANY",
-                    path=path,
-                    handler_name=f["qualified_name"],
-                    file_path=f["file_path"],
-                    line=f["start_line"],
-                    params=params,
-                    return_type=self._parse_return_type(f.get("signature", "")),
-                    decorators=[deco],
-                ))
+                endpoints.append(
+                    ApiEndpoint(
+                        method=method or "ANY",
+                        path=path,
+                        handler_name=f["qualified_name"],
+                        file_path=f["file_path"],
+                        line=f["start_line"],
+                        params=params,
+                        return_type=self._parse_return_type(f.get("signature", "")),
+                        decorators=[deco],
+                    )
+                )
 
         # Group by resource prefix
         groups: dict[str, list[ApiEndpoint]] = defaultdict(list)
@@ -201,7 +220,8 @@ class KnowledgeExtractor:
         """Infer URL path from decorator text or naming convention."""
         # Try to extract path from decorator: @app.get("/users") → "/users"
         import re
-        m = re.search(r'''['"](/[^'"]*)['"]''', deco_text)
+
+        m = re.search(r"""['"](/[^'"]*)['"]""", deco_text)
         if m:
             return m.group(1)
 
@@ -210,7 +230,7 @@ class KnowledgeExtractor:
         name = func_name
         for prefix in ("get_", "post_", "put_", "delete_", "patch_", "head_"):
             if name.startswith(prefix):
-                name = name[len(prefix):]
+                name = name[len(prefix) :]
                 break
         parts = name.split("_")
         path_parts = []
@@ -293,14 +313,16 @@ class KnowledgeExtractor:
                 lang_counts[ext] = lang_counts.get(ext, 0) + 1
             primary_lang = max(lang_counts, key=lang_counts.get) if lang_counts else ""
 
-            modules.append({
-                "id": f"mod-{idx + 1}",
-                "files": module_files,
-                "file_count": len(module_files),
-                "primary_language": primary_lang,
-                # Representative name: common directory prefix
-                "name": self._common_prefix(module_files),
-            })
+            modules.append(
+                {
+                    "id": f"mod-{idx + 1}",
+                    "files": module_files,
+                    "file_count": len(module_files),
+                    "primary_language": primary_lang,
+                    # Representative name: common directory prefix
+                    "name": self._common_prefix(module_files),
+                }
+            )
 
         # Inter-module dependency graph
         deps: dict[str, set[str]] = defaultdict(set)
@@ -394,17 +416,19 @@ class KnowledgeExtractor:
             if func is None:
                 continue
 
-            entities.append(CoreEntity(
-                node_id=node_id,
-                name=func.name,
-                qualified_name=func.qualified_name,
-                file_path=func.file_path,
-                kind=func.kind,
-                pagerank=round(score, 6),
-                in_degree=G.in_degree(node_id),
-                out_degree=G.out_degree(node_id),
-                layer=self._classify_file_layer(func.file_path),
-            ))
+            entities.append(
+                CoreEntity(
+                    node_id=node_id,
+                    name=func.name,
+                    qualified_name=func.qualified_name,
+                    file_path=func.file_path,
+                    kind=func.kind,
+                    pagerank=round(score, 6),
+                    in_degree=G.in_degree(node_id),
+                    out_degree=G.out_degree(node_id),
+                    layer=self._classify_file_layer(func.file_path),
+                )
+            )
 
         return entities
 
@@ -453,15 +477,17 @@ class KnowledgeExtractor:
         gaps = []
         for f in prod_funcs:
             if f.node_id not in covered:
-                gaps.append(TestGap(
-                    node_id=f.node_id,
-                    name=f.name,
-                    qualified_name=f.qualified_name,
-                    file_path=f.file_path,
-                    kind=f.kind,
-                    line=f.start_line,
-                    is_exported=f.is_exported,
-                ))
+                gaps.append(
+                    TestGap(
+                        node_id=f.node_id,
+                        name=f.name,
+                        qualified_name=f.qualified_name,
+                        file_path=f.file_path,
+                        kind=f.kind,
+                        line=f.start_line,
+                        is_exported=f.is_exported,
+                    )
+                )
 
         return gaps
 
@@ -541,15 +567,17 @@ class KnowledgeExtractor:
             allowed = LAYER_ALLOWED.get((source_layer, target_layer))
             if allowed is False:
                 seen_pairs.add(pair_key)
-                violations.append(LayerViolation(
-                    source_name=r["source_name"],
-                    source_file=sf,
-                    source_layer=source_layer,
-                    target_name=r["target_name"],
-                    target_file=tf,
-                    target_layer=target_layer,
-                    call_line=r.get("call_line"),
-                ))
+                violations.append(
+                    LayerViolation(
+                        source_name=r["source_name"],
+                        source_file=sf,
+                        source_layer=source_layer,
+                        target_name=r["target_name"],
+                        target_file=tf,
+                        target_layer=target_layer,
+                        call_line=r.get("call_line"),
+                    )
+                )
 
         return violations
 
@@ -597,8 +625,10 @@ class KnowledgeExtractor:
                     for ep in api.endpoints[:100]  # cap for display
                 ],
                 "resource_groups": {
-                    k: [{"method": ep.method, "path": ep.path, "handler": ep.handler_name}
-                        for ep in v[:10]]
+                    k: [
+                        {"method": ep.method, "path": ep.path, "handler": ep.handler_name}
+                        for ep in v[:10]
+                    ]
                     for k, v in api.resource_groups.items()
                 },
             },
@@ -664,28 +694,28 @@ class KnowledgeExtractor:
             "external_dependencies": self._serialize_external_deps(
                 self.extract_external_dependencies()
             ),
-            "authorization_model": self._serialize_auth_model(
-                self.extract_authorization_model()
-            ),
-            "heat_map": self._serialize_heat_map(
-                self.extract_heat_map()
-            ),
+            "authorization_model": self._serialize_auth_model(self.extract_authorization_model()),
+            "heat_map": self._serialize_heat_map(self.extract_heat_map()),
             # ── Phase 3 (LLM) — only when enabled ──────────────────────
             "business_descriptions": (
                 self.extract_business_descriptions(limit=15)
-                if include_llm else {"note": "Set --llm flag to enable LLM analysis"}
+                if include_llm
+                else {"note": "Set --llm flag to enable LLM analysis"}
             ),
             "business_rules": (
                 self.extract_business_rules_llm(limit=10)
-                if include_llm else {"note": "Set --llm flag to enable LLM analysis"}
+                if include_llm
+                else {"note": "Set --llm flag to enable LLM analysis"}
             ),
             "error_catalog": (
                 self.extract_error_catalog(limit=15)
-                if include_llm else {"note": "Set --llm flag to enable LLM analysis"}
+                if include_llm
+                else {"note": "Set --llm flag to enable LLM analysis"}
             ),
             "state_machines": (
                 self.extract_state_machines()
-                if include_llm else {"note": "Set --llm flag to enable LLM analysis"}
+                if include_llm
+                else {"note": "Set --llm flag to enable LLM analysis"}
             ),
         }
 
@@ -696,21 +726,42 @@ class KnowledgeExtractor:
     # ── 6. Config consumption ──────────────────────────────────────────
 
     # Known config-file extensions (from CodeGraph files table)
-    CONFIG_EXTS = {".yaml", ".yml", ".json", ".toml", ".ini", ".cfg",
-                   ".conf", ".properties", ".env", ".xml"}
+    CONFIG_EXTS = {
+        ".yaml",
+        ".yml",
+        ".json",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".properties",
+        ".env",
+        ".xml",
+    }
 
     # Patterns for detecting config-key usage in code
     CONFIG_ACCESS_PATTERNS = [
         # Python: os.getenv("KEY"), os.environ["KEY"], config["key"], settings.KEY
-        "os.getenv", "os.environ", "config[", "settings.",
+        "os.getenv",
+        "os.environ",
+        "config[",
+        "settings.",
         # JS/TS: process.env.KEY, config.KEY, Config.get("KEY")
-        "process.env", "config.", "Config.get",
+        "process.env",
+        "config.",
+        "Config.get",
         # Java: @Value("${...}"), System.getenv, Properties.getProperty
-        "@Value", "System.getenv", "getProperty",
+        "@Value",
+        "System.getenv",
+        "getProperty",
         # Go: os.Getenv, viper.Get, config.Get
-        "os.Getenv", "viper.Get", "config.Get",
+        "os.Getenv",
+        "viper.Get",
+        "config.Get",
         # General: getenv, get_config, get_env, env.
-        "getenv", "get_config", "get_env",
+        "getenv",
+        "get_config",
+        "get_env",
     ]
 
     def extract_config_consumption(self) -> list[dict]:
@@ -767,8 +818,9 @@ class KnowledgeExtractor:
             decos = node.get("decorators") or ""
             if decos:
                 import re as _re
+
                 # Spring @Value("${config.key}")
-                for m in _re.finditer(r'\$\{([^}]+)\}', str(decos)):
+                for m in _re.finditer(r"\$\{([^}]+)\}", str(decos)):
                     consumer_map[m.group(1).lower()].append(node["id"])
 
         # Step 4: Build consumption report per config file
@@ -781,20 +833,24 @@ class KnowledgeExtractor:
                     for cid in consumers[:5]:  # cap per key
                         func = self.reader.get_function_by_id(cid)
                         if func:
-                            file_consumers.append({
-                                "config_key": key,
-                                "consumer_name": func.qualified_name,
-                                "consumer_file": func.file_path,
-                                "consumer_line": func.start_line,
-                            })
+                            file_consumers.append(
+                                {
+                                    "config_key": key,
+                                    "consumer_name": func.qualified_name,
+                                    "consumer_file": func.file_path,
+                                    "consumer_line": func.start_line,
+                                }
+                            )
 
             if file_consumers:
-                results.append({
-                    "config_file": cf,
-                    "key_count": len(keys),
-                    "consumed_keys": len({c["config_key"] for c in file_consumers}),
-                    "consumers": file_consumers[:50],
-                })
+                results.append(
+                    {
+                        "config_file": cf,
+                        "key_count": len(keys),
+                        "consumed_keys": len({c["config_key"] for c in file_consumers}),
+                        "consumers": file_consumers[:50],
+                    }
+                )
 
         return results
 
@@ -814,7 +870,7 @@ class KnowledgeExtractor:
                 continue
 
             if ext in (".yaml", ".yml"):
-                m = _re.match(r'^(\s*)([\w_-]+)\s*:', line)
+                m = _re.match(r"^(\s*)([\w_-]+)\s*:", line)
                 if m:
                     keys.append(m.group(2))
 
@@ -824,20 +880,20 @@ class KnowledgeExtractor:
                     keys.append(m.group(1))
 
             elif ext in (".env",):
-                m = _re.match(r'^([A-Z_][A-Z0-9_]*)\s*=', line)
+                m = _re.match(r"^([A-Z_][A-Z0-9_]*)\s*=", line)
                 if m:
                     keys.append(m.group(1))
 
             elif ext in (".toml", ".ini", ".cfg", ".conf"):
-                m = _re.match(r'^([\w_-]+)\s*[=:]', line)
+                m = _re.match(r"^([\w_-]+)\s*[=:]", line)
                 if m:
                     keys.append(m.group(1))
-                m = _re.match(r'^\[([^\]]+)\]', line)
+                m = _re.match(r"^\[([^\]]+)\]", line)
                 if m:
                     keys.append(m.group(1))
 
             elif ext in (".properties",):
-                m = _re.match(r'^([\w.\\-]+)\s*[=:]', line)
+                m = _re.match(r"^([\w.\\-]+)\s*[=:]", line)
                 if m:
                     keys.append(m.group(1).strip())
 
@@ -922,9 +978,7 @@ class KnowledgeExtractor:
         category (database, http-client, message-queue, cache, cloud, etc.).
         """
         # Collect all import statements and function calls that go to externals
-        categories: dict[str, dict[str, list[dict]]] = defaultdict(
-            lambda: defaultdict(list)
-        )
+        categories: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
 
         # From imports
         import_rows = self._query("""
@@ -937,11 +991,13 @@ class KnowledgeExtractor:
             name = (r.get("signature") or r["import_name"]).lower()
             cat, label = self._classify_import(name)
             if cat:
-                categories[cat][label].append({
-                    "file": r["importer_file"],
-                    "line": r["start_line"],
-                    "source": "import",
-                })
+                categories[cat][label].append(
+                    {
+                        "file": r["importer_file"],
+                        "line": r["start_line"],
+                        "source": "import",
+                    }
+                )
 
         # From decorators (framework annotations like @EnableJpaRepositories)
         deco_rows = self._query("""
@@ -951,17 +1007,23 @@ class KnowledgeExtractor:
         """)
         for r in deco_rows:
             try:
-                decos = json.loads(r["decorators"]) if isinstance(r["decorators"], str) else r["decorators"]
+                decos = (
+                    json.loads(r["decorators"])
+                    if isinstance(r["decorators"], str)
+                    else r["decorators"]
+                )
             except (json.JSONDecodeError, TypeError):
                 continue
             for deco in decos:
                 cat, label = self._classify_import(deco.lower())
                 if cat:
-                    categories[cat][label].append({
-                        "file": r["file_path"],
-                        "line": r["start_line"],
-                        "source": "decorator",
-                    })
+                    categories[cat][label].append(
+                        {
+                            "file": r["file_path"],
+                            "line": r["start_line"],
+                            "source": "decorator",
+                        }
+                    )
 
         # Build result
         result: list[dict] = []
@@ -971,16 +1033,20 @@ class KnowledgeExtractor:
             for label, uses in deps.items():
                 # Unique files
                 files = sorted(set(u["file"] for u in uses))
-                items.append({
-                    "label": label,
-                    "file_count": len(files),
-                    "files": files[:10],
-                })
-            result.append({
-                "category": cat,
-                "dependency_count": len(items),
-                "dependencies": items,
-            })
+                items.append(
+                    {
+                        "label": label,
+                        "file_count": len(files),
+                        "files": files[:10],
+                    }
+                )
+            result.append(
+                {
+                    "category": cat,
+                    "dependency_count": len(items),
+                    "dependencies": items,
+                }
+            )
 
         return result
 
@@ -999,7 +1065,7 @@ class KnowledgeExtractor:
     AUTH_DECORATOR_PATTERNS = {
         # Python: Flask/Django/FastAPI
         "login_required": "authenticated",
-        "permission_required": None,      # extract argument
+        "permission_required": None,  # extract argument
         "has_permission": None,
         "has_role": None,
         "requires_auth": "authenticated",
@@ -1017,7 +1083,6 @@ class KnowledgeExtractor:
         "roles": None,
         "requireauth": "authenticated",
         "public": "public",
-        "authenticated": "authenticated",
         # Middleware patterns (function names)
         "auth_middleware": "authenticated",
         "authmiddleware": "authenticated",
@@ -1041,7 +1106,11 @@ class KnowledgeExtractor:
 
         for r in auth_rows:
             try:
-                decos = json.loads(r["decorators"]) if isinstance(r["decorators"], str) else r["decorators"]
+                decos = (
+                    json.loads(r["decorators"])
+                    if isinstance(r["decorators"], str)
+                    else r["decorators"]
+                )
             except (json.JSONDecodeError, TypeError):
                 continue
 
@@ -1053,7 +1122,8 @@ class KnowledgeExtractor:
                 deco_lower = deco.lstrip("@").lower()
                 # Extract decorator base name and arguments
                 import re as _re
-                m = _re.match(r'([\w.]+)(?:\(([^)]*)\))?', deco_lower)
+
+                m = _re.match(r"([\w.]+)(?:\(([^)]*)\))?", deco_lower)
                 if not m:
                     continue
                 deco_name = m.group(1).split(".")[-1]
@@ -1076,14 +1146,16 @@ class KnowledgeExtractor:
                                     permissions.append(a_clean)
 
             if auth_level != "unknown" or roles or permissions:
-                results.append({
-                    "function": r["qualified_name"],
-                    "file": r["file_path"],
-                    "line": r["start_line"],
-                    "auth_level": auth_level,
-                    "roles": sorted(set(roles)),
-                    "permissions": sorted(set(permissions)),
-                })
+                results.append(
+                    {
+                        "function": r["qualified_name"],
+                        "file": r["file_path"],
+                        "line": r["start_line"],
+                        "auth_level": auth_level,
+                        "roles": sorted(set(roles)),
+                        "permissions": sorted(set(permissions)),
+                    }
+                )
 
         # Also detect middleware functions by name
         mid_rows = self._query("""
@@ -1097,23 +1169,30 @@ class KnowledgeExtractor:
                 OR name LIKE '%authenticate%')
         """)
         for r in mid_rows:
-            results.append({
-                "function": r["qualified_name"],
-                "file": r["file_path"],
-                "line": r["start_line"],
-                "auth_level": "middleware",
-                "roles": [],
-                "permissions": [],
-            })
+            results.append(
+                {
+                    "function": r["qualified_name"],
+                    "file": r["file_path"],
+                    "line": r["start_line"],
+                    "auth_level": "middleware",
+                    "roles": [],
+                    "permissions": [],
+                }
+            )
 
         # Sort: authenticated first, then by file
-        results.sort(key=lambda x: (
-            0 if x["auth_level"] == "authenticated"
-            else 1 if x["auth_level"] == "middleware"
-            else 2 if x["auth_level"] == "public"
-            else 3,
-            x["file"],
-        ))
+        results.sort(
+            key=lambda x: (
+                0
+                if x["auth_level"] == "authenticated"
+                else 1
+                if x["auth_level"] == "middleware"
+                else 2
+                if x["auth_level"] == "public"
+                else 3,
+                x["file"],
+            )
+        )
 
         return results
 
@@ -1164,17 +1243,19 @@ class KnowledgeExtractor:
                 continue
 
             categories[heat] += 1
-            results.append({
-                "name": func.name,
-                "qualified_name": func.qualified_name,
-                "file_path": func.file_path,
-                "kind": func.kind,
-                "heat": heat,
-                "callers": in_d,
-                "callees": out_d,
-                "total_degree": total_d,
-                "layer": self._classify_file_layer(func.file_path),
-            })
+            results.append(
+                {
+                    "name": func.name,
+                    "qualified_name": func.qualified_name,
+                    "file_path": func.file_path,
+                    "kind": func.kind,
+                    "heat": heat,
+                    "callers": in_d,
+                    "callees": out_d,
+                    "total_degree": total_d,
+                    "layer": self._classify_file_layer(func.file_path),
+                }
+            )
 
         return results
 
@@ -1205,7 +1286,8 @@ class KnowledgeExtractor:
             func_names: Specific function qualified_names to explain (None = top by PageRank)
             limit: Max functions when using auto-selection
         """
-        from .llm import batch_explain_functions, is_available as llm_ready
+        from .llm import batch_explain_functions
+        from .llm import is_available as llm_ready
 
         if not llm_ready():
             return [{"error": "LLM not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY."}]
@@ -1233,20 +1315,20 @@ class KnowledgeExtractor:
         for f in funcs:
             callees = self.reader.get_callees(f.node_id)
             callers = self.reader.get_callers(f.node_id)
-            source = self._read_source_snippet(
-                f.file_path, f.start_line, f.end_line
+            source = self._read_source_snippet(f.file_path, f.start_line, f.end_line)
+            batch.append(
+                {
+                    "name": f.name,
+                    "qualified_name": f.qualified_name,
+                    "signature": f.signature,
+                    "docstring": None,  # CodeGraph captures this in the 'docstring' column
+                    "decorators": f.decorators,
+                    "file_path": f.file_path,
+                    "source_snippet": source,
+                    "callee_names": [c.callee_name for c in callees[:10]],
+                    "caller_names": [c.callee_name for c in callers[:5]],
+                }
             )
-            batch.append({
-                "name": f.name,
-                "qualified_name": f.qualified_name,
-                "signature": f.signature,
-                "docstring": None,  # CodeGraph captures this in the 'docstring' column
-                "decorators": f.decorators,
-                "file_path": f.file_path,
-                "source_snippet": source,
-                "callee_names": [c.callee_name for c in callees[:10]],
-                "caller_names": [c.callee_name for c in callers[:5]],
-            })
 
         return batch_explain_functions(batch)
 
@@ -1258,7 +1340,8 @@ class KnowledgeExtractor:
         Targets business-logic functions (identified by naming patterns
         and layer classification) rather than getters/setters/utilities.
         """
-        from .llm import extract_business_rules, is_available as llm_ready
+        from .llm import extract_business_rules
+        from .llm import is_available as llm_ready
 
         if not llm_ready():
             return [{"error": "LLM not configured."}]
@@ -1272,11 +1355,12 @@ class KnowledgeExtractor:
             # business-sounding names (verbs, not get_/set_ prefixes)
             all_funcs = self.reader.get_all_functions()
             funcs = [
-                f for f in all_funcs
+                f
+                for f in all_funcs
                 if not f.name.startswith(("get_", "set_", "__"))
                 and self._classify_file_layer(f.file_path) in ("application", "domain", "")
                 and not f.is_test
-            ][:limit * 2]  # Over-sample, LLM will filter
+            ][: limit * 2]  # Over-sample, LLM will filter
 
         if not funcs:
             return []
@@ -1292,14 +1376,16 @@ class KnowledgeExtractor:
                 file_path=f.file_path,
             )
             for r in rules:
-                all_rules.append({
-                    "function": r.function_name,
-                    "rule_type": r.rule_type,
-                    "description_en": r.description_en,
-                    "description_zh": r.description_zh,
-                    "condition": r.condition,
-                    "failure_mode": r.failure_mode,
-                })
+                all_rules.append(
+                    {
+                        "function": r.function_name,
+                        "rule_type": r.rule_type,
+                        "description_en": r.description_en,
+                        "description_zh": r.description_zh,
+                        "condition": r.condition,
+                        "failure_mode": r.failure_mode,
+                    }
+                )
 
         return all_rules
 
@@ -1307,7 +1393,8 @@ class KnowledgeExtractor:
         self, func_names: list[str] | None = None, limit: int = 20
     ) -> list[dict]:
         """Extract error scenarios from function bodies via LLM."""
-        from .llm import extract_error_scenarios, is_available as llm_ready
+        from .llm import extract_error_scenarios
+        from .llm import is_available as llm_ready
 
         if not llm_ready():
             return [{"error": "LLM not configured."}]
@@ -1338,19 +1425,22 @@ class KnowledgeExtractor:
                 file_path=f.file_path,
             )
             for s in scenarios:
-                all_errors.append({
-                    "function": s.function_name,
-                    "error_type": s.error_type,
-                    "trigger_condition": s.trigger_condition,
-                    "handling": s.handling,
-                    "user_facing": s.user_facing,
-                })
+                all_errors.append(
+                    {
+                        "function": s.function_name,
+                        "error_type": s.error_type,
+                        "trigger_condition": s.trigger_condition,
+                        "handling": s.handling,
+                        "user_facing": s.user_facing,
+                    }
+                )
 
         return all_errors
 
     def extract_state_machines(self) -> list[dict]:
         """Detect state machines from enum definitions + usage patterns via LLM."""
-        from .llm import detect_state_machine, is_available as llm_ready
+        from .llm import detect_state_machine
+        from .llm import is_available as llm_ready
 
         if not llm_ready():
             return [{"error": "LLM not configured."}]
@@ -1368,11 +1458,14 @@ class KnowledgeExtractor:
         state_machines: list[dict] = []
         for enum in enum_nodes:
             # Find enum members
-            members = self._query("""
+            members = self._query(
+                """
                 SELECT n.name FROM edges e
                 JOIN nodes n ON n.id = e.target
                 WHERE e.source = ? AND e.kind = 'contains' AND n.kind = 'enum_member'
-            """, [enum["id"]])
+            """,
+                [enum["id"]],
+            )
 
             member_names = [m["name"] for m in members]
             if len(member_names) < 2:
@@ -1386,19 +1479,24 @@ class KnowledgeExtractor:
             # Find functions that reference this enum's members
             ref_funcs: list[dict] = []
             for member_name in member_names[:20]:
-                rows = self._query("""
+                rows = self._query(
+                    """
                     SELECT DISTINCT n.qualified_name, n.file_path, n.start_line, n.end_line
                     FROM nodes n
                     WHERE n.name LIKE ? AND n.kind IN ('function', 'method')
-                """, [f"%{member_name}%"])
+                """,
+                    [f"%{member_name}%"],
+                )
                 for r in rows:
                     if r["qualified_name"] not in {f.get("name") for f in ref_funcs}:
-                        ref_funcs.append({
-                            "name": r["qualified_name"],
-                            "file_path": r["file_path"],
-                            "start_line": r["start_line"],
-                            "end_line": r["end_line"],
-                        })
+                        ref_funcs.append(
+                            {
+                                "name": r["qualified_name"],
+                                "file_path": r["file_path"],
+                                "start_line": r["start_line"],
+                                "end_line": r["end_line"],
+                            }
+                        )
 
             if not ref_funcs:
                 continue
@@ -1409,8 +1507,7 @@ class KnowledgeExtractor:
                     rf["file_path"], rf["start_line"], rf["end_line"]
                 )
                 rf["relevant_lines"] = (
-                    self._extract_enum_usage_lines(source, member_names)
-                    if source else ""
+                    self._extract_enum_usage_lines(source, member_names) if source else ""
                 )
 
             sm = detect_state_machine(
@@ -1420,13 +1517,15 @@ class KnowledgeExtractor:
                 transition_functions=ref_funcs,
             )
             if sm and sm.states:
-                state_machines.append({
-                    "entity": sm.entity,
-                    "states": sm.states,
-                    "initial_state": sm.initial_state,
-                    "terminal_states": sm.terminal_states,
-                    "transitions": sm.transitions,
-                })
+                state_machines.append(
+                    {
+                        "entity": sm.entity,
+                        "states": sm.states,
+                        "initial_state": sm.initial_state,
+                        "terminal_states": sm.terminal_states,
+                        "transitions": sm.transitions,
+                    }
+                )
 
         return state_machines
 
@@ -1508,9 +1607,7 @@ class KnowledgeExtractor:
         pr = dict(personalization)
         for _ in range(max_iter):
             prev = dict(pr)
-            dangling_sum = alpha * sum(
-                prev[u] for u in nodes if G.out_degree(u) == 0
-            ) / n
+            dangling_sum = alpha * sum(prev[u] for u in nodes if G.out_degree(u) == 0) / n
             for u in nodes:
                 pr[u] = dangling_sum + (1.0 - alpha) / n
                 for v in G.predecessors(u):

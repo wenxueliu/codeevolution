@@ -1,2 +1,1 @@
 """Pure analysis components."""
-

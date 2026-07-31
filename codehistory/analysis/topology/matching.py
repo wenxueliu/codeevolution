@@ -8,7 +8,7 @@ class PathMatcher:
     def extract(url: str) -> str:
         url = url.strip().strip("\"'`")
         if "://" in url:
-            match = re.search(r''':\/\/[^/]+(/[^\s'",;?#]*)''', url)
+            match = re.search(r""":\/\/[^/]+(/[^\s'",;?#]*)""", url)
             if match:
                 return match.group(1)
         path = re.sub(r"\{[^}]+\}", ":param", url)
@@ -33,15 +33,12 @@ class TopicMatcher:
     def matches(left: str, right: str) -> bool:
         if not left or not right:
             return True
+
         def normalize(value: str) -> str:
             return value.lower().strip().replace("-", "").replace("_", "")
 
         left_clean, right_clean = normalize(left), normalize(right)
-        return (
-            left_clean == right_clean
-            or left_clean in right_clean
-            or right_clean in left_clean
-        )
+        return left_clean == right_clean or left_clean in right_clean or right_clean in left_clean
 
 
 class EntitySimilarity:

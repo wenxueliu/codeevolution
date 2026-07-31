@@ -12,4 +12,3 @@ class KnowledgeReportBuilder:
 
     def build(self) -> dict[str, Any]:
         return {name: step.extract() for name, step in self.steps.items()}
-

@@ -14,9 +14,7 @@ class LiteLLMClient:
     def __init__(self, config: dict):
         self.config = config
 
-    def complete(
-        self, prompt: str, max_tokens: int = 800, temperature: float = 0.2
-    ) -> str | None:
+    def complete(self, prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str | None:
         try:
             import litellm
         except ImportError:
@@ -33,4 +31,3 @@ class LiteLLMClient:
             return response.choices[0].message.content
         except Exception as error:
             return json.dumps({"error": str(error)})
-

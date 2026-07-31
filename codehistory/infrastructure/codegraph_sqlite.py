@@ -8,9 +8,7 @@ from ..codegraph_reader import CodeGraphReader
 from ..domain.knowledge import CallTarget, EntryPointDef, FunctionDef
 
 
-def read_rows(
-    db_path: str, sql: str, params: Sequence[Any] | None = None
-) -> list[dict[str, Any]]:
+def read_rows(db_path: str, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
     """Execute a read-only query with deterministic connection cleanup."""
     with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
         connection.row_factory = sqlite3.Row
@@ -33,9 +31,6 @@ class SQLiteCodeGraphRepository(CodeGraphReader):
     def inbound_endpoints(self) -> list[EntryPointDef]:
         return self.get_entry_points()
 
-    def query(
-        self, sql: str, params: Sequence[Any] | None = None
-    ) -> list[dict[str, Any]]:
+    def query(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         rows = self.conn.execute(sql, tuple(params or ())).fetchall()
         return [dict(row) for row in rows]
-

@@ -8,7 +8,6 @@ At registration time, each repo is scanned via CodeGraph SQLite to detect:
   - CodeGraph status (initialized, index freshness, symbol/edge counts)
 """
 
-import json
 import os
 import sqlite3
 from collections import defaultdict
@@ -17,7 +16,6 @@ from pathlib import Path
 
 from .infrastructure.registry_json import RegistryRepository
 from .infrastructure.topology_cache_json import TopologyCache
-
 
 REGISTRY_DIR = Path.home() / ".codehistory"
 REGISTRY_FILE = REGISTRY_DIR / "registry.json"
@@ -61,9 +59,11 @@ CACHE_PATTERNS = {
 
 # ── Data types ─────────────────────────────────────────────────────────
 
+
 @dataclass
 class ServiceMeta:
     """Auto-detected metadata for a registered service."""
+
     name: str
     path: str
     language: str = ""
@@ -75,13 +75,14 @@ class ServiceMeta:
     cg_nodes: int = 0
     cg_edges: int = 0
     cg_files: int = 0
-    cg_age_hours: float = 0.0       # hours since last index
-    cg_stale: bool = False           # modified files exist since last index
+    cg_age_hours: float = 0.0  # hours since last index
+    cg_stale: bool = False  # modified files exist since last index
     git_remotes: list[str] = field(default_factory=list)
     registered_at: str = ""
 
 
 # ── Registry CRUD ──────────────────────────────────────────────────────
+
 
 def ensure_registry():
     REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
@@ -119,6 +120,7 @@ def register_repo(name: str, path: str) -> dict:
     meta = detect_service(abs_path)
 
     from datetime import datetime, timezone
+
     entry = {
         "name": name,
         "path": abs_path,
@@ -143,6 +145,7 @@ def refresh_meta(name: str) -> dict | None:
         if e["name"] == name:
             meta = detect_service(e["path"])
             from datetime import datetime, timezone
+
             e["language"] = meta.language
             e["role"] = meta.role
             e["db_types"] = meta.db_types
@@ -174,6 +177,7 @@ def list_repos() -> list[dict]:
 
 
 # ── Service detection ──────────────────────────────────────────────────
+
 
 def detect_service(repo_path: str) -> ServiceMeta:
     """Scan a repo and auto-detect its metadata.
@@ -226,9 +230,7 @@ def _detect_from_codegraph(meta: ServiceMeta, db_path: str):
         imports = conn.execute("""
             SELECT name, signature FROM nodes WHERE kind = 'import'
         """).fetchall()
-        all_names = " ".join(
-            (r["signature"] or r["name"]).lower() for r in imports
-        )
+        all_names = " ".join((r["signature"] or r["name"]).lower() for r in imports)
 
         for db, patterns in DB_PATTERNS.items():
             if any(p in all_names for p in patterns):
@@ -254,6 +256,7 @@ def _detect_from_codegraph(meta: ServiceMeta, db_path: str):
         row = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()
         if row and row[0]:
             import time
+
             age_sec = time.time() - row[0] / 1000
             meta.cg_age_hours = round(age_sec / 3600, 1)
 
@@ -270,16 +273,38 @@ def _detect_from_filesystem(meta: ServiceMeta, repo_path: str):
     """Fallback language detection by counting file extensions (no CodeGraph)."""
     counts: dict[str, int] = defaultdict(int)
     ext_map = {
-        ".py": "python", ".java": "java", ".go": "go",
-        ".ts": "typescript", ".tsx": "typescript", ".js": "javascript",
-        ".jsx": "javascript", ".rs": "rust", ".rb": "ruby",
-        ".php": "php", ".cs": "csharp", ".swift": "swift",
-        ".kt": "kotlin", ".dart": "dart", ".cpp": "cpp", ".c": "c",
-        ".vue": "vue", ".svelte": "svelte",
+        ".py": "python",
+        ".java": "java",
+        ".go": "go",
+        ".ts": "typescript",
+        ".tsx": "typescript",
+        ".js": "javascript",
+        ".jsx": "javascript",
+        ".rs": "rust",
+        ".rb": "ruby",
+        ".php": "php",
+        ".cs": "csharp",
+        ".swift": "swift",
+        ".kt": "kotlin",
+        ".dart": "dart",
+        ".cpp": "cpp",
+        ".c": "c",
+        ".vue": "vue",
+        ".svelte": "svelte",
     }
-    ignore_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv",
-                   "dist", "build", "target", ".next", ".codegraph",
-                   ".codehistory"}
+    ignore_dirs = {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "target",
+        ".next",
+        ".codegraph",
+        ".codehistory",
+    }
     try:
         for root, dirs, files in os.walk(repo_path):
             dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
@@ -319,10 +344,13 @@ def _infer_role(repo_path: str) -> str:
 def _get_git_remotes(repo_path: str) -> list[str]:
     """Get git remote URLs for a repo."""
     import subprocess
+
     try:
         result = subprocess.run(
             ["git", "-C", repo_path, "remote", "-v"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         remotes = set()
         for line in result.stdout.strip().split("\n"):
@@ -336,6 +364,7 @@ def _get_git_remotes(repo_path: str) -> list[str]:
 
 
 # ── Discovery ──────────────────────────────────────────────────────────
+
 
 def discover_repos(root_dir: str, max_depth: int = 2) -> list[dict]:
     """Scan a directory tree for git repositories and suggest registrations.
@@ -352,11 +381,25 @@ def discover_repos(root_dir: str, max_depth: int = 2) -> list[dict]:
 
     # Use find to locate .git directories
     import subprocess
+
     try:
         result = subprocess.run(
-            ["find", str(root), "-maxdepth", str(max_depth + 1),
-             "-name", ".git", "-type", "d", "-not", "-path", "*/node_modules/*"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "find",
+                str(root),
+                "-maxdepth",
+                str(max_depth + 1),
+                "-name",
+                ".git",
+                "-type",
+                "d",
+                "-not",
+                "-path",
+                "*/node_modules/*",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return results
@@ -387,20 +430,23 @@ def discover_repos(root_dir: str, max_depth: int = 2) -> list[dict]:
         else:
             suggestion = "Run: codegraph init"
 
-        results.append({
-            "name": git_dir.parent.name,
-            "path": repo_path,
-            "language": meta.language,
-            "role": meta.role,
-            "cg_initialized": meta.cg_initialized,
-            "cg_nodes": meta.cg_nodes,
-            "suggestion": suggestion,
-        })
+        results.append(
+            {
+                "name": git_dir.parent.name,
+                "path": repo_path,
+                "language": meta.language,
+                "role": meta.role,
+                "cg_initialized": meta.cg_initialized,
+                "cg_nodes": meta.cg_nodes,
+                "suggestion": suggestion,
+            }
+        )
 
     return results
 
 
 # ── Health check ───────────────────────────────────────────────────────
+
 
 def check_services() -> list[dict]:
     """Check health of all registered services.
@@ -431,25 +477,28 @@ def check_services() -> list[dict]:
             status = "info"
             issues.append(f"Index {meta.cg_age_hours}h old — consider running: codegraph sync")
 
-        results.append({
-            "name": e["name"],
-            "path": e["path"],
-            "status": status,
-            "language": meta.language,
-            "role": meta.role,
-            "cg_initialized": meta.cg_initialized,
-            "cg_symbols": meta.cg_nodes,
-            "cg_edges": meta.cg_edges,
-            "cg_age_hours": meta.cg_age_hours,
-            "db_types": meta.db_types,
-            "mq_types": meta.mq_types,
-            "issues": issues,
-        })
+        results.append(
+            {
+                "name": e["name"],
+                "path": e["path"],
+                "status": status,
+                "language": meta.language,
+                "role": meta.role,
+                "cg_initialized": meta.cg_initialized,
+                "cg_symbols": meta.cg_nodes,
+                "cg_edges": meta.cg_edges,
+                "cg_age_hours": meta.cg_age_hours,
+                "db_types": meta.db_types,
+                "mq_types": meta.mq_types,
+                "issues": issues,
+            }
+        )
 
     return results
 
 
 # ── Topology cache ─────────────────────────────────────────────────────
+
 
 def load_topology_cache() -> dict | None:
     """Load the cached unified topology from the last full analysis."""
@@ -538,9 +587,11 @@ def get_cached_impact(service_name: str) -> dict | None:
 
     downstream = dep_graph.get(service_name, [])
     upstream = [svc for svc, deps in dep_graph.items() if service_name in deps]
-    affected = [e for e in edges
-                if e["source_service"] == service_name
-                or e["target_service"] == service_name]
+    affected = [
+        e
+        for e in edges
+        if e["source_service"] == service_name or e["target_service"] == service_name
+    ]
 
     return {
         "service": service_name,
@@ -551,7 +602,9 @@ def get_cached_impact(service_name: str) -> dict | None:
     }
 
 
-def get_cached_trace(service_name: str, api_path: str | None = None, max_depth: int = 5) -> list[dict] | None:
+def get_cached_trace(
+    service_name: str, api_path: str | None = None, max_depth: int = 5
+) -> list[dict] | None:
     """Get end-to-end trace from cached topology."""
     cached = load_topology_cache()
     if not cached:

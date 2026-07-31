@@ -34,4 +34,3 @@ class FileSystemSourceProvider:
         if start > len(lines):
             return None
         return "\n".join(lines[start - 1 : min(end, len(lines))])
-

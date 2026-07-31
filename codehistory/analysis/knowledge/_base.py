@@ -12,4 +12,3 @@ class ExtractionStep:
 
     def extract(self) -> Any:
         return self._extract()
-

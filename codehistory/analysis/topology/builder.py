@@ -4,4 +4,3 @@ class TopologyBuilder:
 
     def build(self):
         return self.analyzer.analyze()
-

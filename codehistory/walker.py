@@ -20,7 +20,18 @@ class CommitInfo:
         msg = self.message.strip()
         if ":" in msg:
             prefix = msg.split(":")[0].lower()
-            for t in ("feat", "fix", "refactor", "docs", "test", "chore", "style", "perf", "ci", "build"):
+            for t in (
+                "feat",
+                "fix",
+                "refactor",
+                "docs",
+                "test",
+                "chore",
+                "style",
+                "perf",
+                "ci",
+                "build",
+            ):
                 if prefix.startswith(t):
                     return t
         return None
@@ -51,7 +62,10 @@ class HistoryWalker:
             range_spec = f"{start_from}..HEAD"
 
         args = [
-            "git", "-C", self.repo_path, "log",
+            "git",
+            "-C",
+            self.repo_path,
+            "log",
             "--reverse",  # oldest first
             "--format=%H%n%P%n%at%n%an%n%s%n%D%n---",
         ]
@@ -113,7 +127,8 @@ class HistoryWalker:
         """List all tracked files at a given commit."""
         result = subprocess.run(
             ["git", "-C", self.repo_path, "ls-tree", "-r", "--name-only", commit_hash],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             return []
@@ -122,8 +137,18 @@ class HistoryWalker:
     def get_changed_files(self, parent_hash: str, commit_hash: str) -> list[str]:
         """Get list of files changed between parent and commit."""
         result = subprocess.run(
-            ["git", "-C", self.repo_path, "diff-tree", "-r", "--name-only", parent_hash, commit_hash],
-            capture_output=True, text=True,
+            [
+                "git",
+                "-C",
+                self.repo_path,
+                "diff-tree",
+                "-r",
+                "--name-only",
+                parent_hash,
+                commit_hash,
+            ],
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             return []
@@ -137,7 +162,8 @@ class HistoryWalker:
 
         result = subprocess.run(
             ["git", "-C", self.repo_path, "show", f"{commit_hash}:{filepath}"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             return None

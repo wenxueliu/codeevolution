@@ -8,4 +8,3 @@ class SemanticService:
 
     def complete_json(self, prompt: str, **options) -> dict | None:
         return complete_json(self.client, prompt, **options)
-

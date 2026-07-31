@@ -71,8 +71,7 @@ class EvolutionEngine:
             )
         if not self._which("codegraph"):
             raise RuntimeError(
-                "codegraph CLI not found in PATH. "
-                "Install: npm i -g @colbymchenry/codegraph"
+                "codegraph CLI not found in PATH. Install: npm i -g @colbymchenry/codegraph"
             )
 
     @property
@@ -111,8 +110,14 @@ class EvolutionEngine:
         try:
             subprocess.run(
                 [
-                    "git", "-C", self.config.repo_path, "worktree", "add",
-                    "--detach", worktree_path, "HEAD",
+                    "git",
+                    "-C",
+                    self.config.repo_path,
+                    "worktree",
+                    "add",
+                    "--detach",
+                    worktree_path,
+                    "HEAD",
                 ],
                 capture_output=True,
                 text=True,
@@ -139,8 +144,13 @@ class EvolutionEngine:
             if added:
                 cleanup = subprocess.run(
                     [
-                        "git", "-C", self.config.repo_path, "worktree", "remove",
-                        "--force", worktree_path,
+                        "git",
+                        "-C",
+                        self.config.repo_path,
+                        "worktree",
+                        "remove",
+                        "--force",
+                        worktree_path,
                     ],
                     capture_output=True,
                     text=True,
@@ -207,8 +217,9 @@ class EvolutionEngine:
                 self._commit_count += 1
                 if progress_callback and self._commit_count % 5 == 0:
                     progress_callback(
-                        self._commit_count, total,
-                        f"[{self._commit_count}/{total}] {commit.hash[:8]}"
+                        self._commit_count,
+                        total,
+                        f"[{self._commit_count}/{total}] {commit.hash[:8]}",
                     )
 
         if progress_callback:
@@ -297,16 +308,12 @@ class EvolutionEngine:
                 event = self.analyzer.died_event(snapshot)
                 self.store.insert_event(feature["id"], commit_id, event.event_type, event.detail)
             self.store.mark_feature_removed(feature["id"])
-            self.matcher.unregister_feature(
-                feature["entry_type"], feature["entry_signature"]
-            )
+            self.matcher.unregister_feature(feature["entry_type"], feature["entry_signature"])
 
     def _process_one_entry_point(self, ep, commit_id: int) -> str:
         """Process a single entry point — match to feature, compute snapshot."""
         # Classify entry type (uses matcher's heuristics as fallback)
-        entry_type = self.matcher.classify_entry_type(
-            ep.name, ep.file_path, ep.params
-        )
+        entry_type = self.matcher.classify_entry_type(ep.name, ep.file_path, ep.params)
         if ep.entry_type != "other":
             entry_type = ep.entry_type  # Decorator-based detection is more accurate
 
@@ -329,7 +336,7 @@ class EvolutionEngine:
             call_tree_depth=call_tree_depth,
             file_path=ep.file_path,
             line_start=ep.start_line,
-            line_end=getattr(ep, 'end_line', ep.start_line),
+            line_end=getattr(ep, "end_line", ep.start_line),
         )
 
         # Match to existing feature
@@ -346,9 +353,7 @@ class EvolutionEngine:
                 events = self.analyzer.analyze(prev_data, snapshot)
                 self.store.update_feature_last_seen(feature_id, commit_id)
             else:
-                logger.warning(
-                    f"Feature {match.matched_feature_id} in matcher but not in DB"
-                )
+                logger.warning(f"Feature {match.matched_feature_id} in matcher but not in DB")
                 feature_id = self.store.insert_feature(
                     stable_id=match.matched_feature_id,
                     canonical_name=ep.name,
@@ -376,22 +381,24 @@ class EvolutionEngine:
             events = self.analyzer.analyze(None, snapshot)
 
         # Write snapshot
-        self.store.insert_snapshot(feature_id, commit_id, {
-            "call_tree_nodes": snapshot.call_tree_nodes,
-            "call_tree_edges": snapshot.call_tree_edges,
-            "call_tree_depth": snapshot.call_tree_depth,
-            "file_path": snapshot.file_path,
-            "line_start": snapshot.line_start,
-            "line_end": snapshot.line_end,
-            "test_nodes": snapshot.test_nodes,
-            "call_chain": call_chain,
-        })
+        self.store.insert_snapshot(
+            feature_id,
+            commit_id,
+            {
+                "call_tree_nodes": snapshot.call_tree_nodes,
+                "call_tree_edges": snapshot.call_tree_edges,
+                "call_tree_depth": snapshot.call_tree_depth,
+                "file_path": snapshot.file_path,
+                "line_start": snapshot.line_start,
+                "line_end": snapshot.line_end,
+                "test_nodes": snapshot.test_nodes,
+                "call_chain": call_chain,
+            },
+        )
 
         for ev in events:
             if ev.event_type != "UNCHANGED":
-                self.store.insert_event(
-                    feature_id, commit_id, ev.event_type, ev.detail
-                )
+                self.store.insert_event(feature_id, commit_id, ev.event_type, ev.detail)
         return match.matched_feature_id or stable_id
 
     @staticmethod

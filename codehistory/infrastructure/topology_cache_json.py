@@ -24,4 +24,3 @@ class TopologyCache:
 
     def save(self, value: dict) -> None:
         atomic_write_json(self.path, {**value, "schema_version": CACHE_SCHEMA_VERSION})
-

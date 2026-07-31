@@ -19,9 +19,7 @@ def _commit(store: EvolutionStore, hash_: str) -> int:
 
 
 def _feature(store: EvolutionStore, commit_id: int) -> int:
-    return store.insert_feature(
-        "api.py::handler", "handler", "http", "handler", commit_id
-    )
+    return store.insert_feature("api.py::handler", "handler", "http", "handler", commit_id)
 
 
 def _snapshot(store: EvolutionStore, feature_id: int, commit_id: int):
@@ -175,8 +173,16 @@ def test_isolated_worktree_preserves_source_checkout(tmp_path, monkeypatch):
     subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
     subprocess.run(
         [
-            "git", "-C", str(repo), "-c", "user.name=Tester",
-            "-c", "user.email=test@example.com", "commit", "-m", "initial",
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Tester",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
         ],
         check=True,
         capture_output=True,

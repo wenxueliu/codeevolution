@@ -13,17 +13,14 @@ Set OPENAI_API_KEY or ANTHROPIC_API_KEY in the environment.
 Model can be overridden via CODEHISTORY_LLM_MODEL.
 """
 
-import json
-import re
-from typing import Any
 
 from .semantic.client import LiteLLMClient
 from .semantic.config import get_llm_config
 from .semantic.json_parser import parse_json
 from .semantic.models import BusinessDescription, BusinessRule, ErrorScenario, StateMachineDef
 
-
 # ── Configuration ──────────────────────────────────────────────────────
+
 
 def _get_llm_config() -> dict | None:
     """Check if any LLM provider is configured."""
@@ -35,6 +32,7 @@ def is_available() -> bool:
 
 
 # ── LLM client ─────────────────────────────────────────────────────────
+
 
 def _call_llm(
     prompt: str,
@@ -55,6 +53,7 @@ def _parse_json(content: str | None) -> dict | None:
 
 
 # ── 1. Business naming ─────────────────────────────────────────────────
+
 
 def explain_business_purpose(
     func_name: str,
@@ -126,6 +125,7 @@ JSON:"""
 
 
 # ── 2. Business rules ──────────────────────────────────────────────────
+
 
 def extract_business_rules(
     func_name: str,
@@ -201,6 +201,7 @@ JSON:"""
 
 # ── 3. Error scenarios ─────────────────────────────────────────────────
 
+
 def extract_error_scenarios(
     func_name: str,
     source_snippet: str,
@@ -266,6 +267,7 @@ JSON:"""
 
 # ── 4. State machine ───────────────────────────────────────────────────
 
+
 def detect_state_machine(
     entity_name: str,
     enum_name: str,
@@ -286,14 +288,13 @@ def detect_state_machine(
         return None
 
     func_context = "\n".join(
-        f"- {f['name']}: {f.get('relevant_lines', '')[:200]}"
-        for f in transition_functions[:8]
+        f"- {f['name']}: {f.get('relevant_lines', '')[:200]}" for f in transition_functions[:8]
     )
 
     prompt = f"""You analyze code to extract state machines for product and testing teams.
 
 Entity: {entity_name}
-Status enum: {enum_name} = [{', '.join(enum_members)}]
+Status enum: {enum_name} = [{", ".join(enum_members)}]
 
 Functions that use this enum:
 {func_context}
@@ -342,6 +343,7 @@ JSON:"""
 
 # ── 5. Architecture decisions ──────────────────────────────────────────
 
+
 def extract_architecture_notes(
     func_name: str,
     source_snippet: str,
@@ -359,9 +361,13 @@ def extract_architecture_notes(
 
     # Prioritize docstrings + comments; only include first 100 lines of code
     code_lines = source_snippet.split("\n")
-    comments_and_docs = [l for l in code_lines if l.strip().startswith(("//", "#", "/*", "*", "\"\"\"", "'''"))]
+    comments_and_docs = [
+        l for l in code_lines if l.strip().startswith(("//", "#", "/*", "*", '"""', "'''"))
+    ]
     # Also include first meaningful code lines for context
-    non_comment_lines = [l for l in code_lines if not l.strip().startswith(("//", "#", "/*", "*"))][:30]
+    non_comment_lines = [l for l in code_lines if not l.strip().startswith(("//", "#", "/*", "*"))][
+        :30
+    ]
 
     context = "\n".join(comments_and_docs[:30] + ["---"] + non_comment_lines)
 
@@ -369,7 +375,7 @@ def extract_architecture_notes(
 
 Function: {func_name}
 File: {file_path}
-{'Docstring: ' + docstring if docstring else ''}
+{"Docstring: " + docstring if docstring else ""}
 
 Comments, docstrings, and surrounding code:
 ```
@@ -398,6 +404,7 @@ JSON:"""
 
 # ── Batch processing ────────────────────────────────────────────────────
 
+
 def batch_explain_functions(
     functions: list[dict],
     max_concurrency: int = 3,
@@ -415,8 +422,7 @@ def batch_explain_functions(
         [{function_name, summary_en, summary_zh, business_domain, role, error?}, ...]
     """
     if not is_available():
-        return [{"function_name": f["name"], "error": "LLM not configured"}
-                for f in functions]
+        return [{"function_name": f["name"], "error": "LLM not configured"} for f in functions]
 
     results: list[dict] = []
 
@@ -434,24 +440,30 @@ def batch_explain_functions(
                 caller_names=func.get("caller_names"),
             )
             if desc:
-                results.append({
-                    "function_name": desc.function_name,
-                    "summary_en": desc.summary_en,
-                    "summary_zh": desc.summary_zh,
-                    "business_domain": desc.business_domain,
-                    "role": desc.role,
-                    "key_responsibilities": desc.key_responsibilities,
-                })
+                results.append(
+                    {
+                        "function_name": desc.function_name,
+                        "summary_en": desc.summary_en,
+                        "summary_zh": desc.summary_zh,
+                        "business_domain": desc.business_domain,
+                        "role": desc.role,
+                        "key_responsibilities": desc.key_responsibilities,
+                    }
+                )
             else:
-                results.append({
-                    "function_name": func["name"],
-                    "error": "LLM response parsing failed",
-                })
+                results.append(
+                    {
+                        "function_name": func["name"],
+                        "error": "LLM response parsing failed",
+                    }
+                )
         except Exception as e:
-            results.append({
-                "function_name": func["name"],
-                "error": str(e),
-            })
+            results.append(
+                {
+                    "function_name": func["name"],
+                    "error": str(e),
+                }
+            )
 
         if progress_callback:
             progress_callback(i + 1, len(functions))
@@ -460,6 +472,7 @@ def batch_explain_functions(
 
 
 # ── Legacy compatibility ───────────────────────────────────────────────
+
 
 def explain_feature(
     feature_name: str,
@@ -487,8 +500,10 @@ def explain_feature(
 
     callee_context = ""
     if features_context:
-        callee_lines = [f"- {f.get('canonical_name', '')}: {f.get('description', '')}"
-                        for f in features_context[:10]]
+        callee_lines = [
+            f"- {f.get('canonical_name', '')}: {f.get('description', '')}"
+            for f in features_context[:10]
+        ]
         callee_context = "\n".join(callee_lines)
 
     related_functions = f"Related functions:\n{callee_context}" if callee_context else ""

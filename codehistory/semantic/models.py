@@ -37,4 +37,3 @@ class StateMachineDef:
     transitions: list[dict]
     initial_state: str
     terminal_states: list[str]
-

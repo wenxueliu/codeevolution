@@ -22,26 +22,50 @@ from .domain.knowledge import CallTarget, EntryPointDef, FunctionDef
 
 HTTP_DECORATORS = {
     # Python
-    "get": "GET", "post": "POST", "put": "PUT", "delete": "DELETE",
-    "patch": "PATCH", "head": "HEAD", "options": "OPTIONS",
+    "get": "GET",
+    "post": "POST",
+    "put": "PUT",
+    "delete": "DELETE",
+    "patch": "PATCH",
+    "head": "HEAD",
+    "options": "OPTIONS",
     "route": None,  # ambiguous — could be any method
     # Java
-    "getmapping": "GET", "postmapping": "POST", "putmapping": "PUT",
-    "deletemapping": "DELETE", "patchmapping": "PATCH",
+    "getmapping": "GET",
+    "postmapping": "POST",
+    "putmapping": "PUT",
+    "deletemapping": "DELETE",
+    "patchmapping": "PATCH",
     "requestmapping": None,
     # JS/TS use the same lower-cased method names as Python.
     "all": None,
 }
 
 HTTP_DIR_PATTERNS = (
-    "controller", "view", "handler", "route", "api", "endpoint",
-    "resource", "router",
+    "controller",
+    "view",
+    "handler",
+    "route",
+    "api",
+    "endpoint",
+    "resource",
+    "router",
 )
 
 TEST_PATTERNS = (
-    "/tests/", "/test/", "/__tests__/", "/spec/", "/specs/",
-    "/fixtures/", "/e2e/", "/integration/", "/__mocks__/",
-    ".test.", ".spec.", "test_", "_test.",
+    "/tests/",
+    "/test/",
+    "/__tests__/",
+    "/spec/",
+    "/specs/",
+    "/fixtures/",
+    "/e2e/",
+    "/integration/",
+    "/__mocks__/",
+    ".test.",
+    ".spec.",
+    "test_",
+    "_test.",
 )
 
 
@@ -145,8 +169,11 @@ class CodeGraphReader:
                 parent_class = func_part.rsplit(".", 1)[0]
 
         # Test file detection
-        is_test = any(p in file_path.lower() for p in TEST_PATTERNS) or \
-                  name.lower().startswith("test") or name.lower().endswith("test")
+        is_test = (
+            any(p in file_path.lower() for p in TEST_PATTERNS)
+            or name.lower().startswith("test")
+            or name.lower().endswith("test")
+        )
 
         decorators = []
         raw = row["decorators"]
@@ -256,16 +283,18 @@ class CodeGraphReader:
                 edge_key = (current, c.callee_node_id)
                 if edge_key not in visited_edges:
                     visited_edges.add(edge_key)
-                    chain.append({
-                        "from": c.callee_node_id,  # will be filled by caller
-                        "from_node_id": current,
-                        "to": c.callee_name,
-                        "to_node_id": c.callee_node_id,
-                        "depth": depth,
-                        "file": c.callee_file,
-                        "line": c.call_line,
-                        "provenance": c.provenance,
-                    })
+                    chain.append(
+                        {
+                            "from": c.callee_node_id,  # will be filled by caller
+                            "from_node_id": current,
+                            "to": c.callee_name,
+                            "to_node_id": c.callee_node_id,
+                            "depth": depth,
+                            "file": c.callee_file,
+                            "line": c.call_line,
+                            "provenance": c.provenance,
+                        }
+                    )
                     traverse(c.callee_node_id, depth + 1)
 
         traverse(node_id, 1)
@@ -346,19 +375,27 @@ class CodeGraphReader:
             # Event handlers
             if "event" in deco_name or "subscribe" in deco_name or "listen" in deco_name:
                 return EntryPointDef(
-                    node_id=func.node_id, name=func.name,
+                    node_id=func.node_id,
+                    name=func.name,
                     qualified_name=func.qualified_name,
-                    file_path=func.file_path, start_line=func.start_line,
-                    entry_type="event", params=[], decorators=func.decorators,
+                    file_path=func.file_path,
+                    start_line=func.start_line,
+                    entry_type="event",
+                    params=[],
+                    decorators=func.decorators,
                 )
 
             # Scheduled/cron
             if any(k in deco_name for k in ("scheduled", "cron", "interval", "timeout")):
                 return EntryPointDef(
-                    node_id=func.node_id, name=func.name,
+                    node_id=func.node_id,
+                    name=func.name,
                     qualified_name=func.qualified_name,
-                    file_path=func.file_path, start_line=func.start_line,
-                    entry_type="cron", params=[], decorators=func.decorators,
+                    file_path=func.file_path,
+                    start_line=func.start_line,
+                    entry_type="cron",
+                    params=[],
+                    decorators=func.decorators,
                 )
 
         # ---- Path-based heuristics ----
@@ -372,50 +409,65 @@ class CodeGraphReader:
 
         if is_http_named or (is_in_http_dir and func.is_exported):
             return EntryPointDef(
-                node_id=func.node_id, name=func.name,
+                node_id=func.node_id,
+                name=func.name,
                 qualified_name=func.qualified_name,
-                file_path=func.file_path, start_line=func.start_line,
-                entry_type="http", params=[],
+                file_path=func.file_path,
+                start_line=func.start_line,
+                entry_type="http",
+                params=[],
                 decorators=func.decorators,
             )
 
         # CLI main function
         if func.name == "main":
             return EntryPointDef(
-                node_id=func.node_id, name=func.name,
+                node_id=func.node_id,
+                name=func.name,
                 qualified_name=func.qualified_name,
-                file_path=func.file_path, start_line=func.start_line,
-                entry_type="cli", params=[],
+                file_path=func.file_path,
+                start_line=func.start_line,
+                entry_type="cli",
+                params=[],
                 decorators=func.decorators,
             )
 
         # CLI command patterns
         if name_lower.startswith(("cmd_", "cli_", "run_")):
             return EntryPointDef(
-                node_id=func.node_id, name=func.name,
+                node_id=func.node_id,
+                name=func.name,
                 qualified_name=func.qualified_name,
-                file_path=func.file_path, start_line=func.start_line,
-                entry_type="cli", params=[],
+                file_path=func.file_path,
+                start_line=func.start_line,
+                entry_type="cli",
+                params=[],
                 decorators=func.decorators,
             )
 
         # Event/callback patterns
         if any(p in name_lower for p in ("_handler", "_callback", "_listener", "_consumer")):
             return EntryPointDef(
-                node_id=func.node_id, name=func.name,
+                node_id=func.node_id,
+                name=func.name,
                 qualified_name=func.qualified_name,
-                file_path=func.file_path, start_line=func.start_line,
-                entry_type="event", params=[],
+                file_path=func.file_path,
+                start_line=func.start_line,
+                entry_type="event",
+                params=[],
                 decorators=func.decorators,
             )
 
         # Vue composables (useXxx pattern)
         if func.name.startswith("use") and len(func.name) > 3 and func.name[3].isupper():
             return EntryPointDef(
-                node_id=func.node_id, name=func.name,
+                node_id=func.node_id,
+                name=func.name,
                 qualified_name=func.qualified_name,
-                file_path=func.file_path, start_line=func.start_line,
-                entry_type="other", params=[],
+                file_path=func.file_path,
+                start_line=func.start_line,
+                entry_type="other",
+                params=[],
                 decorators=func.decorators,
             )
 
@@ -423,10 +475,13 @@ class CodeGraphReader:
         if func.is_exported and func.name == "default":
             if "pages/" in file_lower or "app/" in file_lower:
                 return EntryPointDef(
-                    node_id=func.node_id, name=func.name,
+                    node_id=func.node_id,
+                    name=func.name,
                     qualified_name=func.qualified_name,
-                    file_path=func.file_path, start_line=func.start_line,
-                    entry_type="http", params=[],
+                    file_path=func.file_path,
+                    start_line=func.start_line,
+                    entry_type="http",
+                    params=[],
                     decorators=func.decorators,
                 )
 
@@ -509,9 +564,7 @@ class CodeGraphReader:
 
     def is_file_indexed(self, filepath: str) -> bool:
         """Check if a file is in CodeGraph's index."""
-        row = self.conn.execute(
-            "SELECT 1 FROM files WHERE path = ?", (filepath,)
-        ).fetchone()
+        row = self.conn.execute("SELECT 1 FROM files WHERE path = ?", (filepath,)).fetchone()
         return row is not None
 
     # ---- Stats ----

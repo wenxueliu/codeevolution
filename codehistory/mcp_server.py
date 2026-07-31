@@ -1,7 +1,6 @@
 """MCP server — exposes evolution analysis tools for AI agents."""
 
 import json
-from typing import Any
 
 from fastmcp import FastMCP
 
@@ -58,21 +57,27 @@ def get_feature_timeline(feature_name: str) -> str:
             break
 
     if not matched:
-        return json.dumps({
-            "error": f"Feature not found: {feature_name}",
-            "available_features": [f["canonical_name"] for f in features[:20]],
-        })
+        return json.dumps(
+            {
+                "error": f"Feature not found: {feature_name}",
+                "available_features": [f["canonical_name"] for f in features[:20]],
+            }
+        )
 
     timeline = store.get_feature_timeline(matched["stable_id"])
-    return json.dumps({
-        "feature": {
-            "stable_id": matched["stable_id"],
-            "canonical_name": matched["canonical_name"],
-            "entry_type": matched["entry_type"],
-            "status": matched["status"],
+    return json.dumps(
+        {
+            "feature": {
+                "stable_id": matched["stable_id"],
+                "canonical_name": matched["canonical_name"],
+                "entry_type": matched["entry_type"],
+                "status": matched["status"],
+            },
+            "timeline": timeline,
         },
-        "timeline": timeline,
-    }, indent=2, ensure_ascii=False)
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()
@@ -86,18 +91,22 @@ def list_features() -> str:
         return json.dumps({"error": "No store configured"})
 
     features = store.get_all_features()
-    return json.dumps({
-        "total": len(features),
-        "features": [
-            {
-                "stable_id": f["stable_id"],
-                "canonical_name": f["canonical_name"],
-                "entry_type": f["entry_type"],
-                "status": f["status"],
-            }
-            for f in features
-        ],
-    }, indent=2, ensure_ascii=False)
+    return json.dumps(
+        {
+            "total": len(features),
+            "features": [
+                {
+                    "stable_id": f["stable_id"],
+                    "canonical_name": f["canonical_name"],
+                    "entry_type": f["entry_type"],
+                    "status": f["status"],
+                }
+                for f in features
+            ],
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()
@@ -129,22 +138,30 @@ def search_feature_history(query: str) -> str:
     features = store.get_all_features()
     results = []
     for f in features:
-        if query.lower() in f["canonical_name"].lower() or \
-           query.lower() in f["entry_signature"].lower():
+        if (
+            query.lower() in f["canonical_name"].lower()
+            or query.lower() in f["entry_signature"].lower()
+        ):
             timeline = store.get_feature_timeline(f["stable_id"])
-            results.append({
-                "stable_id": f["stable_id"],
-                "canonical_name": f["canonical_name"],
-                "entry_type": f["entry_type"],
-                "status": f["status"],
-                "event_count": len(timeline),
-            })
+            results.append(
+                {
+                    "stable_id": f["stable_id"],
+                    "canonical_name": f["canonical_name"],
+                    "entry_type": f["entry_type"],
+                    "status": f["status"],
+                    "event_count": len(timeline),
+                }
+            )
 
-    return json.dumps({
-        "query": query,
-        "results": results[:20],
-        "total": len(results),
-    }, indent=2, ensure_ascii=False)
+    return json.dumps(
+        {
+            "query": query,
+            "results": results[:20],
+            "total": len(results),
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()
@@ -181,8 +198,7 @@ def get_feature_summary(feature_name: str) -> str:
         v for k, v in event_types.items() if k in ("GROWN", "EXTENDED", "DEP_CREATED")
     )
     shrink_events = sum(
-        v for k, v in event_types.items()
-        if k in ("SHRUNK", "CONTRACTED", "DEP_REMOVED")
+        v for k, v in event_types.items() if k in ("SHRUNK", "CONTRACTED", "DEP_REMOVED")
     )
 
     trend = "stable"
@@ -194,17 +210,21 @@ def get_feature_summary(feature_name: str) -> str:
     first_event = timeline[0] if timeline else None
     last_event = timeline[-1] if timeline else None
 
-    return json.dumps({
-        "feature": matched["canonical_name"],
-        "stable_id": matched["stable_id"],
-        "type": matched["entry_type"],
-        "status": matched["status"],
-        "trend": trend,
-        "total_events": len(timeline),
-        "event_breakdown": event_types,
-        "first_event": first_event,
-        "last_event": last_event,
-    }, indent=2, ensure_ascii=False)
+    return json.dumps(
+        {
+            "feature": matched["canonical_name"],
+            "stable_id": matched["stable_id"],
+            "type": matched["entry_type"],
+            "status": matched["status"],
+            "trend": trend,
+            "total_events": len(timeline),
+            "event_breakdown": event_types,
+            "first_event": first_event,
+            "last_event": last_event,
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 def run_server(store: EvolutionStore, config: Config, transport: str = "stdio"):

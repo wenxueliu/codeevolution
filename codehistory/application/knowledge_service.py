@@ -7,4 +7,3 @@ class KnowledgeService:
 
     def report(self, include_llm: bool = False) -> dict:
         return self.extractor.extract_all(include_llm=include_llm)
-

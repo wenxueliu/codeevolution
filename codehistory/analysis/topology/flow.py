@@ -4,4 +4,3 @@ class FlowTracer:
 
     def trace(self, topology, service: str, path: str = "", max_depth: int = 5):
         return self.analyzer.trace_flow(topology, service, path, max_depth)
-

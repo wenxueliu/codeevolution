@@ -35,4 +35,3 @@ class RegistryRepository:
 
     def save(self, entries: list[dict]) -> None:
         atomic_write_json(self.path, entries)
-

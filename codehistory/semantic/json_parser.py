@@ -26,4 +26,3 @@ def parse_json(content: str | None) -> dict | None:
 
 def complete_json(client: LLMClient, prompt: str, **options) -> dict | None:
     return parse_json(client.complete(prompt, **options))
-

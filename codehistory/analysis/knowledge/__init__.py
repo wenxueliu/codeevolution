@@ -3,4 +3,3 @@
 from .report_builder import KnowledgeReportBuilder
 
 __all__ = ["KnowledgeReportBuilder"]
-

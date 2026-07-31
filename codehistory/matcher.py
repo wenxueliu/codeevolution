@@ -6,6 +6,7 @@ from dataclasses import dataclass
 @dataclass
 class EntryPointMatch:
     """Result of matching an entry point to an existing feature."""
+
     entry_signature: str
     entry_type: str
     matched_feature_id: str | None  # None = new feature
@@ -88,7 +89,9 @@ class FeatureMatcher:
         path_lower = file_path.lower()
 
         # HTTP/web patterns
-        if any(p in path_lower for p in ("controller", "view", "handler", "route", "api", "endpoint")):
+        if any(
+            p in path_lower for p in ("controller", "view", "handler", "route", "api", "endpoint")
+        ):
             return "http"
         if any(name_lower.startswith(p) for p in ("get_", "post_", "put_", "delete_", "patch_")):
             return "http"

@@ -15,4 +15,3 @@ def get_llm_config() -> dict | None:
         "model": model,
         "api_base": os.environ.get("CODEHISTORY_LLM_BASE", ""),
     }
-

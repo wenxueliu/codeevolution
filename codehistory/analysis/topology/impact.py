@@ -4,4 +4,3 @@ class ImpactAnalyzer:
 
     def analyze(self, topology, service: str):
         return self.analyzer.impact_analysis(topology, service)
-

@@ -10,4 +10,3 @@ class TopologyRenderer:
 
     def trace(self, value) -> str:
         return self.analyzer.format_trace(value)
-

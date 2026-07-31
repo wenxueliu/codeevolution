@@ -1,2 +1,1 @@
 """Delivery adapters and renderers."""
-

@@ -1,14 +1,14 @@
 """FastAPI backend for the CodeHistory web dashboard — multi-repo support."""
 
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, Query, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from .registry import get_repo, list_repos, register_repo
 from .store import EvolutionStore
-from .registry import list_repos, register_repo, get_repo
 
 app = FastAPI(title="CodeHistory API")
 
@@ -41,6 +41,7 @@ def get_store(repo: str = "") -> EvolutionStore:
 
 
 # --- Repo management ---
+
 
 @app.get("/api/repos")
 def api_list_repos():
@@ -76,6 +77,7 @@ def api_register_repo(name: str = Query(...), path: str = Query(...)):
 
 # --- Scoped API routes ---
 
+
 @app.get("/api/stats")
 def get_stats(repo: str = Query("")):
     store = get_store(repo)
@@ -102,7 +104,8 @@ def list_features(
     if search:
         s = search.lower()
         all_features = [
-            f for f in all_features
+            f
+            for f in all_features
             if s in f["canonical_name"].lower() or s in f["entry_signature"].lower()
         ]
 
@@ -134,6 +137,7 @@ def list_commits(repo: str = Query(""), limit: int = Query(200)):
 def explain_feature(stable_id: str, repo: str = Query("")):
     """Generate LLM explanation for a feature's call chain. Optional: requires OPENAI_API_KEY."""
     from .llm import explain_feature, is_available
+
     if not is_available():
         return {"available": False, "message": "Set OPENAI_API_KEY to enable AI explanations"}
     store = get_store(repo)
@@ -219,12 +223,22 @@ def list_events(
         params,
     ).fetchone()
 
-    events = [{
-        "id": r[0], "event_type": r[1], "detail": r[2],
-        "feature_id": r[3], "commit_id": r[4], "commit_hash": r[5],
-        "timestamp": r[6], "author": r[7], "message": r[8],
-        "canonical_name": r[9], "stable_id": r[10],
-    } for r in rows]
+    events = [
+        {
+            "id": r[0],
+            "event_type": r[1],
+            "detail": r[2],
+            "feature_id": r[3],
+            "commit_id": r[4],
+            "commit_hash": r[5],
+            "timestamp": r[6],
+            "author": r[7],
+            "message": r[8],
+            "canonical_name": r[9],
+            "stable_id": r[10],
+        }
+        for r in rows
+    ]
 
     return {"total": count_result[0] if count_result else 0, "events": events}
 
@@ -238,6 +252,7 @@ def get_capabilities(repo: str = Query("")):
 @app.get("/api/llm-status")
 def llm_status():
     from .llm import is_available
+
     return {"available": is_available()}
 
 
@@ -288,6 +303,7 @@ def serve(host: str = "0.0.0.0", port: int = 8765):
     if web_dir.exists():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
     else:
+
         @app.get("/")
         def root():
             return {"message": "CodeHistory API running. Frontend not built."}

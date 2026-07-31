@@ -13,21 +13,47 @@ from codehistory.api import app
 def test_legacy_dto_contracts_are_stable():
     expected = {
         codegraph_reader.FunctionDef: [
-            "node_id", "name", "qualified_name", "file_path", "language",
-            "start_line", "end_line", "kind", "signature", "visibility",
-            "is_exported", "is_async", "is_static", "is_test", "parent_class",
+            "node_id",
+            "name",
+            "qualified_name",
+            "file_path",
+            "language",
+            "start_line",
+            "end_line",
+            "kind",
+            "signature",
+            "visibility",
+            "is_exported",
+            "is_async",
+            "is_static",
+            "is_test",
+            "parent_class",
             "decorators",
         ],
         knowledge.ApiEndpoint: [
-            "method", "path", "handler_name", "file_path", "line", "params",
-            "return_type", "decorators", "downstream_calls",
+            "method",
+            "path",
+            "handler_name",
+            "file_path",
+            "line",
+            "params",
+            "return_type",
+            "decorators",
+            "downstream_calls",
         ],
         cross_repo.UnifiedTopology: [
-            "services", "cross_edges", "dependency_graph", "potential_edges",
+            "services",
+            "cross_edges",
+            "dependency_graph",
+            "potential_edges",
         ],
         p2_advanced.FlowDiagram: [
-            "entry_service", "entry_api", "steps", "services_involved",
-            "total_cross_service_calls", "channels_used",
+            "entry_service",
+            "entry_api",
+            "steps",
+            "services_involved",
+            "total_cross_service_calls",
+            "channels_used",
         ],
     }
     for dto, field_names in expected.items():
@@ -42,9 +68,22 @@ def test_cli_help_lists_all_public_commands():
         text=True,
     )
     commands = {
-        "backfill", "update", "serve", "web", "register", "repos", "status",
-        "knowledge", "topology", "impact", "trace", "discover", "check",
-        "init-all", "flow", "entities",
+        "backfill",
+        "update",
+        "serve",
+        "web",
+        "register",
+        "repos",
+        "status",
+        "knowledge",
+        "topology",
+        "impact",
+        "trace",
+        "discover",
+        "check",
+        "init-all",
+        "flow",
+        "entities",
     }
     words = result.stdout.replace("{", " ").replace("}", " ").replace(",", " ").split()
     assert commands <= set(words)
@@ -55,10 +94,17 @@ def test_openapi_path_snapshot():
     schema = app.openapi()
     assert schema["info"]["title"] == "CodeHistory API"
     assert sorted(schema["paths"]) == [
-        "/api/capabilities", "/api/commits", "/api/event-stats", "/api/events",
-        "/api/features", "/api/features/{stable_id}",
-        "/api/features/{stable_id}/explain", "/api/llm-status", "/api/repos",
-        "/api/repos/register", "/api/stats",
+        "/api/capabilities",
+        "/api/commits",
+        "/api/event-stats",
+        "/api/events",
+        "/api/features",
+        "/api/features/{stable_id}",
+        "/api/features/{stable_id}/explain",
+        "/api/llm-status",
+        "/api/repos",
+        "/api/repos/register",
+        "/api/stats",
     ]
 
 

@@ -6,7 +6,7 @@ from codehistory.semantic.models import BusinessDescription
 class FakeClient:
     def complete(self, prompt, **options):
         assert prompt == "prompt"
-        return "```json\n{\"ok\": true}\n```"
+        return '```json\n{"ok": true}\n```'
 
 
 def test_complete_json_is_public_and_transport_independent():
