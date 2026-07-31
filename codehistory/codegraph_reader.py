@@ -212,7 +212,7 @@ class CodeGraphReader:
                       n.file_path AS callee_file, n.start_line AS callee_line,
                       e.line AS call_line, e.provenance
                FROM edges e
-               JOIN nodes n ON n.id = e.target
+               JOIN nodes n ON n.id = e.source
                WHERE e.target = ? AND e.kind = 'calls'
                ORDER BY n.file_path, n.start_line""",
             (node_id,),
@@ -238,17 +238,19 @@ class CodeGraphReader:
         """BFS traversal from entry point — returns node_ids in visit order."""
         visited: set[str] = set()
         order: list[str] = []
-        queue = [node_id]
-        while queue and len(order) < max_depth * 100:
-            current = queue.pop(0)
+        queue = [(node_id, 0)]
+        while queue:
+            current, depth = queue.pop(0)
             if current in visited:
                 continue
             visited.add(current)
             order.append(current)
+            if depth >= max_depth:
+                continue
             callees = self.get_callees(current)
             for c in callees:
                 if c.callee_node_id not in visited:
-                    queue.append(c.callee_node_id)
+                    queue.append((c.callee_node_id, depth + 1))
         return order
 
     def get_call_tree_depth(self, node_id: str, max_depth: int = 20) -> int:
@@ -279,13 +281,15 @@ class CodeGraphReader:
             if depth > max_depth:
                 return
             callees = self.get_callees(current)
+            caller = self.get_function_by_id(current)
+            caller_name = caller.name if caller else current
             for c in callees:
                 edge_key = (current, c.callee_node_id)
                 if edge_key not in visited_edges:
                     visited_edges.add(edge_key)
                     chain.append(
                         {
-                            "from": c.callee_node_id,  # will be filled by caller
+                            "from": caller_name,
                             "from_node_id": current,
                             "to": c.callee_name,
                             "to_node_id": c.callee_node_id,

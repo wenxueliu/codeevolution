@@ -58,3 +58,33 @@ def test_read_rows_uses_read_only_connection(tmp_path):
     assert read_rows(str(database), "SELECT path FROM files") == []
     with pytest.raises(sqlite3.OperationalError):
         read_rows(str(database), "INSERT INTO files(path) VALUES ('x')")
+
+
+def test_callers_depth_and_chain_semantics(tmp_path):
+    database = tmp_path / "codegraph.db"
+    _empty_codegraph(database)
+    connection = sqlite3.connect(database)
+    nodes = [
+        ("a", "function", "caller", "m::caller", "m.py", "python", 1, 2),
+        ("b", "function", "middle", "m::middle", "m.py", "python", 3, 4),
+        ("c", "function", "leaf", "m::leaf", "m.py", "python", 5, 6),
+    ]
+    connection.executemany(
+        """INSERT INTO nodes(
+               id, kind, name, qualified_name, file_path, language, start_line, end_line,
+               is_exported, is_async, is_static
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)""",
+        nodes,
+    )
+    connection.executemany(
+        "INSERT INTO edges(id, source, target, kind, line) VALUES (?, ?, ?, 'calls', ?)",
+        [("ab", "a", "b", 2), ("bc", "b", "c", 4)],
+    )
+    connection.commit()
+    connection.close()
+
+    with CodeGraphReader(str(database)) as reader:
+        assert reader.get_callers("b")[0].callee_name == "caller"
+        assert reader.get_call_tree("a", max_depth=1) == ["a", "b"]
+        assert reader.get_call_tree("a", max_depth=0) == ["a"]
+        assert reader.get_call_chain("a")[0]["from"] == "caller"
