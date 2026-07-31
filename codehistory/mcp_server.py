@@ -22,13 +22,18 @@ def get_config() -> Config | None:
 
 
 def get_service() -> EvolutionQueryService | None:
+    service = getattr(mcp, "_service", None)
+    if service is not None:
+        return service
     store = get_store()
-    return EvolutionQueryService(store) if store else None
+    return EvolutionQueryService(store) if store is not None else None
 
 
-def set_context(store: EvolutionStore, config: Config):
+def set_context(store: EvolutionStore | EvolutionQueryService, config: Config):
     """Set the store and config for this MCP server instance."""
-    mcp._store = store
+    service = store if isinstance(store, EvolutionQueryService) else EvolutionQueryService(store)
+    mcp._store = service.store
+    mcp._service = service
     mcp._config = config
 
 
@@ -46,12 +51,11 @@ def get_feature_timeline(feature_name: str) -> str:
         feature_name: Name or partial name of the feature to look up.
                       Matches against canonical_name and entry_signature.
     """
-    store = get_store()
-    if not store:
+    service = get_service()
+    if not service:
         return json.dumps({"error": "No store configured"})
 
     # Search by name (prefix match)
-    service = get_service()
     features = service.list_features()["features"]
     matched = None
     for f in features:
@@ -92,11 +96,11 @@ def list_features() -> str:
 
     Returns each feature's name, type, status, and first/last seen info.
     """
-    store = get_store()
-    if not store:
+    service = get_service()
+    if not service:
         return json.dumps({"error": "No store configured"})
 
-    features = get_service().list_features(limit=10000)["features"]
+    features = service.list_features(limit=10000)["features"]
     return json.dumps(
         {
             "total": len(features),
@@ -121,10 +125,10 @@ def get_stats() -> str:
 
     Returns total commits, features, events, and active feature count.
     """
-    store = get_store()
-    if not store:
+    service = get_service()
+    if not service:
         return json.dumps({"error": "No store configured"})
-    return json.dumps(get_service().stats(), indent=2)
+    return json.dumps(service.stats(), indent=2)
 
 
 @mcp.tool()
@@ -136,12 +140,11 @@ def search_feature_history(query: str) -> str:
     Args:
         query: Keyword to search for (e.g., "login", "auth", "GROWN").
     """
-    store = get_store()
-    if not store:
+    service = get_service()
+    if not service:
         return json.dumps({"error": "No store configured"})
 
     # Search in features
-    service = get_service()
     features = service.list_features(search=query, limit=10000)["features"]
     results = []
     for f in features:
@@ -180,11 +183,10 @@ def get_feature_summary(feature_name: str) -> str:
     Args:
         feature_name: Name or partial name of the feature.
     """
-    store = get_store()
-    if not store:
+    service = get_service()
+    if not service:
         return json.dumps({"error": "No store configured"})
 
-    service = get_service()
     features = service.list_features(search=feature_name, limit=10000)["features"]
     matched = None
     for f in features:
@@ -235,7 +237,9 @@ def get_feature_summary(feature_name: str) -> str:
     )
 
 
-def run_server(store: EvolutionStore, config: Config, transport: str = "stdio"):
+def run_server(
+    store: EvolutionStore | EvolutionQueryService, config: Config, transport: str = "stdio"
+):
     """Start the MCP server."""
     set_context(store, config)
     mcp.run(transport=transport)

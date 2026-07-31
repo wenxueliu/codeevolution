@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from codehistory.application.advanced_topology_service import AdvancedTopologyService
+from codehistory.application.evolution_command_service import EvolutionCommandService
 from codehistory.application.evolution_service import EvolutionQueryService
 from codehistory.application.knowledge_service import KnowledgeService
 from codehistory.application.repository_service import RepositoryService
@@ -87,3 +89,32 @@ def test_knowledge_and_repository_services_delegate_to_ports():
     assert service.list() == entries
     service.save(entries)
     assert saved == [entries]
+
+
+def test_advanced_topology_service_delegates_use_cases():
+    analyzer = SimpleNamespace(
+        trace_full_flow=lambda service, path: (service, path),
+        align_entities=lambda use_llm: {"llm": use_llm},
+    )
+    service = AdvancedTopologyService(analyzer)
+    assert service.trace_flow("gateway", "/orders") == ("gateway", "/orders")
+    assert service.align_entities(use_llm=True) == {"llm": True}
+
+
+def test_evolution_command_service_owns_engine_lifecycle():
+    calls = []
+    store = SimpleNamespace(
+        get_stats=lambda: {"total_commits": 3}, close=lambda: calls.append("close")
+    )
+    engine = SimpleNamespace(
+        store=store,
+        backfill=lambda progress_callback=None: calls.append(("backfill", progress_callback)),
+        update=lambda: calls.append("update"),
+    )
+    service = EvolutionCommandService(engine)
+    callback = lambda *_args: None
+
+    assert service.backfill(callback) == {"total_commits": 3}
+    assert service.update() == {"total_commits": 3}
+    service.close()
+    assert calls == [("backfill", callback), "update", "close"]

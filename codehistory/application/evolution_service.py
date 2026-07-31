@@ -2,8 +2,26 @@
 
 
 class EvolutionQueryService:
-    def __init__(self, store):
+    def __init__(self, store, close=None):
         self.store = store
+        self._close = close
+
+    @classmethod
+    def from_database(cls, db_path: str):
+        from ..store import EvolutionStore
+
+        store = EvolutionStore(db_path)
+        return cls(store, store.close)
+
+    def close(self):
+        if self._close:
+            self._close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
 
     def list_features(
         self, status: str = "all", search: str = "", limit: int = 100, offset: int = 0

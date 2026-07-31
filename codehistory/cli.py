@@ -8,11 +8,13 @@ from pathlib import Path
 
 from .analysis.topology.flow import FlowTracer
 from .analysis.topology.impact import ImpactAnalyzer
+from .application.advanced_topology_service import AdvancedTopologyService
+from .application.evolution_command_service import EvolutionCommandService
+from .application.evolution_service import EvolutionQueryService
 from .application.knowledge_service import KnowledgeService
 from .application.topology_service import TopologyService
 from .config import Config
-from .delivery.renderers import TopologyRenderer
-from .engine import EvolutionEngine
+from .delivery.renderers import AdvancedTopologyRenderer, TopologyRenderer
 from .mcp_server import run_server
 from .registry import (
     build_topology_cache,
@@ -27,7 +29,6 @@ from .registry import (
     refresh_meta,
     register_repo,
 )
-from .store import EvolutionStore
 
 
 def setup_logging(verbose: bool = False):
@@ -42,7 +43,7 @@ def setup_logging(verbose: bool = False):
 def cmd_backfill(args):
     """Run a full backfill analysis from git history."""
     config = Config(repo_path=args.repo, db_path=args.db)
-    engine = EvolutionEngine(config)
+    service = EvolutionCommandService.from_config(config)
     logger = logging.getLogger("codehistory")
 
     def progress(current, total, msg):
@@ -50,37 +51,38 @@ def cmd_backfill(args):
             logger.info(msg)
 
     logger.info(f"Starting backfill for {args.repo}")
-    engine.backfill(progress_callback=progress)
-
-    stats = engine.store.get_stats()
-    print("\nBackfill complete. Stats:")
-    print(f"  Commits processed: {stats['total_commits']}")
-    print(f"  Features discovered: {stats['total_features']}")
-    print(f"  Events generated: {stats['total_events']}")
-    print(f"  Active features: {stats['active_features']}")
-    engine.store.close()
+    try:
+        stats = service.backfill(progress_callback=progress)
+        print("\nBackfill complete. Stats:")
+        print(f"  Commits processed: {stats['total_commits']}")
+        print(f"  Features discovered: {stats['total_features']}")
+        print(f"  Events generated: {stats['total_events']}")
+        print(f"  Active features: {stats['active_features']}")
+    finally:
+        service.close()
 
 
 def cmd_update(args):
     """Process new commits since last analysis."""
     config = Config(repo_path=args.repo, db_path=args.db)
-    engine = EvolutionEngine(config)
-    engine.update()
-    stats = engine.store.get_stats()
-    print(f"Update complete. Stats: {stats}")
-    engine.store.close()
+    service = EvolutionCommandService.from_config(config)
+    try:
+        stats = service.update()
+        print(f"Update complete. Stats: {stats}")
+    finally:
+        service.close()
 
 
 def cmd_serve(args):
     """Start the MCP server."""
     config = Config(repo_path=args.repo, db_path=args.db)
-    store = EvolutionStore(config.db_path)
-    stats = store.get_stats()
+    service = EvolutionQueryService.from_database(config.db_path)
+    stats = service.stats()
     print(f"Serving MCP on stdio. DB stats: {stats}")
     try:
-        run_server(store, config, transport=args.transport)
+        run_server(service, config, transport=args.transport)
     finally:
-        store.close()
+        service.close()
 
 
 def cmd_web(args):
@@ -121,26 +123,28 @@ def cmd_status(args):
         repo_path=args.repo,
         db_path=args.db,
     )
-    store = EvolutionStore(config.db_path)
-    stats = store.get_stats()
-    print(f"Repository: {config.repo_path}")
-    print(f"DB: {config.db_path}")
-    print(f"  Total commits:    {stats['total_commits']}")
-    print(f"  Total features:   {stats['total_features']}")
-    print(f"  Total snapshots:  {stats['total_snapshots']}")
-    print(f"  Total events:     {stats['total_events']}")
-    print(f"  Active features:  {stats['active_features']}")
+    service = EvolutionQueryService.from_database(config.db_path)
+    try:
+        stats = service.stats()
+        print(f"Repository: {config.repo_path}")
+        print(f"DB: {config.db_path}")
+        print(f"  Total commits:    {stats['total_commits']}")
+        print(f"  Total features:   {stats['total_features']}")
+        print(f"  Total snapshots:  {stats['total_snapshots']}")
+        print(f"  Total events:     {stats['total_events']}")
+        print(f"  Active features:  {stats['active_features']}")
 
-    # Show features
-    features = store.get_all_features()
-    if features:
-        print("\nFeatures:")
-        for f in features[:20]:
-            print(f"  [{f['entry_type']}] {f['canonical_name']} ({f['status']})")
-        if len(features) > 20:
-            print(f"  ... and {len(features) - 20} more")
-
-    store.close()
+        result = service.list_features(limit=20)
+        if result["features"]:
+            print("\nFeatures:")
+            for feature in result["features"]:
+                print(
+                    f"  [{feature['entry_type']}] {feature['canonical_name']} ({feature['status']})"
+                )
+            if result["total"] > 20:
+                print(f"  ... and {result['total'] - 20} more")
+    finally:
+        service.close()
 
 
 def cmd_knowledge(args):
@@ -724,8 +728,6 @@ def cmd_init_all(args):
 
 def cmd_flow(args):
     """End-to-end flow trace across all channels."""
-    from .p2_advanced import P2Analyzer
-
     entries = list_repos()
     if not entries:
         print("No repos registered.")
@@ -735,23 +737,21 @@ def cmd_flow(args):
     if not args.no_cache and not is_topology_cache_stale(entries):
         print("[using cached topology]")
 
-    analyzer = P2Analyzer(entries)
-    flow = analyzer.trace_full_flow(args.service, args.path or "")
-    print(analyzer.format_flow(flow))
+    service = AdvancedTopologyService.from_repositories(entries)
+    flow = service.trace_flow(args.service, args.path or "")
+    print(AdvancedTopologyRenderer(service.analyzer).flow(flow))
 
 
 def cmd_entities(args):
     """Cross-service entity alignment."""
-    from .p2_advanced import P2Analyzer
-
     entries = list_repos()
     if not entries:
         print("No repos registered.")
         sys.exit(1)
 
-    analyzer = P2Analyzer(entries)
-    entities = analyzer.align_entities(use_llm=args.llm)
-    print(analyzer.format_entities(entities))
+    service = AdvancedTopologyService.from_repositories(entries)
+    entities = service.align_entities(use_llm=args.llm)
+    print(AdvancedTopologyRenderer(service.analyzer).entities(entities))
 
 
 if __name__ == "__main__":
