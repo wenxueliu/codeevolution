@@ -13,7 +13,7 @@ Reads from each service's .codegraph/codegraph.db via CodeGraphReader.
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
@@ -179,6 +179,10 @@ class FlowStep:
     to_service: str
     to_function: str
     detail: str  # URL, topic name, SQL table, etc.
+    match_rule: str = ""
+    confidence: float = 1.0
+    evidence: dict = field(default_factory=dict)
+    rule_version: str = "topology-static-v1"
 
 
 @dataclass
@@ -281,6 +285,10 @@ class AdvancedTopologyImplementation:
                     to_service=e["target_service"],
                     to_function=e.get("target_function", ""),
                     detail=f"{e['http_method']} {e['url_pattern']}",
+                    match_rule=e["match_rule"],
+                    confidence=e["confidence"],
+                    evidence=e["evidence"],
+                    rule_version=e["rule_version"],
                 )
                 steps.append(step)
                 services_involved.add(e["target_service"])
@@ -314,6 +322,9 @@ class AdvancedTopologyImplementation:
                                 to_service=f"{{{mq_type}:{topic}}}",
                                 to_function="",
                                 detail=f"publish → topic:{topic}",
+                                match_rule="mq-topic-name",
+                                confidence=0.9 if topic else 0.5,
+                                evidence=pub.get("evidence", {}),
                             )
                             steps.append(step_pub)
                             channels_used.add(mq_type)
@@ -326,6 +337,9 @@ class AdvancedTopologyImplementation:
                                 to_service=consumer_svc,
                                 to_function=sub["function"],
                                 detail=f"topic:{topic} → consume",
+                                match_rule="mq-topic-name",
+                                confidence=0.9 if topic else 0.5,
+                                evidence=sub.get("evidence", {}),
                             )
                             steps.append(step_sub)
                             services_involved.add(svc)
@@ -343,6 +357,9 @@ class AdvancedTopologyImplementation:
                         to_service=f"{{{mq_type}:{topic}}}",
                         to_function="",
                         detail=f"publish → topic:{topic} (no consumer found)",
+                        match_rule="mq-producer-unmatched",
+                        confidence=0.4,
+                        evidence=pub.get("evidence", {}),
                     )
                     steps.append(step)
                     channels_used.add(mq_type)
@@ -363,6 +380,9 @@ class AdvancedTopologyImplementation:
                     to_service=rpc["target_service"],
                     to_function=rpc.get("target_function", ""),
                     detail=rpc.get("service_method", "gRPC call"),
+                    match_rule="rpc-callee-name",
+                    confidence=0.8 if rpc["target_service"] != "unknown" else 0.3,
+                    evidence=rpc.get("evidence", {}),
                 )
                 steps.append(step)
                 services_involved.add(rpc["target_service"])
@@ -385,6 +405,9 @@ class AdvancedTopologyImplementation:
                         to_service=f"{{db:{access['target']}}}",
                         to_function="",
                         detail=f"table:{access['table']}",
+                        match_rule="database-call-pattern",
+                        confidence=0.8 if access["table"] != "unknown" else 0.5,
+                        evidence=access.get("evidence", {}),
                     )
                 )
 
@@ -424,6 +447,10 @@ class AdvancedTopologyImplementation:
                     "target_function": e.target_function,
                     "http_method": e.http_method,
                     "url_pattern": e.url_pattern,
+                    "match_rule": e.match_rule,
+                    "confidence": e.confidence,
+                    "evidence": e.evidence,
+                    "rule_version": e.rule_version,
                 }
             )
         return dict(edges)
@@ -463,6 +490,10 @@ class AdvancedTopologyImplementation:
                                 "mq_type": mq_type,
                                 "function": r["caller"],
                                 "topic": topic or pat.split(".")[-1],
+                                "evidence": {
+                                    "caller": f"{r.get('file_path', '')}:{r.get('call_line') or r.get('start_line', 0)}",
+                                    "callee": r.get("callee_name", ""),
+                                },
                             }
                         )
 
@@ -485,6 +516,10 @@ class AdvancedTopologyImplementation:
                                 "mq_type": mq_type,
                                 "function": r["qualified_name"],
                                 "topic": topic,
+                                "evidence": {
+                                    "handler": f"{r.get('file_path', '')}:{r.get('start_line', 0)}",
+                                    "decorators": r.get("decorators") or "",
+                                },
                             }
                         )
 
@@ -637,6 +672,10 @@ class AdvancedTopologyImplementation:
                             "target_service": target,
                             "target_function": r["callee_name"],
                             "service_method": r["callee_name"],
+                            "evidence": {
+                                "caller": f"{r.get('file_path', '')}:{r.get('call_line') or r.get('start_line', 0)}",
+                                "callee": r["callee_name"],
+                            },
                         }
                     )
 

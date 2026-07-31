@@ -6,6 +6,7 @@ from pathlib import Path
 from codehistory.application.advanced_topology_service import AdvancedTopologyService
 from codehistory.application.topology_service import TopologyService
 from codehistory.cross_repo import CrossRepoAnalyzer
+from codehistory.analysis.topology.rules import TopologyRuleSet
 
 
 SCHEMA = """
@@ -156,3 +157,27 @@ def test_multichannel_flow_covers_http_mq_grpc_and_database(tmp_path):
     assert any(step.channel == "kafka" and step.to_service == "users" for step in flow.steps)
     assert any(step.channel == "grpc" and step.to_service == "users" for step in flow.steps)
     assert any(step.channel == "db" and step.detail == "table:orders" for step in flow.steps)
+    assert all(step.match_rule and step.evidence for step in flow.steps)
+
+
+def test_custom_topology_rules_drive_detection_and_evidence_version(tmp_path):
+    source = _service(tmp_path, "gateway", "/api/gateway", [("orders", "/api/orders")])
+    target = _service(tmp_path, "orders", "/api/orders", [])
+    connection = sqlite3.connect(Path(source["path"]) / ".codegraph" / "codegraph.db")
+    connection.execute(
+        """INSERT INTO nodes(id, kind, name, qualified_name, file_path, language, start_line)
+           VALUES ('custom-db', 'import', 'acme_database', 'acme_database', 'db.py', 'python', 1)"""
+    )
+    connection.commit()
+    connection.close()
+    rules = TopologyRuleSet(
+        version="acme-v2",
+        http_client_callers={"python": [("requests.get", "GET")]},
+        database_patterns={"acme-db": ("acme_database",)},
+        message_queue_patterns={"acme-mq": ("acme_broker",)},
+    )
+
+    topology = CrossRepoAnalyzer([source, target], rules).analyze()
+
+    assert topology.services[0].db_type == "acme-db"
+    assert topology.cross_edges[0].rule_version == "acme-v2"

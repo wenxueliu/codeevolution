@@ -7,7 +7,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class TopologyRuleSet:
-    version: str = "v1"
+    version: str = "http-static-v1"
     http_client_callers: dict[str, list[tuple[str, str | None]]] = field(default_factory=dict)
     database_patterns: dict[str, tuple[str, ...]] = field(default_factory=dict)
     message_queue_patterns: dict[str, tuple[str, ...]] = field(default_factory=dict)

@@ -293,13 +293,14 @@ class CrossRepoImplementation:
 
     def _detect_db(self, db_path: str) -> str:
         """Detect database type from imports/decorators."""
-        db_patterns = {
+        defaults = {
             "postgres": ("postgres", "psycopg", "pg_", "postgresql"),
             "mysql": ("mysql", "mariadb"),
             "mongodb": ("mongo", "pymongo", "mongoose"),
             "redis": ("redis", "aioredis"),
             "sqlite": ("sqlite",),
         }
+        db_patterns = self.rules.database_patterns or defaults
         for db_type, patterns in db_patterns.items():
             for p in patterns:
                 with SQLiteCodeGraphRepository(db_path) as repository:
@@ -310,7 +311,7 @@ class CrossRepoImplementation:
 
     def _detect_mq(self, db_path: str) -> str:
         """Detect message queue type."""
-        mq_patterns = {
+        defaults = {
             "kafka": ("kafka",),
             "rabbitmq": ("rabbitmq", "amqp", "pika"),
             "nats": ("nats", "stan"),
@@ -318,6 +319,7 @@ class CrossRepoImplementation:
             "pubsub": ("pubsub",),
             "celery": ("celery",),
         }
+        mq_patterns = self.rules.message_queue_patterns or defaults
         for mq, patterns in mq_patterns.items():
             for p in patterns:
                 with SQLiteCodeGraphRepository(db_path) as repository:
@@ -514,7 +516,7 @@ class CrossRepoImplementation:
                         "reason": "URL could not be extracted from static evidence",
                         "confidence": 0.0,
                         "match_rule": "unmatched",
-                        "rule_version": "http-static-v1",
+                        "rule_version": self.rules.version,
                     }
                 )
                 continue
@@ -563,6 +565,7 @@ class CrossRepoImplementation:
                                     "raw_url": url,
                                     "normalized_path": path,
                                 },
+                                rule_version=self.rules.version,
                             )
                         )
                         break  # first match wins
@@ -631,7 +634,7 @@ class CrossRepoImplementation:
                         else "Possible external service",
                         "confidence": 0.35 if any(r["name"] in host for r in self.repos) else 0.1,
                         "match_rule": "hostname-heuristic",
-                        "rule_version": "http-static-v1",
+                        "rule_version": self.rules.version,
                     }
                 )
 

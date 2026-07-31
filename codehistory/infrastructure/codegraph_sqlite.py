@@ -766,7 +766,8 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
 
     def rpc_calls(self, pattern: str) -> list[dict[str, Any]]:
         return self.query(
-            """SELECT n1.qualified_name AS caller, n2.name AS callee_name FROM edges e
+            """SELECT n1.qualified_name AS caller, n1.file_path, n1.start_line,
+                      n2.name AS callee_name, e.line AS call_line FROM edges e
                JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
                WHERE e.kind = 'calls' AND n2.name LIKE ? LIMIT 20""",
             [f"%{pattern}%"],

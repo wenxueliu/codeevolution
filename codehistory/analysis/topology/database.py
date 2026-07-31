@@ -47,6 +47,7 @@ class DatabaseAccessCollector:
                         "function": row["function"],
                         "target": row["target"],
                         "table": self.extract_table(searchable),
+                        "evidence": {"caller": row["function"], "callee": row["target"]},
                     }
                 )
             result[repo["name"]] = accesses
