@@ -61,10 +61,21 @@ class CodeGraphReader:
         self.db_path = db_path
         self.conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
 
     def close(self):
         self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def query(self, sql: str, params=None) -> list[dict[str, Any]]:
+        """Compatibility query API; prefer the repository port in new code."""
+        rows = self.conn.execute(sql, params or []).fetchall()
+        return [dict(row) for row in rows]
 
     # ---- Function queries ----
 

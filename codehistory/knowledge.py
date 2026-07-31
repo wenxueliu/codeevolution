@@ -1527,6 +1527,4 @@ class KnowledgeExtractor:
 
     def _query(self, sql: str, params: list | None = None) -> list[dict]:
         """Run a read-only query against CodeGraph's SQLite."""
-        cur = self.reader.conn.execute(sql, params or [])
-        rows = cur.fetchall()
-        return [dict(r) for r in rows]
+        return self.reader.query(sql, params)

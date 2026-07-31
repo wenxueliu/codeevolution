@@ -12,12 +12,13 @@ All reads from each service's `.codegraph/codegraph.db` SQLite.
 
 import json
 import re
-import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from .infrastructure.codegraph_sqlite import read_rows
 
 
 # ── HTTP client call patterns per language ─────────────────────────────
@@ -162,13 +163,7 @@ class CrossRepoAnalyzer:
 
     def _query(self, db_path: str, sql: str, params: list | None = None) -> list[dict]:
         """Run a read-only query against a CodeGraph SQLite."""
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        try:
-            cur = conn.execute(sql, params or [])
-            return [dict(r) for r in cur.fetchall()]
-        finally:
-            conn.close()
+        return read_rows(db_path, sql, params)
 
     # ── Analysis pipeline ───────────────────────────────────────────────
 
