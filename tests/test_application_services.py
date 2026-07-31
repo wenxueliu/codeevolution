@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from codehistory.application.evolution_service import EvolutionQueryService
+from codehistory.application.knowledge_service import KnowledgeService
+from codehistory.application.repository_service import RepositoryService
 from codehistory.application.topology_service import TopologyService
 
 
@@ -45,3 +47,16 @@ def test_evolution_service_filters_and_pages():
     store = SimpleNamespace(get_all_features=lambda: features)
     result = EvolutionQueryService(store).list_features(status="active", search="order")
     assert result == {"total": 1, "features": [features[0]]}
+
+
+def test_knowledge_and_repository_services_delegate_to_ports():
+    extractor = SimpleNamespace(extract_all=lambda include_llm: {"llm": include_llm})
+    assert KnowledgeService(extractor).report(include_llm=True) == {"llm": True}
+
+    entries = [{"name": "orders"}]
+    saved = []
+    repository = SimpleNamespace(load=lambda: entries, save=saved.append)
+    service = RepositoryService(repository)
+    assert service.list() == entries
+    service.save(entries)
+    assert saved == [entries]

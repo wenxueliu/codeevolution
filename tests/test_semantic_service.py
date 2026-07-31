@@ -1,6 +1,7 @@
 from codehistory import llm
 from codehistory.semantic.json_parser import complete_json, parse_json
 from codehistory.semantic.models import BusinessDescription
+from codehistory.semantic.service import SemanticService
 
 
 class FakeClient:
@@ -18,3 +19,7 @@ def test_complete_json_is_public_and_transport_independent():
 def test_legacy_models_and_parser_are_reexports():
     assert llm.BusinessDescription is BusinessDescription
     assert llm._parse_json('{"ok": true}') == {"ok": True}
+
+
+def test_semantic_service_uses_injected_client():
+    assert SemanticService(FakeClient()).complete_json("prompt") == {"ok": True}
