@@ -119,18 +119,49 @@ codehistory web                             # 启动 Web 控制台 (:8765)
 
 ```
 codehistory/
-  codegraph_reader.py    # CodeGraph SQLite 读取层
-  knowledge.py           # 单仓知识提取（Phase 1-3）
-  cross_repo.py          # P0 多仓拓扑（HTTP 调用拼接 + 影响分析）
-  p2_advanced.py         # P2 全通道流程追踪 + 跨服务实体对齐
-  llm.py                 # LLM 调用层（litellm）
-  registry.py            # 多仓注册 + 自动检测 + 服务发现 + 缓存
-  engine.py              # 演进引擎
-  walker.py / store.py   # Git 遍历 + 事件存储
-  analyzer.py / matcher.py  # 快照比较 + 功能匹配
-  api.py / cli.py / mcp_server.py  # Web API + CLI + MCP
+├── domain/              # 纯领域 DTO
+├── ports.py             # CodeGraph Repository / SourceProvider 契约
+├── infrastructure/      # SQLite、源码、Registry、版本化缓存 adapter
+├── analysis/
+│   ├── knowledge/       # 独立知识维度与 report builder
+│   └── topology/        # topology / impact / flow / 纯 matcher
+├── application/         # Evolution / Knowledge / Topology / Repository 用例
+├── delivery/            # renderer 与交付适配边界
+├── semantic/            # LLM config / client / JSON parser / models / service
+├── engine.py            # 演进引擎
+├── walker.py / store.py # Git 遍历 + Evolution SQLite
+└── cli.py / api.py / mcp_server.py
 ```
+
+依赖方向固定为：
+
+```text
+delivery → application → analysis/domain/ports ← infrastructure
+```
+
+`codegraph_reader.py`、`knowledge.py`、`cross_repo.py`、`p2_advanced.py`、`registry.py` 和 `llm.py` 保留原有公开入口，作为渐进迁移期间的兼容 facade。
+
+## 开发与验证
+
+```bash
+# 静态检查
+.venv/bin/ruff check codehistory tests scripts/check_coverage.py
+
+# 单元与契约测试
+.venv/bin/python -m pytest -q
+
+# 核心单元覆盖率门禁（fail-under=60）
+.venv/bin/python scripts/check_coverage.py
+
+# Python / Web 构建验证
+.venv/bin/python -m build
+cd web && npm run build
+```
+
+当前重构基线：39 个测试通过，核心单元覆盖率 63.37%。Registry 和 topology cache 已采用原子写与版本化格式；旧缓存和公开入口继续兼容。
 
 ## 设计文档
 
-详见 [docs/design.md](docs/design.md)
+- [系统设计](docs/design.md)
+- [重构规划](docs/refactoring-plan.md)
+- [重构实施结果](docs/refactoring-result.md)

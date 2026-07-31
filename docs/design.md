@@ -99,26 +99,29 @@ delivery → application → analysis/domain/ports ← infrastructure
 
 ```
 codehistory/
-  codegraph_reader.py    # CodeGraph SQLite 读取层（FunctionDef / CallTarget / EntryPointDef）
+  domain/                # 纯 DTO
+  ports.py               # Repository / SourceProvider Protocol
+  infrastructure/       # SQLite、源码、Registry、缓存 adapter
+  analysis/
+    knowledge/           # 独立知识维度 + report builder
+    topology/            # topology / impact / flow / matcher
+  application/           # Evolution / Knowledge / Topology / Repository 用例
+  delivery/              # renderer 与交付适配边界
+  semantic/              # LLM config / client / parser / models / service
 
-  knowledge.py           # 单仓知识提取（Phase 1-3，13 维）
-  cross_repo.py          # 多仓拓扑（HTTP 调用拼接 + URL 源码提取 + 影响分析）
-  p2_advanced.py         # 全通道流程追踪（HTTP+MQ+gRPC）+ 跨服务实体对齐
-  llm.py                 # LLM 调用层（litellm / OpenAI / Anthropic）
+  engine.py              # 演进引擎
+  walker.py / store.py   # Git 遍历与 Evolution SQLite
+  analyzer.py / matcher.py
 
-  registry.py            # 多仓注册中心 + 自动检测 + 服务发现 + 健康检查 + 拓扑缓存
-
-  engine.py              # 演进引擎（git checkout + codegraph sync + 特征追踪）
-  walker.py              # Git 历史遍历（git show 读文件对象）
-  store.py               # Evolution 事件存储（SQLite WAL）
-  analyzer.py            # 快照比较 → 生成演进事件
-  matcher.py             # L1 精确匹配 (entry_type, entry_signature) → 特征身份
-
-  api.py                 # FastAPI 后端（多仓 Web Dashboard）
-  cli.py                 # CLI 入口（18 个子命令）
-  mcp_server.py          # MCP Server（stdio/SSE/streamable-http）
-  config.py              # 配置管理
+  codegraph_reader.py    # 兼容 facade
+  knowledge.py           # 兼容 facade
+  cross_repo.py          # 兼容 facade
+  p2_advanced.py         # 兼容 facade
+  registry.py / llm.py   # 兼容函数入口
+  cli.py / api.py / mcp_server.py
 ```
+
+实施明细与验证记录见 [refactoring-result.md](refactoring-result.md)。
 
 ---
 
