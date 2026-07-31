@@ -1,6 +1,6 @@
 # CodeHistory
 
-代码仓功能演进分析系统。通过分析 git 提交历史，以"功能"（入口点 + 下游调用树）为单位追踪代码的演变过程。
+代码仓功能演进分析 + 业务知识逆向系统。从代码自动抽取 18 维结构化知识，服务产品经理、架构师、开发、测试、运维五个角色。
 
 ## 快速开始
 
@@ -11,79 +11,124 @@ cd services/codehistory
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 
-# 分析一个仓库
-.venv/bin/codehistory backfill --repo /path/to/your/repo
+# 安装 CodeGraph（代码解析引擎）
+npm i -g @colbymchenry/codegraph
 
-# 注册到多仓面板
-.venv/bin/codehistory register --name myproject --repo /path/to/your/repo
+# 初始化代码图谱
+cd /path/to/your/repo && codegraph init
+
+# 提取知识（13 维，秒级）
+.venv/bin/codehistory knowledge -r /path/to/your/repo
+
+# 多仓微服务拓扑
+.venv/bin/codehistory register -n my-svc -r /path/to/repo
+.venv/bin/codehistory topology
 
 # 启动 Web 面板
 .venv/bin/codehistory web --port 8765
-# 打开 http://localhost:8765
-
-# 查看状态
-.venv/bin/codehistory status --repo /path/to/your/repo
 ```
 
-## 功能
+## 三大子系统
 
-### 分析引擎
-- **每次 commit 粒度**的增量分析，不依赖 tag
-- **tree-sitter** AST 解析，支持 Python / Java
-- **入口点检测**：HTTP endpoint / CLI command / event handler
-- **L1 精确匹配**：跨 commit 追踪同一功能（入口点签名匹配）
-- **演变事件**：BORN / GROWN / SHRUNK / MOVED / DIED 等 10+ 事件类型
-- **调用链提取**：从入口点沿 CALLS 边 BFS，记录完整调用路径
-- **中英文描述**：50+ 常用函数名自动生成描述
+### 1. Knowledge Extractor — 单仓知识提取（13 维）
 
-### Web 面板 (Vue 3 + Mermaid)
-- **多代码仓支持**：注册多个仓库，统一面板查看
-- **仪表盘**：统计卡片 + 事件类型分布 + 最近事件
-- **功能列表**：搜索/状态过滤/分页 + commit 时间旅行
-- **功能详情**：Mermaid 时序图（类级生命线）+ 演变时间线
-- **事件日志**：全量事件查询/过滤
+纯图计算 + 规则匹配 + LLM 语义理解，不需要重新解析代码：
 
-### CLI 命令
-| 命令 | 用途 |
+| 阶段 | 维度 | 依赖 |
+|------|------|------|
+| Phase 1 | API 契约 / 模块拓扑 / 核心实体 / 测试缺口 / 分层违规 | CodeGraph SQLite + networkx |
+| Phase 2 | 配置消费 / 外部依赖 / 权限模型 / 热力图 | CodeGraph SQLite + 规则引擎 |
+| Phase 3 | 业务描述 / 业务规则 / 错误目录 / 状态机 | CodeGraph SQLite + litellm (LLM) |
+
+### 2. Cross-Repo Analyzer — 多仓微服务分析（5 维）
+
+跨代码仓拼接服务间调用关系，支持 HTTP + MQ + gRPC 全通道分析：
+
+| 能力 | 命令 |
 |------|------|
-| `backfill` | 首次全量分析 |
-| `update` | 增量更新 |
-| `status` | 查看分析状态 |
-| `register` | 注册到多仓面板 |
-| `repos` | 列出已注册仓库 |
-| `web` | 启动 Web 面板 |
-| `serve` | 启动 MCP 服务器 |
+| 统一服务拓扑 | `topology` |
+| 跨服务变更影响 | `impact -s <svc>` |
+| 全通道流程追踪 | `flow -s <svc>` |
+| 跨服务实体对齐 | `entities [--llm]` |
+| 服务发现+健康检查 | `discover` / `check` |
+
+### 3. Evolution Engine — 代码演进追踪
+
+沿 git 历史逐 commit 分析，以"功能"为单位追踪代码演变过程。
+
+## 能力矩阵（18 维 × 5 角色）
+
+| # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
+|---|------|:---:|:---:|:---:|:---:|:---:|------|
+| 1 | API 契约 | x | x | x | x | | `knowledge -s api` |
+| 2 | 模块拓扑 | | x | x | | | `knowledge -s modules` |
+| 3 | 核心实体 | | x | x | | | `knowledge -s entities` |
+| 4 | 测试缺口 | | | | x | | `knowledge -s tests` |
+| 5 | 分层违规 | | x | | | | `knowledge -s layers` |
+| 6 | 配置消费图 | | | | | x | `knowledge -s config` |
+| 7 | 外部依赖清单 | | x | | | x | `knowledge -s deps` |
+| 8 | 权限模型 | | x | | | x | `knowledge -s auth` |
+| 9 | 热力图 | | x | x | | | `knowledge -s heatmap` |
+| 10 | 业务描述 | x | | x | | | `knowledge -s business --llm` |
+| 11 | 业务规则 | x | | | x | | `knowledge -s rules --llm` |
+| 12 | 错误目录 | | | | x | x | `knowledge -s errors --llm` |
+| 13 | 状态机 | x | | | x | | `knowledge -s states --llm` |
+| 14 | 统一服务拓扑 | | x | x | | x | `topology` |
+| 15 | 跨仓变更影响 | | x | x | x | | `impact -s <svc>` |
+| 16 | 全通道流程追踪 | | x | x | x | x | `flow -s <svc>` |
+| 17 | 跨服务实体对齐 | | x | x | | | `entities [--llm]` |
+| 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
+
+## CLI 命令总览
+
+```bash
+# 单仓知识提取
+codehistory knowledge -r <repo> [-s api|modules|entities|tests|layers|config|deps|auth|heatmap] [--llm]
+codehistory knowledge -r <repo> -s business|rules|errors|states --llm
+
+# 多仓微服务
+codehistory register -n <name> -r <path>    # 注册服务（自动检测语言/角色/DB/MQ）
+codehistory discover -d <dir>               # 扫描目录发现 git 仓库
+codehistory init-all                        # 一键初始化所有服务的 CodeGraph
+codehistory check                           # 所有服务健康检查
+codehistory topology                        # 统一服务拓扑（缓存加速）
+codehistory impact -s <svc>                 # 跨服务变更影响（秒级缓存）
+codehistory trace -s <svc>                  # HTTP 调用链追踪
+codehistory flow -s <svc>                   # 全通道流程追踪
+codehistory entities [--llm]                # 跨服务实体对齐
+
+# 演进引擎
+codehistory backfill -r <repo>              # 全量回溯分析
+codehistory update -r <repo>                # 增量更新
+codehistory status -r <repo>                # 查看演进状态
+
+# 其他
+codehistory serve -r <repo>                 # 启动 MCP Server
+codehistory web                             # 启动 Web 控制台 (:8765)
+```
 
 ## 技术栈
 
-- **后端**: Python 3.10+ / tree-sitter / SQLite (WAL) / FastAPI
+- **后端**: Python 3.10+ / SQLite (WAL) / FastAPI / networkx / litellm (可选)
+- **代码解析**: 完全委托给 CodeGraph (`@colbymchenry/codegraph` v0.9.x)，直接读其 SQLite
 - **前端**: Vue 3 / Vue Router / Mermaid / Vite
 - **MCP**: FastMCP
+- 所有 30+ 语言自动支持，无需配置
 
-## 项目结构
+## 模块架构
 
 ```
 codehistory/
-├── codehistory/
-│   ├── engine.py          # 核心引擎（管线编排）
-│   ├── walker.py          # git 遍历 + 文件读取
-│   ├── parser.py          # tree-sitter AST 解析
-│   ├── matcher.py         # 功能匹配器
-│   ├── analyzer.py        # 演变分析器
-│   ├── store.py           # SQLite 存储
-│   ├── registry.py        # 多仓注册表
-│   ├── api.py             # FastAPI 后端
-│   ├── mcp_server.py      # MCP 工具服务器
-│   ├── cli.py             # CLI 入口
-│   └── config.py          # 配置管理
-├── web/                   # Vue 3 前端
-│   └── src/pages/
-│       ├── Home.vue           # 代码仓列表
-│       ├── Dashboard.vue      # 仪表盘
-│       ├── FeatureList.vue    # 功能列表
-│       ├── FeatureDetail.vue  # 功能详情（含时序图）
-│       └── EventList.vue      # 事件日志
-└── docs/design.md         # 设计文档
+  codegraph_reader.py    # CodeGraph SQLite 读取层
+  knowledge.py           # 单仓知识提取（Phase 1-3）
+  cross_repo.py          # P0 多仓拓扑（HTTP 调用拼接 + 影响分析）
+  p2_advanced.py         # P2 全通道流程追踪 + 跨服务实体对齐
+  llm.py                 # LLM 调用层（litellm）
+  registry.py            # 多仓注册 + 自动检测 + 服务发现 + 缓存
+  engine.py              # 演进引擎
+  walker.py / store.py   # Git 遍历 + 事件存储
+  analyzer.py / matcher.py  # 快照比较 + 功能匹配
+  api.py / cli.py / mcp_server.py  # Web API + CLI + MCP
 ```
 
 ## 设计文档

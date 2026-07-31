@@ -2,27 +2,40 @@
 
 ## 依赖
 
-CodeHistory **不依赖** codegraph 或 code-review-graph，是完全独立的项目。
-
 ### 系统依赖
 
 | 依赖 | 用途 | 检查命令 |
 |------|------|----------|
 | Python 3.10+ | 后端引擎 | `python3 --version` |
-| Node.js 18+ | 前端构建 (Vue 3) | `node --version` |
+| Node.js 18+ | CodeGraph + 前端构建 | `node --version` |
 | Git | 代码仓分析 | `git --version` |
+
+### CodeGraph（必须）
+
+CodeHistory 的代码解析完全委托给 CodeGraph。**每个要分析的目标仓库都需要先初始化 CodeGraph**。
+
+```bash
+npm i -g @colbymchenry/codegraph
+cd /path/to/target/repo
+codegraph init
+```
+
+CodeHistory 通过直接读取 `.codegraph/codegraph.db`（SQLite WAL）获取代码图谱，不需要启动 CodeGraph 服务进程。所有语言自动支持（CodeGraph 覆盖 30+ 语言）。
 
 ### Python 包
 
 ```
-tree-sitter           # AST 解析 (支持 Python/Java 及 100+ 语言)
-tree-sitter-language-pack  # 语言语法包
 fastapi + uvicorn     # Web API 服务器
 fastmcp + mcp         # MCP 工具服务器
-networkx              # 图算法
+networkx              # 图算法（PageRank / Louvain 社区检测）
 ```
 
-### Node 包 (仅前端开发/构建时需要)
+可选：
+```
+litellm               # LLM 支持（Phase 3 知识提取）
+```
+
+### Node 包（仅前端开发/构建时需要）
 
 ```
 vue + vue-router      # 前端框架
@@ -33,58 +46,69 @@ vite                  # 构建工具
 ## 安装
 
 ```bash
+cd services/codehistory
+
 # 创建虚拟环境并安装
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 
-# 前端已预构建在 web/dist/，除非修改前端代码否则不需要 npm install
-# 如果要修改前端：
-# cd web && npm install && npm run build
+# 安装 LLM 支持（可选）
+.venv/bin/pip install -e ".[llm]"
 ```
 
-## 不需要安装的
+前端已预构建在 `web/dist/`，除非修改前端代码否则不需要 `npm install`。
 
-- **codegraph** (npm `@colbymchenry/codegraph`) — CodeHistory 有自己的 tree-sitter 解析管线，不依赖它
-- **code-review-graph** (PyPI) — CodeHistory 有自己的 git walker 和 SQLite 存储，不依赖它
-
-这两个参考项目的设计思路被借鉴（见 `docs/design.md` 第 10 节），但代码是完全独立实现的。
+```bash
+# 如果要修改前端：
+cd web && npm install && npm run build
+```
 
 ## 验证安装
 
 ```bash
 .venv/bin/codehistory --help
-# 应显示: backfill / update / web / serve / register / repos / status
+# 应显示: backfill / update / status / register / repos / web / serve
+#         / knowledge / topology / impact / trace / flow / entities
+#         / discover / check / init-all
 ```
 
-## AI 实现解释 (可选)
+## LLM 配置（可选）
 
-配置 OpenAI API Key 后，功能详情页可生成调用链的自然语言解释（中英双语）。
+Phase 3 知识提取（业务描述/规则/错误目录/状态机）需要 LLM：
 
 ```bash
-# 安装 LLM 支持
-.venv/bin/pip install ".[llm]"
-
-# 配置环境变量
 export OPENAI_API_KEY="sk-..."
-export CODEHISTORY_LLM_MODEL="gpt-4o-mini"  # 可选，默认 gpt-4o-mini
-export CODEHISTORY_LLM_BASE="https://api.openai.com/v1"  # 可选，兼容任意 OpenAI 兼容接口
+# 或
+export ANTHROPIC_API_KEY="sk-ant-..."
 
-# 启动 web
-.venv/bin/codehistory web --port 8765
+# 可选：覆盖默认模型
+export CODEHISTORY_LLM_MODEL="gpt-4o-mini"
 ```
-
-功能详情页会显示「AI 实现解释」区域，点击「生成解释」即可。
 
 ## 快速开始
 
 ```bash
-# 1. 分析一个仓库
-.venv/bin/codehistory backfill --repo /path/to/your/python/project
+# 1. 初始化 CodeGraph
+cd /path/to/your/project && codegraph init
 
-# 2. 注册到面板
-.venv/bin/codehistory register --name myproject --repo /path/to/your/python/project
+# 2. 提取知识
+.venv/bin/codehistory knowledge -r /path/to/your/project
 
-# 3. 启动 Web
+# 3. 查看 Web 面板
 .venv/bin/codehistory web --port 8765
 # 浏览器打开 http://localhost:8765
+```
+
+## 多仓微服务设置
+
+```bash
+# 注册多个服务
+.venv/bin/codehistory register -n order-svc -r /repos/order-service
+.venv/bin/codehistory register -n user-svc  -r /repos/user-service
+
+# 一键初始化所有服务的 CodeGraph
+.venv/bin/codehistory init-all
+
+# 查看统一拓扑
+.venv/bin/codehistory topology
 ```
