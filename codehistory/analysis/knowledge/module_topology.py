@@ -14,7 +14,8 @@ from ...domain.knowledge import ModuleTopology
 
 
 class _QuerySource(Protocol):
-    def query(self, sql: str, params: list | None = None) -> list[dict[str, Any]]: ...
+    def module_import_edges(self) -> list[dict[str, Any]]: ...
+    def cross_file_call_edges(self) -> list[dict[str, Any]]: ...
 
 
 class ModuleTopologyExtractor:
@@ -24,7 +25,7 @@ class ModuleTopologyExtractor:
         self._source = source
 
     def extract(self, resolution: float = 0.8) -> ModuleTopology:
-        if callable(self._source) and not hasattr(self._source, "query"):
+        if callable(self._source) and not hasattr(self._source, "module_import_edges"):
             return self._source()
 
         graph = self.build_graph()
@@ -70,26 +71,10 @@ class ModuleTopologyExtractor:
 
     def build_graph(self) -> nx.Graph:
         graph = nx.Graph()
-        imports = self._query(
-            """
-            SELECT n1.file_path AS f1, n2.file_path AS f2
-            FROM edges e
-            JOIN nodes n1 ON n1.id = e.source
-            JOIN nodes n2 ON n2.id = e.target
-            WHERE e.kind = 'imports'
-            """
-        )
+        imports = self._source.module_import_edges()  # type: ignore[union-attr]
         self._add_edges(graph, imports, weight=2)
 
-        calls = self._query(
-            """
-            SELECT n1.file_path AS f1, n2.file_path AS f2
-            FROM edges e
-            JOIN nodes n1 ON n1.id = e.source
-            JOIN nodes n2 ON n2.id = e.target
-            WHERE e.kind = 'calls' AND n1.file_path != n2.file_path
-            """
-        )
+        calls = self._source.cross_file_call_edges()  # type: ignore[union-attr]
         self._add_edges(graph, calls, weight=1)
         return graph
 
@@ -103,9 +88,6 @@ class ModuleTopologyExtractor:
                 graph[source][target]["weight"] += weight
             else:
                 graph.add_edge(source, target, weight=weight)
-
-    def _query(self, sql: str) -> list[dict[str, Any]]:
-        return self._source.query(sql)  # type: ignore[union-attr]
 
     @staticmethod
     def common_prefix(paths: list[str]) -> str:

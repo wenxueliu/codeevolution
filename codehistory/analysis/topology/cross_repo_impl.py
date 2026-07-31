@@ -219,12 +219,11 @@ class CrossRepoImplementation:
             all_outbound.extend(outbound)
 
             # We'll collect inbound APIs from each service for matching
-            from ...codegraph_reader import CodeGraphReader
-            from ...knowledge import KnowledgeExtractor
+            from ...analysis.knowledge.api_contract import ApiContractExtractor
+            from ...infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 
-            reader = CodeGraphReader(db_path)
-            ke = KnowledgeExtractor(reader)
-            api = ke.extract_api_contract()
+            with SQLiteCodeGraphRepository(db_path) as reader:
+                api = ApiContractExtractor(reader).extract()
             all_inbound[repo["name"]] = [
                 {
                     "method": ep.method,
@@ -235,7 +234,6 @@ class CrossRepoImplementation:
                 }
                 for ep in api.endpoints
             ]
-            reader.close()
 
         # Match outbound calls to inbound APIs
         cross_edges = self._match_cross_edges(all_outbound, all_inbound)

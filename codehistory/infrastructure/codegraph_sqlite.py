@@ -600,6 +600,103 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
     def inbound_endpoints(self) -> list[EntryPointDef]:
         return self.get_entry_points()
 
+    def route_nodes(self) -> list[dict[str, Any]]:
+        return self.query("SELECT name, file_path, start_line FROM nodes WHERE kind = 'route'")
+
+    def decorated_handlers(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT id, name, qualified_name, file_path, start_line, signature, decorators
+               FROM nodes WHERE kind IN ('function', 'method') AND decorators IS NOT NULL"""
+        )
+
+    def module_import_edges(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT n1.file_path AS f1, n2.file_path AS f2 FROM edges e
+               JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
+               WHERE e.kind = 'imports'"""
+        )
+
+    def cross_file_call_edges(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT n1.file_path AS f1, n2.file_path AS f2 FROM edges e
+               JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
+               WHERE e.kind = 'calls' AND n1.file_path != n2.file_path"""
+        )
+
+    def call_edges(self) -> list[dict[str, Any]]:
+        return self.query("SELECT source, target FROM edges WHERE kind = 'calls'")
+
+    def layer_call_edges(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT n1.file_path AS source_file, n1.name AS source_name,
+                      n2.file_path AS target_file, n2.name AS target_name, e.line AS call_line
+               FROM edges e JOIN nodes n1 ON n1.id = e.source
+               JOIN nodes n2 ON n2.id = e.target
+               WHERE e.kind = 'calls' AND n1.file_path != n2.file_path"""
+        )
+
+    def file_records(self) -> list[dict[str, Any]]:
+        return self.query("SELECT path, language FROM files")
+
+    def config_candidate_nodes(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT id, name, qualified_name, file_path, kind, start_line, decorators
+               FROM nodes WHERE kind IN ('variable', 'constant', 'function', 'method')"""
+        )
+
+    def import_nodes(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT name AS import_name, file_path AS importer_file, start_line, signature
+               FROM nodes WHERE kind = 'import'"""
+        )
+
+    def decorator_nodes(self) -> list[dict[str, Any]]:
+        return self.query(
+            "SELECT DISTINCT decorators, file_path, start_line FROM nodes WHERE decorators IS NOT NULL"
+        )
+
+    def authorization_handlers(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT id, name, qualified_name, file_path, start_line, decorators, kind
+               FROM nodes WHERE kind IN ('function', 'method') AND decorators IS NOT NULL"""
+        )
+
+    def authorization_middleware(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT id, name, qualified_name, file_path, start_line, kind FROM nodes
+               WHERE kind IN ('function', 'method') AND (name LIKE '%auth%middleware%'
+               OR name LIKE '%auth%guard%' OR name LIKE '%permission%check%'
+               OR name LIKE '%authorize%' OR name LIKE '%authenticate%')"""
+        )
+
+    def enum_nodes(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT id, name, qualified_name, file_path, start_line, end_line
+               FROM nodes WHERE kind = 'enum'"""
+        )
+
+    def enum_members(self, enum_id: str) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT n.name FROM edges e JOIN nodes n ON n.id=e.target
+               WHERE e.source=? AND e.kind='contains' AND n.kind='enum_member'""",
+            [enum_id],
+        )
+
+    def functions_named_like(self, name: str) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT DISTINCT qualified_name AS name, file_path, start_line, end_line
+               FROM nodes WHERE name LIKE ? AND kind IN ('function','method')""",
+            [f"%{name}%"],
+        )
+
+    def database_call_candidates(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT DISTINCT caller.qualified_name AS function,
+                      target.qualified_name AS target, target.name, target.signature, e.metadata
+               FROM edges e JOIN nodes caller ON caller.id=e.source
+               JOIN nodes target ON target.id=e.target WHERE e.kind='calls'"""
+        )
+
     def inspect_metadata(self) -> dict[str, Any]:
         """Return registry metadata while tolerating older CodeGraph schemas."""
         tables = {

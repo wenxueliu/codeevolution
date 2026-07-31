@@ -13,7 +13,8 @@ from ...domain.knowledge import ApiContract, ApiEndpoint
 
 
 class _QuerySource(Protocol):
-    def query(self, sql: str, params: list | None = None) -> list[dict[str, Any]]: ...
+    def route_nodes(self) -> list[dict[str, Any]]: ...
+    def decorated_handlers(self) -> list[dict[str, Any]]: ...
 
 
 class ApiContractExtractor:
@@ -27,13 +28,11 @@ class ApiContractExtractor:
         self._source = source
 
     def extract(self) -> ApiContract:
-        if callable(self._source) and not hasattr(self._source, "query"):
+        if callable(self._source) and not hasattr(self._source, "route_nodes"):
             return self._source()
 
         endpoints: list[ApiEndpoint] = []
-        route_nodes = self._query(
-            "SELECT name, file_path, start_line FROM nodes WHERE kind = 'route'"
-        )
+        route_nodes = self._source.route_nodes()  # type: ignore[union-attr]
         for route in route_nodes:
             method, _, path = (route.get("name") or "").partition(" ")
             if not method or not path:
@@ -48,14 +47,7 @@ class ApiContractExtractor:
                 )
             )
 
-        handlers = self._query(
-            """
-            SELECT id, name, qualified_name, file_path, start_line,
-                   signature, decorators
-            FROM nodes
-            WHERE kind IN ('function', 'method') AND decorators IS NOT NULL
-            """
-        )
+        handlers = self._source.decorated_handlers()  # type: ignore[union-attr]
         for handler in handlers:
             decorators = self._decode_decorators(handler.get("decorators"))
             for decorator in decorators:
@@ -79,9 +71,6 @@ class ApiContractExtractor:
         for endpoint in endpoints:
             groups[self.resource_prefix(endpoint.path)].append(endpoint)
         return ApiContract(endpoints=endpoints, resource_groups=dict(sorted(groups.items())))
-
-    def _query(self, sql: str) -> list[dict[str, Any]]:
-        return self._source.query(sql)  # type: ignore[union-attr]
 
     @staticmethod
     def _decode_decorators(raw: Any) -> list[str]:

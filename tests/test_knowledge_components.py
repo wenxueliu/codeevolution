@@ -12,9 +12,10 @@ from codehistory.analysis.knowledge.test_gaps import TestGapExtractor as GapExtr
 
 
 class QueryStub:
-    def query(self, sql, params=None):
-        if "kind = 'route'" in sql:
-            return [{"name": "GET /api/users", "file_path": "routes.py", "start_line": 3}]
+    def route_nodes(self):
+        return [{"name": "GET /api/users", "file_path": "routes.py", "start_line": 3}]
+
+    def decorated_handlers(self):
         return [
             {
                 "id": "handler-1",
@@ -29,12 +30,13 @@ class QueryStub:
 
 
 class TopologyQueryStub:
-    def query(self, sql, params=None):
-        if "e.kind = 'imports'" in sql:
-            return [
-                {"f1": "src/users/api.py", "f2": "src/users/service.py"},
-                {"f1": "src/orders/api.py", "f2": "src/orders/service.py"},
-            ]
+    def module_import_edges(self):
+        return [
+            {"f1": "src/users/api.py", "f2": "src/users/service.py"},
+            {"f1": "src/orders/api.py", "f2": "src/orders/service.py"},
+        ]
+
+    def cross_file_call_edges(self):
         return [{"f1": "src/users/service.py", "f2": "src/orders/service.py"}]
 
 

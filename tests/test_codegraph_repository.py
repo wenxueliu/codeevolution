@@ -35,6 +35,22 @@ def test_repository_typed_queries_and_legacy_facade_match(tmp_path):
     with SQLiteCodeGraphRepository(str(database)) as repository:
         assert repository.functions() == []
         assert repository.inbound_endpoints() == []
+        assert repository.route_nodes() == []
+        assert repository.decorated_handlers() == []
+        assert repository.module_import_edges() == []
+        assert repository.cross_file_call_edges() == []
+        assert repository.call_edges() == []
+        assert repository.layer_call_edges() == []
+        assert repository.file_records() == []
+        assert repository.config_candidate_nodes() == []
+        assert repository.import_nodes() == []
+        assert repository.decorator_nodes() == []
+        assert repository.authorization_handlers() == []
+        assert repository.authorization_middleware() == []
+        assert repository.enum_nodes() == []
+        assert repository.enum_members("missing") == []
+        assert repository.functions_named_like("missing") == []
+        assert repository.database_call_candidates() == []
         assert repository.query("SELECT * FROM files") == []
 
     with CodeGraphReader(str(database)) as legacy:

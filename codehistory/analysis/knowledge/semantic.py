@@ -130,16 +130,10 @@ class SemanticExtractor:
     def state_machines(self):
         if not llm.is_available():
             return [{"error": "LLM not configured."}]
-        enums = self.graph.query(
-            "SELECT id, name, qualified_name, file_path, start_line, end_line FROM nodes WHERE kind = 'enum'"
-        )
+        enums = self.graph.enum_nodes()
         results = []
         for enum in enums:
-            members = self.graph.query(
-                """SELECT n.name FROM edges e JOIN nodes n ON n.id=e.target
-                WHERE e.source=? AND e.kind='contains' AND n.kind='enum_member'""",
-                [enum["id"]],
-            )
+            members = self.graph.enum_members(enum["id"])
             names = [member["name"] for member in members]
             if len(names) < 2 or not any(
                 word in enum["name"].lower()
@@ -148,13 +142,7 @@ class SemanticExtractor:
                 continue
             references = []
             for name in names[:20]:
-                references.extend(
-                    self.graph.query(
-                        """SELECT DISTINCT qualified_name AS name, file_path,
-                    start_line, end_line FROM nodes WHERE name LIKE ? AND kind IN ('function','method')""",
-                        [f"%{name}%"],
-                    )
-                )
+                references.extend(self.graph.functions_named_like(name))
             unique = {item["name"]: item for item in references}
             for item in list(unique.values())[:8]:
                 source = self.source.snippet(

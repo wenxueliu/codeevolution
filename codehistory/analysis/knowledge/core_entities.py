@@ -11,7 +11,7 @@ from ...domain.knowledge import CoreEntity, FunctionDef
 
 
 class _Source(Protocol):
-    def query(self, sql: str, params=None) -> list[dict[str, Any]]: ...
+    def call_edges(self) -> list[dict[str, Any]]: ...
     def get_function_by_id(self, node_id: str) -> FunctionDef | None: ...
 
 
@@ -26,7 +26,7 @@ class CoreEntityExtractor:
         self._call_graph: nx.DiGraph | None = None
 
     def extract(self, top_n: int = 30) -> list[CoreEntity]:
-        if callable(self._source) and not hasattr(self._source, "query"):
+        if callable(self._source) and not hasattr(self._source, "call_edges"):
             return self._source()
         graph = self.call_graph()
         if graph.number_of_nodes() == 0:
@@ -55,9 +55,7 @@ class CoreEntityExtractor:
     def call_graph(self) -> nx.DiGraph:
         if self._call_graph is None:
             graph = nx.DiGraph()
-            for row in self._source.query(  # type: ignore[union-attr]
-                "SELECT source, target FROM edges WHERE kind = 'calls'"
-            ):
+            for row in self._source.call_edges():  # type: ignore[union-attr]
                 graph.add_edge(row["source"], row["target"])
             self._call_graph = graph
         return self._call_graph

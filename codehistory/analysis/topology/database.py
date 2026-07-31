@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-from ...infrastructure.codegraph_sqlite import read_rows
+from ...infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 
 DB_CALL_PATTERNS = (
     "execute",
@@ -33,13 +33,8 @@ class DatabaseAccessCollector:
             if not database.exists():
                 result[repo["name"]] = []
                 continue
-            rows = read_rows(
-                str(database),
-                """SELECT DISTINCT caller.qualified_name AS function,
-                target.qualified_name AS target, target.name, target.signature, e.metadata
-                FROM edges e JOIN nodes caller ON caller.id=e.source
-                JOIN nodes target ON target.id=e.target WHERE e.kind='calls'""",
-            )
+            with SQLiteCodeGraphRepository(str(database)) as repository:
+                rows = repository.database_call_candidates()
             accesses = []
             for row in rows:
                 searchable = " ".join(

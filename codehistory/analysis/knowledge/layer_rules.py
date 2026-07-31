@@ -35,7 +35,7 @@ LAYER_ALLOWED = {
 
 class _Source(Protocol):
     def get_all_files(self) -> list[str]: ...
-    def query(self, sql: str, params=None) -> list[dict[str, Any]]: ...
+    def layer_call_edges(self) -> list[dict[str, Any]]: ...
 
 
 class LayerRuleExtractor:
@@ -43,23 +43,13 @@ class LayerRuleExtractor:
         self._source = source
 
     def extract(self) -> list[LayerViolation]:
-        if callable(self._source) and not hasattr(self._source, "query"):
+        if callable(self._source) and not hasattr(self._source, "layer_call_edges"):
             return self._source()
         file_layers = {
             path: self.classify_file(path)
             for path in self._source.get_all_files()  # type: ignore[union-attr]
         }
-        rows = self._source.query(  # type: ignore[union-attr]
-            """
-            SELECT n1.file_path AS source_file, n1.name AS source_name,
-                   n2.file_path AS target_file, n2.name AS target_name,
-                   e.line AS call_line
-            FROM edges e
-            JOIN nodes n1 ON n1.id = e.source
-            JOIN nodes n2 ON n2.id = e.target
-            WHERE e.kind = 'calls' AND n1.file_path != n2.file_path
-            """
-        )
+        rows = self._source.layer_call_edges()  # type: ignore[union-attr]
         violations = []
         seen: set[tuple[str, str]] = set()
         for row in rows:

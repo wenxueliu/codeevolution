@@ -31,7 +31,8 @@ AUTH_PATTERNS = {
 
 
 class _Source(Protocol):
-    def query(self, sql: str, params=None) -> list[dict[str, Any]]: ...
+    def authorization_handlers(self) -> list[dict[str, Any]]: ...
+    def authorization_middleware(self) -> list[dict[str, Any]]: ...
 
 
 class AuthorizationExtractor:
@@ -39,13 +40,10 @@ class AuthorizationExtractor:
         self.source = source
 
     def extract(self) -> list[dict]:
-        if callable(self.source) and not hasattr(self.source, "query"):
+        if callable(self.source) and not hasattr(self.source, "authorization_handlers"):
             return self.source()
         results = []
-        rows = self.source.query(  # type: ignore[union-attr]
-            """SELECT id, name, qualified_name, file_path, start_line, decorators, kind
-               FROM nodes WHERE kind IN ('function', 'method') AND decorators IS NOT NULL"""
-        )
+        rows = self.source.authorization_handlers()  # type: ignore[union-attr]
         for row in rows:
             try:
                 decorators = (
@@ -72,12 +70,7 @@ class AuthorizationExtractor:
                         ).append(value)
             if level != "unknown" or roles or permissions:
                 results.append(self._entry(row, level, roles, permissions))
-        middleware = self.source.query(  # type: ignore[union-attr]
-            """SELECT id, name, qualified_name, file_path, start_line, kind FROM nodes
-               WHERE kind IN ('function', 'method') AND (name LIKE '%auth%middleware%'
-               OR name LIKE '%auth%guard%' OR name LIKE '%permission%check%'
-               OR name LIKE '%authorize%' OR name LIKE '%authenticate%')"""
-        )
+        middleware = self.source.authorization_middleware()  # type: ignore[union-attr]
         results.extend(self._entry(row, "middleware", [], []) for row in middleware)
         order = {"authenticated": 0, "middleware": 1, "public": 2}
         results.sort(key=lambda item: (order.get(item["auth_level"], 3), item["file"]))

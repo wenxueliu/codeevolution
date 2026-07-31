@@ -31,7 +31,8 @@ PATTERNS = {
 
 
 class _Source(Protocol):
-    def query(self, sql: str, params=None) -> list[dict[str, Any]]: ...
+    def import_nodes(self) -> list[dict[str, Any]]: ...
+    def decorator_nodes(self) -> list[dict[str, Any]]: ...
 
 
 class DependencyExtractor:
@@ -39,12 +40,10 @@ class DependencyExtractor:
         self.source = source
 
     def extract(self) -> list[dict]:
-        if callable(self.source) and not hasattr(self.source, "query"):
+        if callable(self.source) and not hasattr(self.source, "import_nodes"):
             return self.source()
         categories: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
-        rows = self.source.query(
-            "SELECT name AS import_name, file_path AS importer_file, start_line, signature FROM nodes WHERE kind = 'import'"
-        )  # type: ignore[union-attr]
+        rows = self.source.import_nodes()  # type: ignore[union-attr]
         evidence = [
             (
                 row.get("signature") or row["import_name"],
@@ -54,9 +53,7 @@ class DependencyExtractor:
             )
             for row in rows
         ]
-        decorators = self.source.query(
-            "SELECT DISTINCT decorators, file_path, start_line FROM nodes WHERE decorators IS NOT NULL"
-        )  # type: ignore[union-attr]
+        decorators = self.source.decorator_nodes()  # type: ignore[union-attr]
         for row in decorators:
             try:
                 values = (

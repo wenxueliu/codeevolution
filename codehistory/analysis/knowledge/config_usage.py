@@ -12,7 +12,8 @@ CONFIG_EXTENSIONS = {".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".conf",
 
 
 class _Graph(Protocol):
-    def query(self, sql: str, params=None) -> list[dict[str, Any]]: ...
+    def file_records(self) -> list[dict[str, Any]]: ...
+    def config_candidate_nodes(self) -> list[dict[str, Any]]: ...
     def get_function_by_id(self, node_id: str): ...
 
 
@@ -21,16 +22,13 @@ class ConfigUsageExtractor:
         self.graph, self.source = graph, source
 
     def extract(self) -> list[dict]:
-        if callable(self.graph) and not hasattr(self.graph, "query"):
+        if callable(self.graph) and not hasattr(self.graph, "file_records"):
             return self.graph()
-        files = self.graph.query("SELECT path, language FROM files")  # type: ignore[union-attr]
+        files = self.graph.file_records()  # type: ignore[union-attr]
         paths = sorted({row["path"] for row in files if Path(row["path"]).suffix.lower() in CONFIG_EXTENSIONS})
         keys_by_file = {path: self.extract_keys(path) for path in paths}
         all_keys = {key.lower() for keys in keys_by_file.values() for key in keys}
-        nodes = self.graph.query(  # type: ignore[union-attr]
-            """SELECT id, name, qualified_name, file_path, kind, start_line, decorators
-               FROM nodes WHERE kind IN ('variable', 'constant', 'function', 'method')"""
-        )
+        nodes = self.graph.config_candidate_nodes()  # type: ignore[union-attr]
         consumers: dict[str, list[str]] = defaultdict(list)
         for node in nodes:
             name = node["name"].lower()
