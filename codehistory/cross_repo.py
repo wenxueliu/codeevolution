@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .infrastructure.codegraph_sqlite import read_rows
+from .analysis.topology.matching import PathMatcher
 
 
 # ── HTTP client call patterns per language ─────────────────────────────
@@ -554,25 +555,7 @@ class CrossRepoAnalyzer:
 
         Handles raw URLs, f-strings, template strings, and variables.
         """
-        # Clean up: remove surrounding quotes, commas
-        url = url.strip().strip("\"'`")
-
-        # Try to parse as a URL
-        if "://" in url:
-            # Extract host-relative path
-            m = re.search(r'://[^/]+(/[^\s\'",;?#]*)', url)
-            if m:
-                return m.group(1)
-
-        # f-string patterns: f"http://{host}/api/users/{id}"
-        # Replace {var} with :var for matching
-        path_part = re.sub(r'\{[^}]+\}', ':param', url)
-
-        # If it starts with /, it's already a path
-        if path_part.startswith("/"):
-            return path_part.split("?")[0]  # strip query params
-
-        return ""
+        return PathMatcher.extract(url)
 
     @staticmethod
     def _paths_match(actual_or_template: str, route_template: str) -> bool:
@@ -584,25 +567,7 @@ class CrossRepoAnalyzer:
           /api/users/123        vs /api/orders/:id     → False
           /api/users/123/posts  vs /api/users/:id/posts → True
         """
-        a_parts = actual_or_template.strip("/").split("/")
-        b_parts = route_template.strip("/").split("/")
-
-        if len(a_parts) != len(b_parts):
-            return False
-
-        for a, b in zip(a_parts, b_parts):
-            # Either side is a placeholder → match
-            if a.startswith(":") or b.startswith(":"):
-                continue
-            if a.startswith("{") or b.startswith("{"):
-                continue
-            if a == ":param" or b == ":param":
-                continue
-            # Both are literals → must be equal
-            if a.lower() != b.lower():
-                return False
-
-        return True
+        return PathMatcher.matches(actual_or_template, route_template)
 
     # ── Potential edge discovery ────────────────────────────────────────
 
