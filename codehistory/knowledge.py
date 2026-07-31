@@ -18,13 +18,22 @@ All queries read from CodeGraph's SQLite via CodeGraphReader.
 
 import json
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import networkx as nx
 from networkx.algorithms.community import louvain_communities
 
 from .codegraph_reader import CodeGraphReader, FunctionDef, HTTP_DECORATORS
+from .domain.knowledge import (
+    ApiContract,
+    ApiEndpoint,
+    CoreEntity,
+    LayerViolation,
+    ModuleTopology,
+    TestGap,
+)
+from .infrastructure.source_filesystem import FileSystemSourceProvider
+from .ports import SourceProvider
 
 
 # ── Layer classification ──────────────────────────────────────────────
@@ -101,82 +110,15 @@ TEST_PATH_PATTERNS = (
 )
 
 
-# ── Output data types ──────────────────────────────────────────────────
-
-@dataclass
-class ApiEndpoint:
-    """A single API endpoint derived from a route + handler."""
-    method: str                          # GET / POST / PUT / DELETE
-    path: str                            # /api/users/:id
-    handler_name: str                    # qualified_name
-    file_path: str
-    line: int
-    params: list[str] = field(default_factory=list)
-    return_type: str | None = None
-    decorators: list[str] = field(default_factory=list)
-    downstream_calls: list[str] = field(default_factory=list)  # qualified_names
-
-
-@dataclass
-class ApiContract:
-    """All API endpoints grouped by resource prefix."""
-    endpoints: list[ApiEndpoint] = field(default_factory=list)
-    resource_groups: dict[str, list[ApiEndpoint]] = field(default_factory=dict)
-
-
-@dataclass
-class ModuleTopology:
-    """Community-detected modules and their dependencies."""
-    modules: list[dict] = field(default_factory=list)  # [{id, files, primary_language, size}]
-    dependency_graph: dict[str, list[str]] = field(default_factory=dict)  # module_id → [dep_module_ids]
-    coupling_score: float = 0.0  # avg inter-module edges / total edges
-
-
-@dataclass
-class CoreEntity:
-    """A domain-significant class/function ranked by graph centrality."""
-    node_id: str
-    name: str
-    qualified_name: str
-    file_path: str
-    kind: str
-    pagerank: float
-    in_degree: int       # how many distinct callers
-    out_degree: int      # how many distinct callees
-    layer: str = ""
-
-
-@dataclass
-class TestGap:
-    """A production function with zero test coverage."""
-    node_id: str
-    name: str
-    qualified_name: str
-    file_path: str
-    kind: str
-    line: int
-    is_exported: bool = False
-
-
-@dataclass
-class LayerViolation:
-    """A call that crosses a forbidden layer boundary."""
-    source_name: str
-    source_file: str
-    source_layer: str
-    target_name: str
-    target_file: str
-    target_layer: str
-    call_line: int | None = None
-
-
 # ── Knowledge extractor ────────────────────────────────────────────────
 
 class KnowledgeExtractor:
     """Extracts business knowledge from CodeGraph's knowledge graph."""
 
-    def __init__(self, reader: CodeGraphReader):
+    def __init__(self, reader: CodeGraphReader, source_provider: SourceProvider | None = None):
         self.reader = reader
+        repo_root = Path(reader.db_path).parent.parent
+        self.source_provider = source_provider or FileSystemSourceProvider(repo_root)
         self._function_cache: dict[str, FunctionDef] | None = None
         self._call_graph: nx.DiGraph | None = None
 
@@ -858,10 +800,8 @@ class KnowledgeExtractor:
 
     def _extract_config_keys(self, file_path: str) -> list[str]:
         """Lightweight config-key extraction without parsing the full file."""
-        full_path = Path(self.reader.db_path).parent.parent / file_path
-        try:
-            content = full_path.read_text(encoding="utf-8", errors="ignore")
-        except (OSError, UnicodeDecodeError):
+        content = self.source_provider.read_text(file_path)
+        if content is None:
             return []
 
         ext = Path(file_path).suffix.lower()
@@ -1252,15 +1192,9 @@ class KnowledgeExtractor:
         Args:
             context_lines: extra lines before/after for context.
         """
-        full_path = Path(self.reader.db_path).parent.parent / file_path
-        try:
-            content = full_path.read_text(encoding="utf-8", errors="ignore")
-        except (OSError, UnicodeDecodeError):
-            return None
-        lines = content.split("\n")
-        lo = max(0, start_line - 1 - context_lines)
-        hi = min(len(lines), end_line + context_lines)
-        return "\n".join(lines[lo:hi])
+        lo = max(1, start_line - context_lines)
+        hi = end_line + context_lines
+        return self.source_provider.snippet(file_path, lo, hi)
 
     def extract_business_descriptions(
         self, func_names: list[str] | None = None, limit: int = 20

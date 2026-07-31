@@ -16,59 +16,9 @@ Schema reference (CodeGraph 0.9.x):
 
 import json
 import sqlite3
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-
-@dataclass
-class FunctionDef:
-    """A function/method as stored in CodeGraph's nodes table."""
-    node_id: str
-    name: str
-    qualified_name: str
-    file_path: str
-    language: str
-    start_line: int
-    end_line: int
-    kind: str                     # 'function' | 'method'
-    signature: str | None = None
-    visibility: str | None = None  # public/private/protected/internal
-    is_exported: bool = False
-    is_async: bool = False
-    is_static: bool = False
-    is_test: bool = False
-    parent_class: str | None = None
-    decorators: list[str] = field(default_factory=list)
-
-
-@dataclass
-class CallTarget:
-    """A resolved call edge from CodeGraph's edges table."""
-    caller_node_id: str
-    callee_node_id: str
-    callee_name: str
-    callee_kind: str
-    callee_file: str
-    callee_line: int
-    call_line: int
-    provenance: str | None = None  # 'tree-sitter' | 'heuristic'
-
-
-@dataclass
-class EntryPointDef:
-    """An application entry point detected from CodeGraph data."""
-    node_id: str
-    name: str
-    qualified_name: str
-    file_path: str
-    start_line: int
-    entry_type: str              # 'http' | 'cli' | 'event' | 'cron' | 'other'
-    http_method: str | None = None   # GET/POST/PUT/DELETE for http entry points
-    http_path: str | None = None     # /api/users/:id
-    params: list[str] = field(default_factory=list)
-    decorators: list[str] = field(default_factory=list)
-    call_tree: list[str] = field(default_factory=list)  # node_ids in BFS order
+from .domain.knowledge import CallTarget, EntryPointDef, FunctionDef
 
 HTTP_DECORATORS = {
     # Python
@@ -79,9 +29,8 @@ HTTP_DECORATORS = {
     "getmapping": "GET", "postmapping": "POST", "putmapping": "PUT",
     "deletemapping": "DELETE", "patchmapping": "PATCH",
     "requestmapping": None,
-    # JS/TS (same names as Python — all lowercased by CodeGraph)
-    "get": "GET", "post": "POST", "put": "PUT", "delete": "DELETE",
-    "patch": "PATCH", "all": None,
+    # JS/TS use the same lower-cased method names as Python.
+    "all": None,
 }
 
 HTTP_DIR_PATTERNS = (
