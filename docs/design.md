@@ -55,6 +55,22 @@ CodeHistory 做两件事：
 
 ## 3. 系统架构
 
+### 3.0 分层边界（0.2 重构后）
+
+生产代码按固定依赖方向组织：
+
+```text
+delivery → application → analysis/domain/ports ← infrastructure
+```
+
+- `domain/` 保存纯 DTO；旧模块仅为兼容导入路径 re-export。
+- `ports.py` 定义 CodeGraph repository 与源码读取契约。
+- `infrastructure/` 保存 CodeGraph SQLite、源码、registry 与版本化缓存 adapter。
+- `analysis/knowledge/` 和 `analysis/topology/` 保存可组合分析步骤与纯匹配规则。
+- `application/` 提供 Evolution、Knowledge、Topology 与 Repository 共享用例。
+- `semantic/` 隔离 LLM 配置、client、JSON parser、模型与 prompt。
+- CLI、API、MCP 继续保留公开入口，通过兼容 facade 渐进迁移。
+
 ```
                          ┌───────────────────────┐
                          │    CodeGraph SQLite     │
