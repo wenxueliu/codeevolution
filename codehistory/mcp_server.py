@@ -5,6 +5,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from .application.evolution_service import EvolutionQueryService
 from .config import Config
 from .store import EvolutionStore
 
@@ -46,7 +47,7 @@ def get_feature_timeline(feature_name: str) -> str:
         return json.dumps({"error": "No store configured"})
 
     # Search by name (prefix match)
-    features = store.get_all_features()
+    features = EvolutionQueryService(store).list_features()["features"]
     matched = None
     for f in features:
         if feature_name.lower() in f["canonical_name"].lower():

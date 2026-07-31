@@ -328,12 +328,14 @@ def main():
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database (default: .codehistory/evolution.db)")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    p.set_defaults(handler=cmd_backfill)
 
     # update
     p = subparsers.add_parser("update", help="Process new commits since last analysis")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    p.set_defaults(handler=cmd_update)
 
     # serve
     p = subparsers.add_parser("serve", help="Start MCP server")
@@ -342,24 +344,29 @@ def main():
     p.add_argument("--transport", "-t", default="stdio",
                    choices=["stdio", "sse", "streamable-http"],
                    help="MCP transport (default: stdio)")
+    p.set_defaults(handler=cmd_serve)
 
     # web
     p = subparsers.add_parser("web", help="Start web dashboard (multi-repo)")
     p.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
     p.add_argument("--port", type=int, default=8765, help="Port to bind (default: 8765)")
+    p.set_defaults(handler=cmd_web)
 
     # register
     p = subparsers.add_parser("register", help="Register a repo for multi-repo dashboard")
     p.add_argument("--name", "-n", required=True, help="Short name for the repo")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
+    p.set_defaults(handler=cmd_register)
 
     # repos
     p = subparsers.add_parser("repos", help="List registered repos")
+    p.set_defaults(handler=cmd_repos)
 
     # status
     p = subparsers.add_parser("status", help="Show current analysis status")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument("--db", "-d", default="", help="Path to database")
+    p.set_defaults(handler=cmd_status)
 
     # knowledge
     p = subparsers.add_parser("knowledge", help="Extract business knowledge from code (Phase 1)")
@@ -372,6 +379,7 @@ def main():
                    help="Which knowledge section to extract (default: all)")
     p.add_argument("--llm", action="store_true",
                    help="Enable LLM-powered Phase 3 analysis")
+    p.set_defaults(handler=cmd_knowledge)
 
     # cross-repo topology
     p = subparsers.add_parser("topology", help="Build unified multi-service topology from registered repos")
@@ -379,12 +387,14 @@ def main():
                    help="Single service name to analyze (default: all registered)")
     p.add_argument("--no-cache", action="store_true",
                    help="Force rebuild topology (don't use cache)")
+    p.set_defaults(handler=cmd_topology)
 
     # cross-repo impact
     p = subparsers.add_parser("impact", help="Cross-service change impact analysis")
     p.add_argument("--service", "-s", required=True, help="Service name to analyze impact for")
     p.add_argument("--no-cache", action="store_true",
                    help="Force rebuild topology (don't use cache)")
+    p.set_defaults(handler=cmd_impact)
 
     # cross-repo trace
     p = subparsers.add_parser("trace", help="Trace end-to-end flow across services")
@@ -392,26 +402,32 @@ def main():
     p.add_argument("--path", "-p", default="", help="Starting API path (optional)")
     p.add_argument("--no-cache", action="store_true",
                    help="Force rebuild topology (don't use cache)")
+    p.set_defaults(handler=cmd_trace)
 
     # discover
     p = subparsers.add_parser("discover", help="Scan directory for git repos and suggest registrations")
     p.add_argument("--dir", "-d", default=".", help="Root directory to scan (default: current)")
+    p.set_defaults(handler=cmd_discover)
 
     # check
     p = subparsers.add_parser("check", help="Health check all registered services")
+    p.set_defaults(handler=cmd_check)
 
     # init-all: batch CodeGraph init
     p = subparsers.add_parser("init-all", help="Initialize CodeGraph on all registered services")
+    p.set_defaults(handler=cmd_init_all)
 
     # P2: enhanced flow trace
     p = subparsers.add_parser("flow", help="End-to-end flow trace across all channels (HTTP+MQ+gRPC+DB)")
     p.add_argument("--service", "-s", required=True, help="Starting service name")
     p.add_argument("--path", "-p", default="", help="Starting API path (optional)")
     p.add_argument("--no-cache", action="store_true", help="Force rebuild topology")
+    p.set_defaults(handler=cmd_flow)
 
     # P2: entity alignment
     p = subparsers.add_parser("entities", help="Cross-service entity alignment (same concept, different names)")
     p.add_argument("--llm", action="store_true", help="Use LLM to verify and explain entity mappings")
+    p.set_defaults(handler=cmd_entities)
 
     args = parser.parse_args()
 
@@ -421,41 +437,7 @@ def main():
 
     setup_logging(getattr(args, "verbose", False))
 
-    if args.command == "backfill":
-        cmd_backfill(args)
-    elif args.command == "update":
-        cmd_update(args)
-    elif args.command == "serve":
-        cmd_serve(args)
-    elif args.command == "web":
-        cmd_web(args)
-    elif args.command == "register":
-        cmd_register(args)
-    elif args.command == "repos":
-        cmd_repos(args)
-    elif args.command == "status":
-        cmd_status(args)
-    elif args.command == "knowledge":
-        cmd_knowledge(args)
-    elif args.command == "topology":
-        cmd_topology(args)
-    elif args.command == "impact":
-        cmd_impact(args)
-    elif args.command == "trace":
-        cmd_trace(args)
-    elif args.command == "discover":
-        cmd_discover(args)
-    elif args.command == "check":
-        cmd_check(args)
-    elif args.command == "init-all":
-        cmd_init_all(args)
-    elif args.command == "flow":
-        cmd_flow(args)
-    elif args.command == "entities":
-        cmd_entities(args)
-    else:
-        parser.print_help()
-        sys.exit(1)
+    args.handler(args)
 
 
 def cmd_topology(args):

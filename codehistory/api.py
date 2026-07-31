@@ -1,5 +1,7 @@
 """FastAPI backend for the CodeHistory web dashboard — multi-repo support."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -246,6 +248,36 @@ def event_stats(repo: str = Query("")):
         "SELECT event_type, COUNT(*) as cnt FROM evolution_events GROUP BY event_type ORDER BY cnt DESC"
     ).fetchall()
     return {"stats": [{"event_type": r[0], "count": r[1]} for r in rows]}
+
+
+_route_app = app
+
+
+@asynccontextmanager
+async def _lifespan(application):
+    yield
+    for store in list(_stores.values()):
+        store.close()
+    _stores.clear()
+
+
+def create_app(dependencies: dict | None = None) -> FastAPI:
+    """Create an isolated delivery adapter with injectable dependencies."""
+    created = FastAPI(title="CodeHistory API", lifespan=_lifespan)
+    created.state.dependencies = dependencies or {}
+    created.add_middleware(
+        CORSMiddleware,
+        allow_origins=created.state.dependencies.get("cors_origins", ["*"]),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    for route in _route_app.router.routes:
+        if getattr(route, "path", "").startswith("/api/"):
+            created.router.routes.append(route)
+    return created
+
+
+app = create_app()
 
 
 def serve(host: str = "0.0.0.0", port: int = 8765):
