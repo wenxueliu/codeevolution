@@ -15,7 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ...infrastructure.codegraph_sqlite import read_rows
+from ...infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 from .flow import FlowTracer
 from .impact import ImpactAnalyzer
 from .matching import PathMatcher
@@ -194,10 +194,6 @@ class CrossRepoImplementation:
     def _cg_db(self, repo_path: str) -> str:
         return str(Path(repo_path) / ".codegraph" / "codegraph.db")
 
-    def _query(self, db_path: str, sql: str, params: list | None = None) -> list[dict]:
-        """Run a read-only query against a CodeGraph SQLite."""
-        return read_rows(db_path, sql, params)
-
     # ── Analysis pipeline ───────────────────────────────────────────────
 
     def analyze(self) -> UnifiedTopology:
@@ -264,15 +260,8 @@ class CrossRepoImplementation:
     def _analyze_service(self, name: str, path: str, db_path: str) -> ServiceNode:
         """Classify a service by its tech stack and role."""
         # Detect primary language
-        lang_rows = self._query(
-            db_path,
-            """
-            SELECT language, COUNT(*) AS cnt FROM files
-            WHERE language != 'unknown'
-            GROUP BY language ORDER BY cnt DESC LIMIT 1
-        """,
-        )
-        language = lang_rows[0]["language"] if lang_rows else "unknown"
+        with SQLiteCodeGraphRepository(db_path) as repository:
+            language = repository.primary_language() or "unknown"
 
         # Detect service role by path patterns
         role = self._infer_role(path, db_path)
@@ -313,14 +302,9 @@ class CrossRepoImplementation:
         }
         for db_type, patterns in db_patterns.items():
             for p in patterns:
-                rows = self._query(
-                    db_path,
-                    """
-                    SELECT 1 FROM nodes WHERE name LIKE ? LIMIT 1
-                """,
-                    [f"%{p}%"],
-                )
-                if rows:
+                with SQLiteCodeGraphRepository(db_path) as repository:
+                    found = repository.has_node_name(p)
+                if found:
                     return db_type
         return ""
 
@@ -336,14 +320,9 @@ class CrossRepoImplementation:
         }
         for mq, patterns in mq_patterns.items():
             for p in patterns:
-                rows = self._query(
-                    db_path,
-                    """
-                    SELECT 1 FROM nodes WHERE name LIKE ? LIMIT 1
-                """,
-                    [f"%{p}%"],
-                )
-                if rows:
+                with SQLiteCodeGraphRepository(db_path) as repository:
+                    found = repository.has_node_name(p)
+                if found:
                     return mq
         return ""
 
@@ -355,15 +334,8 @@ class CrossRepoImplementation:
 
         # Get the language pattern set for this service
         # First detect language
-        lang_row = self._query(
-            db_path,
-            """
-            SELECT language FROM files
-            WHERE language != 'unknown'
-            GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1
-        """,
-        )
-        language = lang_row[0]["language"] if lang_row else ""
+        with SQLiteCodeGraphRepository(db_path) as repository:
+            language = repository.primary_language()
         patterns = self.rules.http_client_callers.get(language, [])
 
         if not patterns:
@@ -371,21 +343,8 @@ class CrossRepoImplementation:
 
         # Find all call edges where the callee matches an HTTP client pattern
         for pattern, method in patterns:
-            rows = self._query(
-                db_path,
-                """
-                SELECT n1.name AS caller_name, n1.qualified_name AS caller_qname,
-                       n1.file_path, n1.start_line AS caller_line,
-                       n2.name AS callee_name,
-                       e.line AS call_line
-                FROM edges e
-                JOIN nodes n1 ON n1.id = e.source
-                JOIN nodes n2 ON n2.id = e.target
-                WHERE e.kind = 'calls'
-                  AND n2.name LIKE ?
-            """,
-                [f"%{pattern}%"],
-            )
+            with SQLiteCodeGraphRepository(db_path) as repository:
+                rows = repository.http_client_calls(pattern)
 
             for r in rows:
                 # Try to extract URL from the call context
@@ -420,14 +379,8 @@ class CrossRepoImplementation:
             return None
 
         # Find the caller context
-        caller_row = self._query(
-            db_path,
-            """
-            SELECT file_path, start_line, end_line FROM nodes
-            WHERE qualified_name = ? AND kind IN ('function', 'method')
-        """,
-            [caller_qname],
-        )
+        with SQLiteCodeGraphRepository(db_path) as repository:
+            caller_row = repository.function_location(caller_qname)
         if not caller_row:
             return None
 
@@ -442,22 +395,8 @@ class CrossRepoImplementation:
         # Strategy 2: look for variable assignments on preceding lines
         func_start = c["start_line"]
         func_end = c["end_line"]
-        candidates = self._query(
-            db_path,
-            """
-            SELECT name, start_line FROM nodes
-            WHERE file_path = ?
-              AND start_line BETWEEN ? AND ?
-              AND kind IN ('variable', 'constant')
-              AND (
-                name LIKE '%http%' OR name LIKE '%://%' OR name LIKE '%/api/%'
-                OR name LIKE '%base_url%' OR name LIKE '%endpoint%'
-                OR name LIKE '%host%' OR name LIKE '%service_url%'
-              )
-            ORDER BY start_line
-        """,
-            [file_path, func_start, func_end],
-        )
+        with SQLiteCodeGraphRepository(db_path) as repository:
+            candidates = repository.url_candidate_nodes(file_path, func_start, func_end)
 
         for cand in candidates:
             name = cand["name"]

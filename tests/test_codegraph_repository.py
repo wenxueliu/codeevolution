@@ -51,6 +51,16 @@ def test_repository_typed_queries_and_legacy_facade_match(tmp_path):
         assert repository.enum_members("missing") == []
         assert repository.functions_named_like("missing") == []
         assert repository.database_call_candidates() == []
+        assert repository.primary_language() == ""
+        assert not repository.has_node_name("missing")
+        assert repository.http_client_calls("missing") == []
+        assert repository.function_location("missing") == []
+        assert repository.url_candidate_nodes("missing.py", 1, 2) == []
+        assert repository.mq_producer_calls("missing") == []
+        assert repository.mq_consumers("missing") == []
+        assert repository.topic_candidate_nodes("missing.py") == []
+        assert repository.rpc_calls("missing") == []
+        assert repository.business_entity_nodes() == []
         assert repository.query("SELECT * FROM files") == []
 
     with CodeGraphReader(str(database)) as legacy:

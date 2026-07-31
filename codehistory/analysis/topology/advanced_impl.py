@@ -16,7 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...infrastructure.codegraph_sqlite import read_rows
+from ...infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 from .database import DatabaseAccessCollector
 
 # ── MQ producer/consumer patterns ──────────────────────────────────────
@@ -237,9 +237,6 @@ class AdvancedTopologyImplementation:
     def _cg_db(self, repo_path: str) -> str:
         return str(Path(repo_path) / ".codegraph" / "codegraph.db")
 
-    def _query(self, db_path: str, sql: str, params=None) -> list[dict]:
-        return read_rows(db_path, sql, params)
-
     # ── 1. Enhanced Flow Tracer ─────────────────────────────────────────
 
     def trace_full_flow(
@@ -448,20 +445,8 @@ class AdvancedTopologyImplementation:
             # Find producers
             for mq_type, patterns in MQ_PRODUCER_PATTERNS:
                 for pat in patterns:
-                    rows = self._query(
-                        db,
-                        """
-                        SELECT n1.qualified_name AS caller, n1.name,
-                               n1.file_path, n1.start_line,
-                               e.line AS call_line,
-                               n2.name AS callee_name
-                        FROM edges e
-                        JOIN nodes n1 ON n1.id = e.source
-                        JOIN nodes n2 ON n2.id = e.target
-                        WHERE e.kind = 'calls' AND n2.name LIKE ?
-                    """,
-                        [f"%{pat}%"],
-                    )
+                    with SQLiteCodeGraphRepository(db) as repository:
+                        rows = repository.mq_producer_calls(pat)
                     for r in rows:
                         # Extract topic from source code near the call
                         topic = self._extract_topic_from_source(
@@ -484,17 +469,8 @@ class AdvancedTopologyImplementation:
             # Find consumers
             for mq_type, patterns in MQ_CONSUMER_PATTERNS:
                 for pat in patterns:
-                    rows = self._query(
-                        db,
-                        """
-                        SELECT n1.qualified_name, n1.name, n1.decorators,
-                               n1.file_path, n1.start_line
-                        FROM nodes n1
-                        WHERE n1.kind IN ('function', 'method')
-                          AND (n1.name LIKE ? OR n1.decorators LIKE ?)
-                    """,
-                        [f"%{pat}%", f"%{pat}%"],
-                    )
+                    with SQLiteCodeGraphRepository(db) as repository:
+                        rows = repository.mq_consumers(pat)
                     for r in rows:
                         # Extract topic from decorator or function context
                         topic = self._extract_topic_from_decorator(r.get("decorators") or "")
@@ -593,18 +569,8 @@ class AdvancedTopologyImplementation:
         if len(parts) < 2:
             return None
         file_path = parts[0]
-        rows = self._query(
-            db_path,
-            """
-            SELECT name FROM nodes
-            WHERE file_path = ? AND kind IN ('variable', 'constant')
-              AND (name LIKE '%topic%' OR name LIKE '%queue%'
-                   OR name LIKE '%TOPIC%' OR name LIKE '%QUEUE%'
-                   OR name LIKE '%exchange%' OR name LIKE '%EXCHANGE%')
-            LIMIT 10
-        """,
-            [file_path],
-        )
+        with SQLiteCodeGraphRepository(db_path) as repository:
+            rows = repository.topic_candidate_nodes(file_path)
         for r in rows:
             # Return the variable value if it looks like a topic name
             name = r["name"]
@@ -652,18 +618,8 @@ class AdvancedTopologyImplementation:
             svc_name = repo["name"]
 
             for pat in RPC_PATTERNS:
-                rows = self._query(
-                    db,
-                    """
-                    SELECT n1.qualified_name AS caller, n2.name AS callee_name
-                    FROM edges e
-                    JOIN nodes n1 ON n1.id = e.source
-                    JOIN nodes n2 ON n2.id = e.target
-                    WHERE e.kind = 'calls' AND n2.name LIKE ?
-                    LIMIT 20
-                """,
-                    [f"%{pat}%"],
-                )
+                with SQLiteCodeGraphRepository(db) as repository:
+                    rows = repository.rpc_calls(pat)
                 for r in rows:
                     # Guess target service from callee name
                     callee = r["callee_name"].lower()
@@ -703,18 +659,8 @@ class AdvancedTopologyImplementation:
                 continue
 
             # Get classes, structs, interfaces, enums
-            rows = self._query(
-                db,
-                """
-                SELECT name, kind, qualified_name, file_path
-                FROM nodes
-                WHERE kind IN ('class', 'struct', 'interface', 'enum', 'type_alias')
-                  AND name NOT LIKE 'test%' AND name NOT LIKE 'Test%'
-                  AND name NOT LIKE '%Test' AND name NOT LIKE '%Tests'
-                  AND file_path NOT LIKE '%test%' AND file_path NOT LIKE '%Test%'
-                ORDER BY name
-            """,
-            )
+            with SQLiteCodeGraphRepository(db) as repository:
+                rows = repository.business_entity_nodes()
             entities_per_service[repo["name"]] = [
                 {"name": r["name"], "kind": r["kind"], "qualified_name": r["qualified_name"]}
                 for r in rows

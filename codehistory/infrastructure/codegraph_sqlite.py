@@ -697,6 +697,91 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
                JOIN nodes target ON target.id=e.target WHERE e.kind='calls'"""
         )
 
+    def primary_language(self) -> str:
+        rows = self.query(
+            """SELECT language, COUNT(*) AS count FROM files WHERE language != 'unknown'
+               GROUP BY language ORDER BY count DESC LIMIT 1"""
+        )
+        return rows[0]["language"] if rows else ""
+
+    def has_node_name(self, pattern: str) -> bool:
+        return bool(self.query("SELECT 1 FROM nodes WHERE name LIKE ? LIMIT 1", [f"%{pattern}%"]))
+
+    def http_client_calls(self, pattern: str) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT n1.name AS caller_name, n1.qualified_name AS caller_qname,
+                      n1.file_path, n1.start_line AS caller_line, n2.name AS callee_name,
+                      e.line AS call_line FROM edges e
+               JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
+               WHERE e.kind = 'calls' AND n2.name LIKE ?""",
+            [f"%{pattern}%"],
+        )
+
+    def function_location(self, qualified_name: str) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT file_path, start_line, end_line FROM nodes
+               WHERE qualified_name = ? AND kind IN ('function', 'method')""",
+            [qualified_name],
+        )
+
+    def url_candidate_nodes(
+        self, file_path: str, start_line: int, end_line: int
+    ) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT name, start_line FROM nodes WHERE file_path = ?
+               AND start_line BETWEEN ? AND ? AND kind IN ('variable', 'constant')
+               AND (name LIKE '%http%' OR name LIKE '%://%' OR name LIKE '%/api/%'
+                    OR name LIKE '%base_url%' OR name LIKE '%endpoint%'
+                    OR name LIKE '%host%' OR name LIKE '%service_url%')
+               ORDER BY start_line""",
+            [file_path, start_line, end_line],
+        )
+
+    def mq_producer_calls(self, pattern: str) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT n1.qualified_name AS caller, n1.name, n1.file_path, n1.start_line,
+                      e.line AS call_line, n2.name AS callee_name FROM edges e
+               JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
+               WHERE e.kind = 'calls' AND n2.name LIKE ?""",
+            [f"%{pattern}%"],
+        )
+
+    def mq_consumers(self, pattern: str) -> list[dict[str, Any]]:
+        wildcard = f"%{pattern}%"
+        return self.query(
+            """SELECT n1.qualified_name, n1.name, n1.decorators, n1.file_path, n1.start_line
+               FROM nodes n1 WHERE n1.kind IN ('function', 'method')
+               AND (n1.name LIKE ? OR n1.decorators LIKE ?)""",
+            [wildcard, wildcard],
+        )
+
+    def topic_candidate_nodes(self, file_path: str) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT name FROM nodes WHERE file_path = ? AND kind IN ('variable', 'constant')
+               AND (name LIKE '%topic%' OR name LIKE '%queue%' OR name LIKE '%TOPIC%'
+                    OR name LIKE '%QUEUE%' OR name LIKE '%exchange%' OR name LIKE '%EXCHANGE%')
+               LIMIT 10""",
+            [file_path],
+        )
+
+    def rpc_calls(self, pattern: str) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT n1.qualified_name AS caller, n2.name AS callee_name FROM edges e
+               JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
+               WHERE e.kind = 'calls' AND n2.name LIKE ? LIMIT 20""",
+            [f"%{pattern}%"],
+        )
+
+    def business_entity_nodes(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT name, kind, qualified_name, file_path FROM nodes
+               WHERE kind IN ('class', 'struct', 'interface', 'enum', 'type_alias')
+                 AND name NOT LIKE 'test%' AND name NOT LIKE 'Test%'
+                 AND name NOT LIKE '%Test' AND name NOT LIKE '%Tests'
+                 AND file_path NOT LIKE '%test%' AND file_path NOT LIKE '%Test%'
+               ORDER BY name"""
+        )
+
     def inspect_metadata(self) -> dict[str, Any]:
         """Return registry metadata while tolerating older CodeGraph schemas."""
         tables = {
