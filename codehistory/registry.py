@@ -15,6 +15,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .infrastructure.registry_json import RegistryRepository
+from .infrastructure.topology_cache_json import TopologyCache
+
 
 REGISTRY_DIR = Path.home() / ".codehistory"
 REGISTRY_FILE = REGISTRY_DIR / "registry.json"
@@ -88,16 +91,11 @@ def ensure_registry():
 
 def load_registry() -> list[dict]:
     ensure_registry()
-    try:
-        data = json.loads(REGISTRY_FILE.read_text())
-        return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, FileNotFoundError):
-        return []
+    return RegistryRepository(REGISTRY_FILE).load()
 
 
 def save_registry(entries: list[dict]):
-    ensure_registry()
-    REGISTRY_FILE.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
+    RegistryRepository(REGISTRY_FILE).save(entries)
 
 
 def register_repo(name: str, path: str) -> dict:
@@ -455,17 +453,12 @@ def check_services() -> list[dict]:
 
 def load_topology_cache() -> dict | None:
     """Load the cached unified topology from the last full analysis."""
-    if not TOPOLOGY_CACHE_FILE.exists():
-        return None
-    try:
-        return json.loads(TOPOLOGY_CACHE_FILE.read_text())
-    except (json.JSONDecodeError, FileNotFoundError):
-        return None
+    return TopologyCache(TOPOLOGY_CACHE_FILE).load()
 
 
 def save_topology_cache(data: dict):
     """Cache the unified topology for instant impact/trace queries."""
-    TOPOLOGY_CACHE_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+    TopologyCache(TOPOLOGY_CACHE_FILE).save(data)
 
 
 def is_topology_cache_stale(entries: list[dict]) -> bool:
