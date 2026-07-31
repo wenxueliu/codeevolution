@@ -2,8 +2,7 @@
 
 import json
 import sqlite3
-import time
-from pathlib import Path
+from contextlib import contextmanager
 from typing import Any
 
 SCHEMA = """
@@ -77,6 +76,30 @@ class EvolutionStore:
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
+        self._transaction_depth = 0
+
+    @contextmanager
+    def transaction(self):
+        """Group all writes for one analyzed commit into a single transaction."""
+        outermost = self._transaction_depth == 0
+        if outermost:
+            self.conn.execute("BEGIN")
+        self._transaction_depth += 1
+        try:
+            yield
+        except Exception:
+            self._transaction_depth -= 1
+            if outermost:
+                self.conn.rollback()
+            raise
+        else:
+            self._transaction_depth -= 1
+            if outermost:
+                self.conn.commit()
+
+    def _commit_if_needed(self):
+        if self._transaction_depth == 0:
+            self.conn.commit()
 
     def _migrate(self):
         """Add columns that may not exist in older DBs."""
@@ -111,8 +134,8 @@ class EvolutionStore:
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (hash_, parent_hash, timestamp, author, message, semantic_type, json.dumps(tags) if tags else None),
         )
-        self.conn.commit()
-        if cur.lastrowid:
+        self._commit_if_needed()
+        if cur.rowcount == 1:
             return cur.lastrowid
         row = self.conn.execute("SELECT id FROM commits WHERE hash = ?", (hash_,)).fetchone()
         assert row
@@ -153,8 +176,8 @@ class EvolutionStore:
             (stable_id, canonical_name, entry_type, entry_signature,
              first_seen_at, first_seen_at, description, description_zh),
         )
-        self.conn.commit()
-        if cur.lastrowid:
+        self._commit_if_needed()
+        if cur.rowcount == 1:
             return cur.lastrowid
         row = self.conn.execute("SELECT id FROM features WHERE stable_id = ?", (stable_id,)).fetchone()
         assert row
@@ -190,19 +213,30 @@ class EvolutionStore:
             for r in rows
         ]
 
+    def get_active_features(self) -> list[dict]:
+        """Return features that should participate in matching the next commit."""
+        return [feature for feature in self.get_all_features() if feature["status"] == "active"]
+
     def update_feature_last_seen(self, feature_id: int, commit_id: int):
         self.conn.execute(
             "UPDATE features SET last_seen_at = ? WHERE id = ?",
             (commit_id, feature_id),
         )
-        self.conn.commit()
+        self._commit_if_needed()
+
+    def mark_feature_active(self, feature_id: int, commit_id: int):
+        self.conn.execute(
+            "UPDATE features SET status = 'active', last_seen_at = ? WHERE id = ?",
+            (commit_id, feature_id),
+        )
+        self._commit_if_needed()
 
     def mark_feature_removed(self, feature_id: int):
         self.conn.execute(
             "UPDATE features SET status = 'removed' WHERE id = ?",
             (feature_id,),
         )
-        self.conn.commit()
+        self._commit_if_needed()
 
     # --- snapshots ---
 
@@ -226,7 +260,7 @@ class EvolutionStore:
                 json.dumps(snapshot_data.get("call_chain", [])),
             ),
         )
-        self.conn.commit()
+        self._commit_if_needed()
 
     def get_latest_snapshot(self, feature_id: int) -> dict | None:
         row = self.conn.execute(
@@ -253,7 +287,7 @@ class EvolutionStore:
             "INSERT OR IGNORE INTO evolution_events (feature_id, commit_id, event_type, detail) VALUES (?, ?, ?, ?)",
             (feature_id, commit_id, event_type, json.dumps(detail) if detail else None),
         )
-        self.conn.commit()
+        self._commit_if_needed()
 
     def get_feature_timeline(self, stable_id: str) -> list[dict]:
         feature = self.get_feature(stable_id)

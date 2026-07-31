@@ -9,12 +9,15 @@ only reads results from CodeGraph's SQLite.
 """
 
 import logging
+import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
 from .analyzer import EvolutionAnalyzer, SnapshotData
-from .codegraph_reader import CodeGraphReader, FunctionDef
+from .codegraph_reader import CodeGraphReader
 from .config import Config
 from .matcher import FeatureMatcher
 from .store import EvolutionStore
@@ -51,9 +54,11 @@ class EvolutionEngine:
 
         self._reader: CodeGraphReader | None = None
         self._commit_count: int = 0
+        self._analysis_repo_path = config.repo_path
 
         # Verify prerequisites
         self._check_codegraph()
+        self._hydrate_matcher()
 
     def _check_codegraph(self):
         """Verify CodeGraph is initialized on the target repo."""
@@ -73,16 +78,86 @@ class EvolutionEngine:
     @property
     def reader(self) -> CodeGraphReader:
         if self._reader is None:
-            cg_db = str(Path(self.config.repo_path) / ".codegraph" / "codegraph.db")
+            cg_db = str(Path(self._analysis_repo_path) / ".codegraph" / "codegraph.db")
             self._reader = CodeGraphReader(cg_db)
         return self._reader
+
+    def _hydrate_matcher(self):
+        """Restore active feature identities when update runs in a new process."""
+        for feature in self.store.get_active_features():
+            self.matcher.register_feature(
+                feature["stable_id"],
+                feature["entry_type"],
+                feature["entry_signature"],
+            )
+
+    def _source_status(self) -> str:
+        result = subprocess.run(
+            ["git", "-C", self.config.repo_path, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+
+    @contextmanager
+    def _isolated_worktree(self):
+        """Analyze history in a disposable worktree, never in the user's checkout."""
+        if self._source_status().strip():
+            logger.info("Source repository has local changes; isolated worktree will preserve them")
+
+        worktree_path = tempfile.mkdtemp(prefix="codehistory-worktree-")
+        added = False
+        try:
+            subprocess.run(
+                [
+                    "git", "-C", self.config.repo_path, "worktree", "add",
+                    "--detach", worktree_path, "HEAD",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            added = True
+            self._analysis_repo_path = worktree_path
+
+            result = subprocess.run(
+                ["codegraph", "init"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"codegraph init failed: {result.stderr[:300]}")
+            yield
+        finally:
+            if self._reader:
+                self._reader.close()
+                self._reader = None
+            self._analysis_repo_path = self.config.repo_path
+            if added:
+                cleanup = subprocess.run(
+                    [
+                        "git", "-C", self.config.repo_path, "worktree", "remove",
+                        "--force", worktree_path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if cleanup.returncode != 0:
+                    logger.warning(
+                        "Failed to unregister temporary worktree: %s",
+                        cleanup.stderr[:300],
+                    )
+            shutil.rmtree(worktree_path, ignore_errors=True)
 
     def _sync_codegraph(self) -> bool:
         """Run `codegraph sync` to update the index. Returns True on success."""
         try:
             result = subprocess.run(
                 ["codegraph", "sync"],
-                cwd=self.config.repo_path,
+                cwd=self._analysis_repo_path,
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -99,10 +174,9 @@ class EvolutionEngine:
             return False
 
     def _checkout(self, commit_hash: str):
-        """Checkout a git commit to the working tree."""
-        # Detached HEAD checkout — discard local changes in tracked files
+        """Checkout a git commit inside the disposable analysis worktree."""
         subprocess.run(
-            ["git", "-C", self.config.repo_path, "checkout", "--force", commit_hash],
+            ["git", "-C", self._analysis_repo_path, "checkout", "--force", commit_hash],
             capture_output=True,
             check=True,
         )
@@ -118,17 +192,24 @@ class EvolutionEngine:
         Args:
             progress_callback: Optional callback(current, total, message).
         """
+        if self.store.get_latest_commit_id() is not None:
+            raise RuntimeError(
+                "Evolution database is not empty; use 'codehistory update' for "
+                "incremental analysis or choose a new --db path for backfill"
+            )
+
         total = self.walker.count_commits()
         logger.info(f"Starting backfill: {total} commits")
 
-        for commit in self.walker.iter_commits():
-            self._process_commit(commit)
-            self._commit_count += 1
-            if progress_callback and self._commit_count % 5 == 0:
-                progress_callback(
-                    self._commit_count, total,
-                    f"[{self._commit_count}/{total}] {commit.hash[:8]}"
-                )
+        with self._isolated_worktree():
+            for commit in self.walker.iter_commits():
+                self._process_commit(commit)
+                self._commit_count += 1
+                if progress_callback and self._commit_count % 5 == 0:
+                    progress_callback(
+                        self._commit_count, total,
+                        f"[{self._commit_count}/{total}] {commit.hash[:8]}"
+                    )
 
         if progress_callback:
             progress_callback(total, total, "Backfill complete")
@@ -142,15 +223,8 @@ class EvolutionEngine:
     ):
         """Process new commits since the last analyzed commit.
 
-        Resets working tree to HEAD, then walks new commits.
+        Uses a disposable worktree and leaves the user's working tree untouched.
         """
-        # Reset working tree to HEAD
-        subprocess.run(
-            ["git", "-C", self.config.repo_path, "checkout", "--force", "HEAD"],
-            capture_output=True, check=True,
-        )
-        self._sync_codegraph()
-
         last_commit = self.store.get_latest_commit_id()
         start_from = None
         if last_commit:
@@ -161,10 +235,11 @@ class EvolutionEngine:
                 start_from = last_hash_row[0]
 
         new_count = 0
-        for commit in self.walker.iter_commits(start_from=start_from):
-            self._process_commit(commit)
-            new_count += 1
-            self._commit_count += 1
+        with self._isolated_worktree():
+            for commit in self.walker.iter_commits(start_from=start_from):
+                self._process_commit(commit)
+                new_count += 1
+                self._commit_count += 1
 
         logger.info(f"Update complete: {new_count} new commits processed")
         if progress_callback:
@@ -172,28 +247,12 @@ class EvolutionEngine:
 
     def _process_commit(self, commit: CommitInfo):
         """Process a single commit."""
-        # Insert commit record
-        commit_id = self.store.insert_commit(
-            hash_=commit.hash,
-            parent_hash=commit.parent_hash,
-            timestamp=commit.timestamp,
-            author=commit.author,
-            message=commit.message,
-            semantic_type=commit.semantic_type,
-            tags=commit.tags if commit.tags else None,
-        )
-
         # Checkout this commit and sync CodeGraph
-        try:
-            self._checkout(commit.hash)
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Checkout failed for {commit.hash[:8]}: {e}")
-            return
+        self._checkout(commit.hash)
 
         if not self._sync_codegraph():
-            logger.warning(
-                f"CodeGraph sync failed at {commit.hash[:8]}, "
-                f"data may be stale for this commit"
+            raise RuntimeError(
+                f"CodeGraph sync failed at {commit.hash[:8]}; commit was not recorded"
             )
 
         # Reopen reader (SQLite connection may have been replaced by sync)
@@ -201,17 +260,48 @@ class EvolutionEngine:
             self._reader.close()
             self._reader = None
 
-        # Process entry points from the current code state
-        self._process_entry_points(commit_id)
+        matcher_snapshot = self.matcher.snapshot()
+        try:
+            with self.store.transaction():
+                commit_id = self.store.insert_commit(
+                    hash_=commit.hash,
+                    parent_hash=commit.parent_hash,
+                    timestamp=commit.timestamp,
+                    author=commit.author,
+                    message=commit.message,
+                    semantic_type=commit.semantic_type,
+                    tags=commit.tags if commit.tags else None,
+                )
+                self._process_entry_points(commit_id)
+        except Exception:
+            self.matcher.restore(matcher_snapshot)
+            raise
 
     def _process_entry_points(self, commit_id: int):
         """Extract entry points from CodeGraph's graph and process features."""
+        active_before = {
+            feature["stable_id"]: feature for feature in self.store.get_active_features()
+        }
+        seen: set[str] = set()
         entry_points = self.reader.get_entry_points()
 
         for ep in entry_points:
-            self._process_one_entry_point(ep, commit_id)
+            seen.add(self._process_one_entry_point(ep, commit_id))
 
-    def _process_one_entry_point(self, ep, commit_id: int):
+        for stable_id, feature in active_before.items():
+            if stable_id in seen:
+                continue
+            previous = self.store.get_latest_snapshot(feature["id"])
+            if previous:
+                snapshot = SnapshotData(**previous)
+                event = self.analyzer.died_event(snapshot)
+                self.store.insert_event(feature["id"], commit_id, event.event_type, event.detail)
+            self.store.mark_feature_removed(feature["id"])
+            self.matcher.unregister_feature(
+                feature["entry_type"], feature["entry_signature"]
+            )
+
+    def _process_one_entry_point(self, ep, commit_id: int) -> str:
         """Process a single entry point — match to feature, compute snapshot."""
         # Classify entry type (uses matcher's heuristics as fallback)
         entry_type = self.matcher.classify_entry_type(
@@ -271,6 +361,7 @@ class EvolutionEngine:
         else:
             # New feature
             stable_id = ep.qualified_name
+            existing = self.store.get_feature(stable_id)
             feature_id = self.store.insert_feature(
                 stable_id=stable_id,
                 canonical_name=ep.name,
@@ -279,6 +370,8 @@ class EvolutionEngine:
                 first_seen_at=commit_id,
                 **descriptions,
             )
+            if existing and existing["status"] == "removed":
+                self.store.mark_feature_active(feature_id, commit_id)
             self.matcher.register_feature(stable_id, entry_type, entry_signature)
             events = self.analyzer.analyze(None, snapshot)
 
@@ -299,6 +392,7 @@ class EvolutionEngine:
                 self.store.insert_event(
                     feature_id, commit_id, ev.event_type, ev.detail
                 )
+        return match.matched_feature_id or stable_id
 
     @staticmethod
     def _generate_descriptions(func_name: str, file_path: str) -> dict:
@@ -309,7 +403,10 @@ class EvolutionEngine:
             "get_nodes_by_file": ("Retrieve nodes filtered by file path", "按文件路径获取节点列表"),
             "get_db_path": ("Get the database file path", "获取数据库文件路径"),
             "get_changed_files": ("Detect changed files from git", "通过 git 检测变更文件"),
-            "get_impact_radius": ("Calculate the impact radius of a change", "计算代码变更的影响范围"),
+            "get_impact_radius": (
+                "Calculate the impact radius of a change",
+                "计算代码变更的影响范围",
+            ),
         }
 
         if func_name in patterns:

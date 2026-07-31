@@ -572,6 +572,7 @@ def explain_feature(
                         for f in features_context[:10]]
         callee_context = "\n".join(callee_lines)
 
+    related_functions = f"Related functions:\n{callee_context}" if callee_context else ""
     prompt = f"""You are analyzing code evolution. Explain the implementation of this feature.
 
 Feature: {feature_name}
@@ -580,9 +581,10 @@ Description: {description}
 Call chain:
 {chain_text}
 
-{f"Related functions:\n{callee_context}" if callee_context else ""}
+{related_functions}
 
-Explain in 3-5 sentences: (1) high-level purpose (2) step-by-step flow through call chain (3) notable patterns.
+Explain in 3-5 sentences: (1) high-level purpose, (2) step-by-step flow through the
+call chain, and (3) notable patterns.
 
 Output JSON: {{"en": "English explanation", "zh": "Chinese explanation"}}
 

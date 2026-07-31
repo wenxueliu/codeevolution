@@ -33,6 +33,14 @@ class FeatureMatcher:
         key = (entry_type, entry_signature)
         self._feature_index.pop(key, None)
 
+    def snapshot(self) -> dict[tuple[str, str], str]:
+        """Copy the in-memory index so a failed commit can restore it."""
+        return self._feature_index.copy()
+
+    def restore(self, snapshot: dict[tuple[str, str], str]):
+        """Restore a previously captured matcher index."""
+        self._feature_index = snapshot.copy()
+
     def match(self, entry_type: str, entry_signature: str) -> EntryPointMatch:
         """Match an entry point to an existing feature.
 
