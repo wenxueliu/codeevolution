@@ -13,6 +13,7 @@ Set OPENAI_API_KEY or ANTHROPIC_API_KEY in the environment.
 Model can be overridden via CODEHISTORY_LLM_MODEL.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 
 from .semantic.client import LiteLLMClient
 from .semantic.config import get_llm_config
@@ -424,10 +425,10 @@ def batch_explain_functions(
     if not is_available():
         return [{"function_name": f["name"], "error": "LLM not configured"} for f in functions]
 
-    results: list[dict] = []
+    if max_concurrency < 1:
+        raise ValueError("max_concurrency must be at least 1")
 
-    # Process sequentially by default; concurrent for large batches
-    for i, func in enumerate(functions):
+    def explain_one(func: dict) -> dict:
         try:
             desc = explain_business_purpose(
                 func_name=func["name"],
@@ -440,33 +441,27 @@ def batch_explain_functions(
                 caller_names=func.get("caller_names"),
             )
             if desc:
-                results.append(
-                    {
-                        "function_name": desc.function_name,
-                        "summary_en": desc.summary_en,
-                        "summary_zh": desc.summary_zh,
-                        "business_domain": desc.business_domain,
-                        "role": desc.role,
-                        "key_responsibilities": desc.key_responsibilities,
-                    }
-                )
-            else:
-                results.append(
-                    {
-                        "function_name": func["name"],
-                        "error": "LLM response parsing failed",
-                    }
-                )
-        except Exception as e:
-            results.append(
-                {
-                    "function_name": func["name"],
-                    "error": str(e),
+                return {
+                    "function_name": desc.function_name,
+                    "summary_en": desc.summary_en,
+                    "summary_zh": desc.summary_zh,
+                    "business_domain": desc.business_domain,
+                    "role": desc.role,
+                    "key_responsibilities": desc.key_responsibilities,
                 }
-            )
+            return {
+                "function_name": func["name"],
+                "error": "LLM response parsing failed",
+            }
+        except Exception as error:
+            return {"function_name": func["name"], "error": str(error)}
 
-        if progress_callback:
-            progress_callback(i + 1, len(functions))
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+        for i, result in enumerate(executor.map(explain_one, functions)):
+            results.append(result)
+            if progress_callback:
+                progress_callback(i + 1, len(functions))
 
     return results
 
