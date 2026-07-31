@@ -14,76 +14,24 @@ Model can be overridden via CODEHISTORY_LLM_MODEL.
 """
 
 import json
-import os
 import re
-from dataclasses import dataclass, field
 from typing import Any
+
+from .semantic.client import LiteLLMClient
+from .semantic.config import get_llm_config
+from .semantic.json_parser import parse_json
+from .semantic.models import BusinessDescription, BusinessRule, ErrorScenario, StateMachineDef
 
 
 # ── Configuration ──────────────────────────────────────────────────────
 
 def _get_llm_config() -> dict | None:
     """Check if any LLM provider is configured."""
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    model = os.environ.get("CODEHISTORY_LLM_MODEL", "gpt-4o-mini")
-    # Auto-detect provider from model name
-    if "claude" in model.lower():
-        api_key = os.environ.get("ANTHROPIC_API_KEY", api_key)
-    return {
-        "api_key": api_key,
-        "model": model,
-        "api_base": os.environ.get("CODEHISTORY_LLM_BASE", ""),
-    }
+    return get_llm_config()
 
 
 def is_available() -> bool:
     return _get_llm_config() is not None
-
-
-# ── Output types ───────────────────────────────────────────────────────
-
-@dataclass
-class BusinessDescription:
-    """LLM-generated business-level description of a function."""
-    function_name: str
-    summary_en: str
-    summary_zh: str
-    business_domain: str   # e.g., "User Authentication", "Order Processing"
-    role: str              # e.g., "Entry Point", "Business Logic", "Data Access", "Middleware"
-    key_responsibilities: list[str] = field(default_factory=list)
-
-
-@dataclass
-class BusinessRule:
-    """A business rule extracted from code."""
-    function_name: str
-    rule_type: str          # "validation" | "transformation" | "authorization" | "workflow"
-    description_en: str
-    description_zh: str
-    condition: str          # The if-condition or check being performed
-    failure_mode: str       # What happens when the rule fails (throw/return/redirect)
-
-
-@dataclass
-class ErrorScenario:
-    """An error scenario extracted from code."""
-    function_name: str
-    error_type: str
-    trigger_condition: str
-    handling: str           # "throw" | "return error" | "log and continue" | "retry"
-    user_facing: bool       # Is this error visible to end users?
-
-
-@dataclass
-class StateMachineDef:
-    """A state machine detected in code."""
-    entity: str             # The business entity (e.g., "Order", "User")
-    states: list[str]       # All possible states
-    transitions: list[dict] # [{from, to, trigger, guard_condition}]
-    initial_state: str
-    terminal_states: list[str]
 
 
 # ── LLM client ─────────────────────────────────────────────────────────
@@ -98,41 +46,12 @@ def _call_llm(
     if not config:
         return None
 
-    try:
-        import litellm
-        response = litellm.completion(
-            model=config["model"],
-            messages=[{"role": "user", "content": prompt}],
-            api_key=config["api_key"],
-            api_base=config["api_base"] or None,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content
-    except ImportError:
-        return None
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    return LiteLLMClient(config).complete(prompt, max_tokens, temperature)
 
 
 def _parse_json(content: str | None) -> dict | None:
     """Robust JSON extraction from LLM response."""
-    if not content:
-        return None
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        pass
-    for marker in ("```json", "```"):
-        if marker in content:
-            start = content.index(marker) + len(marker)
-            end = content.find("```", start)
-            if end > start:
-                try:
-                    return json.loads(content[start:end].strip())
-                except json.JSONDecodeError:
-                    pass
-    return {"raw": content.strip()}
+    return parse_json(content)
 
 
 # ── 1. Business naming ─────────────────────────────────────────────────
