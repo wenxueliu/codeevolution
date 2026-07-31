@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from codehistory.analysis.topology.advanced_impl import AdvancedTopologyImplementation
 from codehistory.analysis.topology.builder import TopologyBuilder
 from codehistory.analysis.topology.flow import FlowTracer
 from codehistory.analysis.topology.impact import ImpactAnalyzer
@@ -41,3 +42,26 @@ def test_topology_components_and_renderer_delegate_to_explicit_ports():
     assert renderer.topology("x") == "topology:x"
     assert renderer.impact("x") == "impact:x"
     assert renderer.trace("x") == "trace:x"
+
+
+def test_advanced_flow_includes_service_to_database_edges():
+    class Analyzer(AdvancedTopologyImplementation):
+        def _collect_http_edges(self):
+            return {}
+
+        def _collect_mq_channels(self):
+            return {}, {}
+
+        def _collect_rpc_edges(self):
+            return {}
+
+        def _collect_db_edges(self):
+            return {
+                "orders": [{"function": "save_order", "target": "db.execute", "table": "orders"}]
+            }
+
+    flow = Analyzer([]).trace_full_flow("orders")
+
+    assert flow.channels_used == ["db"]
+    assert flow.steps[0].channel == "db"
+    assert flow.steps[0].detail == "table:orders"

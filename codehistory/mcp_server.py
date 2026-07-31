@@ -21,6 +21,11 @@ def get_config() -> Config | None:
     return getattr(mcp, "_config", None)
 
 
+def get_service() -> EvolutionQueryService | None:
+    store = get_store()
+    return EvolutionQueryService(store) if store else None
+
+
 def set_context(store: EvolutionStore, config: Config):
     """Set the store and config for this MCP server instance."""
     mcp._store = store
@@ -46,7 +51,8 @@ def get_feature_timeline(feature_name: str) -> str:
         return json.dumps({"error": "No store configured"})
 
     # Search by name (prefix match)
-    features = EvolutionQueryService(store).list_features()["features"]
+    service = get_service()
+    features = service.list_features()["features"]
     matched = None
     for f in features:
         if feature_name.lower() in f["canonical_name"].lower():
@@ -64,7 +70,7 @@ def get_feature_timeline(feature_name: str) -> str:
             }
         )
 
-    timeline = store.get_feature_timeline(matched["stable_id"])
+    timeline = service.list_events(matched["stable_id"])
     return json.dumps(
         {
             "feature": {
@@ -90,7 +96,7 @@ def list_features() -> str:
     if not store:
         return json.dumps({"error": "No store configured"})
 
-    features = store.get_all_features()
+    features = get_service().list_features(limit=10000)["features"]
     return json.dumps(
         {
             "total": len(features),
@@ -118,7 +124,7 @@ def get_stats() -> str:
     store = get_store()
     if not store:
         return json.dumps({"error": "No store configured"})
-    return json.dumps(store.get_stats(), indent=2)
+    return json.dumps(get_service().stats(), indent=2)
 
 
 @mcp.tool()
@@ -135,14 +141,15 @@ def search_feature_history(query: str) -> str:
         return json.dumps({"error": "No store configured"})
 
     # Search in features
-    features = store.get_all_features()
+    service = get_service()
+    features = service.list_features(search=query, limit=10000)["features"]
     results = []
     for f in features:
         if (
             query.lower() in f["canonical_name"].lower()
             or query.lower() in f["entry_signature"].lower()
         ):
-            timeline = store.get_feature_timeline(f["stable_id"])
+            timeline = service.list_events(f["stable_id"])
             results.append(
                 {
                     "stable_id": f["stable_id"],
@@ -177,7 +184,8 @@ def get_feature_summary(feature_name: str) -> str:
     if not store:
         return json.dumps({"error": "No store configured"})
 
-    features = store.get_all_features()
+    service = get_service()
+    features = service.list_features(search=feature_name, limit=10000)["features"]
     matched = None
     for f in features:
         if feature_name.lower() in f["canonical_name"].lower():
@@ -187,7 +195,7 @@ def get_feature_summary(feature_name: str) -> str:
     if not matched:
         return json.dumps({"error": f"Feature not found: {feature_name}"})
 
-    timeline = store.get_feature_timeline(matched["stable_id"])
+    timeline = service.list_events(matched["stable_id"])
 
     # Summarize
     event_types = {}

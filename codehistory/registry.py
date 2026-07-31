@@ -9,11 +9,11 @@ At registration time, each repo is scanned via CodeGraph SQLite to detect:
 """
 
 import os
-import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 from .infrastructure.registry_json import RegistryRepository
 from .infrastructure.topology_cache_json import TopologyCache
 
@@ -211,62 +211,36 @@ def detect_service(repo_path: str) -> ServiceMeta:
 def _detect_from_codegraph(meta: ServiceMeta, db_path: str):
     """Detect metadata from CodeGraph's SQLite database."""
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-    except sqlite3.Error:
+        with SQLiteCodeGraphRepository(db_path) as repository:
+            detected = repository.inspect_metadata()
+    except Exception:
         return
+    meta.language = detected["language"]
+    all_names = " ".join(
+        str(row.get("signature") or row.get("name") or "").lower() for row in detected["imports"]
+    )
 
-    try:
-        # Language
-        row = conn.execute("""
-            SELECT language, COUNT(*) AS cnt FROM files
-            WHERE language != 'unknown'
-            GROUP BY language ORDER BY cnt DESC LIMIT 1
-        """).fetchone()
-        if row:
-            meta.language = row["language"]
+    for db, patterns in DB_PATTERNS.items():
+        if any(p in all_names for p in patterns):
+            meta.db_types.append(db)
 
-        # DB/MQ/Cache detection — scan for known library imports
-        imports = conn.execute("""
-            SELECT name, signature FROM nodes WHERE kind = 'import'
-        """).fetchall()
-        all_names = " ".join((r["signature"] or r["name"]).lower() for r in imports)
+    for mq, patterns in MQ_PATTERNS.items():
+        if any(p in all_names for p in patterns):
+            meta.mq_types.append(mq)
 
-        for db, patterns in DB_PATTERNS.items():
-            if any(p in all_names for p in patterns):
-                meta.db_types.append(db)
+    for cache, patterns in CACHE_PATTERNS.items():
+        if any(p in all_names for p in patterns):
+            meta.cache_types.append(cache)
 
-        for mq, patterns in MQ_PATTERNS.items():
-            if any(p in all_names for p in patterns):
-                meta.mq_types.append(mq)
+    meta.cg_nodes = detected["nodes"]
+    meta.cg_edges = detected["edges"]
+    meta.cg_files = detected["files"]
 
-        for cache, patterns in CACHE_PATTERNS.items():
-            if any(p in all_names for p in patterns):
-                meta.cache_types.append(cache)
+    if detected["indexed_at"]:
+        import time
 
-        # Size stats
-        nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()
-        edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()
-        files = conn.execute("SELECT COUNT(*) FROM files").fetchone()
-        meta.cg_nodes = nodes[0] if nodes else 0
-        meta.cg_edges = edges[0] if edges else 0
-        meta.cg_files = files[0] if files else 0
-
-        # Index freshness: age in hours
-        row = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()
-        if row and row[0]:
-            import time
-
-            age_sec = time.time() - row[0] / 1000
-            meta.cg_age_hours = round(age_sec / 3600, 1)
-
-        # Staleness: files modified after last index
-        stale = conn.execute("""
-            SELECT COUNT(*) FROM files WHERE modified_at > indexed_at
-        """).fetchone()
-        meta.cg_stale = (stale[0] or 0) > 0 if stale else False
-    finally:
-        conn.close()
+        meta.cg_age_hours = round((time.time() - detected["indexed_at"] / 1000) / 3600, 1)
+    meta.cg_stale = detected["stale"]
 
 
 def _detect_from_filesystem(meta: ServiceMeta, repo_path: str):

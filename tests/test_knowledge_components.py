@@ -11,6 +11,33 @@ from codehistory.analysis.knowledge.semantic import SemanticExtractor
 from codehistory.analysis.knowledge.test_gaps import TestGapExtractor as GapExtractor
 
 
+class QueryStub:
+    def query(self, sql, params=None):
+        if "kind = 'route'" in sql:
+            return [{"name": "GET /api/users", "file_path": "routes.py", "start_line": 3}]
+        return [
+            {
+                "id": "handler-1",
+                "name": "get_user_by_id",
+                "qualified_name": "routes.py::get_user_by_id",
+                "file_path": "routes.py",
+                "start_line": 8,
+                "signature": "(self, user_id: str) -> User",
+                "decorators": '["@router.get(\\"/api/users/{user_id}\\")"]',
+            }
+        ]
+
+
+class TopologyQueryStub:
+    def query(self, sql, params=None):
+        if "e.kind = 'imports'" in sql:
+            return [
+                {"f1": "src/users/api.py", "f2": "src/users/service.py"},
+                {"f1": "src/orders/api.py", "f2": "src/orders/service.py"},
+            ]
+        return [{"f1": "src/users/service.py", "f2": "src/orders/service.py"}]
+
+
 def test_report_builder_runs_dimensions_in_declared_order():
     calls = []
     builder = KnowledgeReportBuilder(
@@ -38,3 +65,26 @@ def test_every_knowledge_dimension_is_independently_callable():
     ]
     for dimension in dimensions:
         assert dimension(lambda: "result").extract() == "result"
+
+
+def test_api_contract_extractor_owns_the_real_extraction_algorithm():
+    contract = ApiContractExtractor(QueryStub()).extract()
+
+    assert [(endpoint.method, endpoint.path) for endpoint in contract.endpoints] == [
+        ("GET", "/api/users"),
+        ("GET", "/api/users/{user_id}"),
+    ]
+    assert contract.endpoints[1].params == ["user_id"]
+    assert contract.endpoints[1].return_type == "User"
+    assert list(contract.resource_groups) == ["users"]
+
+
+def test_module_topology_extractor_owns_graph_building_and_analysis():
+    extractor = ModuleTopologyExtractor(TopologyQueryStub())
+    graph = extractor.build_graph()
+    topology = extractor.extract(resolution=1.5)
+
+    assert graph["src/users/api.py"]["src/users/service.py"]["weight"] == 2
+    assert graph["src/users/service.py"]["src/orders/service.py"]["weight"] == 1
+    assert sum(module["file_count"] for module in topology.modules) == 4
+    assert 0 <= topology.coupling_score <= 1

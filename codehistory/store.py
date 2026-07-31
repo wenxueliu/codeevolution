@@ -255,6 +255,95 @@ class EvolutionStore:
             for r in rows
         ]
 
+    def query_features(
+        self, status: str = "all", search: str = "", limit: int = 100, offset: int = 0
+    ) -> dict:
+        """Filter, count, page, and enrich features in bounded SQL queries."""
+        conditions = ["f.status != 'removed'"] if status == "all" else ["f.status = ?"]
+        params: list = [] if status == "all" else [status]
+        if search:
+            conditions.append("(LOWER(f.canonical_name) LIKE ? OR LOWER(f.entry_signature) LIKE ?)")
+            needle = f"%{search.lower()}%"
+            params.extend((needle, needle))
+        where = " AND ".join(conditions)
+        total = self.conn.execute(
+            f"SELECT COUNT(*) FROM features f WHERE {where}", params
+        ).fetchone()[0]
+        rows = self.conn.execute(
+            f"""SELECT f.id, f.stable_id, f.canonical_name, f.entry_type, f.entry_signature,
+                       f.first_seen_at, f.last_seen_at, f.status, f.description, f.description_zh,
+                       COUNT(DISTINCT e.id) AS event_count,
+                       COALESCE(fs.call_tree_nodes, 0), COALESCE(fs.call_chain, '[]')
+                FROM features f
+                LEFT JOIN evolution_events e ON e.feature_id = f.id
+                LEFT JOIN feature_snapshots fs ON fs.rowid = (
+                    SELECT latest.rowid FROM feature_snapshots latest
+                    WHERE latest.feature_id = f.id ORDER BY latest.commit_id DESC LIMIT 1)
+                WHERE {where} GROUP BY f.id ORDER BY f.canonical_name LIMIT ? OFFSET ?""",
+            [*params, limit, offset],
+        ).fetchall()
+        features = [
+            {
+                "id": row[0],
+                "stable_id": row[1],
+                "canonical_name": row[2],
+                "entry_type": row[3],
+                "entry_signature": row[4],
+                "first_seen_at": row[5],
+                "last_seen_at": row[6],
+                "status": row[7],
+                "description": row[8] or "",
+                "description_zh": row[9] or "",
+                "event_count": row[10],
+                "call_tree_nodes": row[11],
+                "call_chain": json.loads(row[12] or "[]"),
+            }
+            for row in rows
+        ]
+        return {"total": total, "features": features}
+
+    def query_events(self, feature_stable_id="", event_type="", limit=50, offset=0) -> dict:
+        conditions, params = [], []
+        if feature_stable_id:
+            conditions.append("f.stable_id = ?")
+            params.append(feature_stable_id)
+        if event_type:
+            conditions.append("e.event_type = ?")
+            params.append(event_type)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = self.conn.execute(
+            f"""SELECT e.id, e.event_type, e.detail, e.feature_id, e.commit_id, c.hash,
+                       c.timestamp, c.author, c.message, f.canonical_name, f.stable_id
+                FROM evolution_events e JOIN commits c ON e.commit_id = c.id
+                JOIN features f ON e.feature_id = f.id {where}
+                ORDER BY c.timestamp DESC LIMIT ? OFFSET ?""",
+            [*params, limit, offset],
+        ).fetchall()
+        total = self.conn.execute(
+            f"SELECT COUNT(*) FROM evolution_events e JOIN features f ON e.feature_id=f.id {where}",
+            params,
+        ).fetchone()[0]
+        keys = (
+            "id",
+            "event_type",
+            "detail",
+            "feature_id",
+            "commit_id",
+            "commit_hash",
+            "timestamp",
+            "author",
+            "message",
+            "canonical_name",
+            "stable_id",
+        )
+        return {"total": total, "events": [dict(zip(keys, row)) for row in rows]}
+
+    def event_stats(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT event_type, COUNT(*) FROM evolution_events GROUP BY event_type ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        return [{"event_type": row[0], "count": row[1]} for row in rows]
+
     def get_active_features(self) -> list[dict]:
         """Return features that should participate in matching the next commit."""
         return [feature for feature in self.get_all_features() if feature["status"] == "active"]
@@ -263,6 +352,12 @@ class EvolutionStore:
         self.conn.execute(
             "UPDATE features SET last_seen_at = ? WHERE id = ?",
             (commit_id, feature_id),
+        )
+        self._commit_if_needed()
+
+    def update_feature_signature(self, feature_id: int, entry_signature: str):
+        self.conn.execute(
+            "UPDATE features SET entry_signature = ? WHERE id = ?", (entry_signature, feature_id)
         )
         self._commit_if_needed()
 
@@ -397,40 +492,38 @@ class EvolutionStore:
                            ORDER BY fs.commit_id DESC LIMIT 1),
                           '[]'
                       ) as call_chain
+                      ,(SELECT COUNT(*) FROM evolution_events ec
+                        WHERE ec.feature_id = f.id AND ec.commit_id <= ?) AS event_count
                FROM features f
-               WHERE f.first_seen_at <= ?
+               WHERE f.first_seen_at <= ? AND NOT EXISTS (
+                   SELECT 1 FROM evolution_events died
+                   WHERE died.feature_id = f.id AND died.event_type = 'DIED'
+                     AND died.commit_id <= ?)
                ORDER BY f.canonical_name""",
-            (target_commit_id, target_commit_id, target_commit_id),
+            (
+                target_commit_id,
+                target_commit_id,
+                target_commit_id,
+                target_commit_id,
+                target_commit_id,
+            ),
         ).fetchall()
-
-        # Keep features that weren't removed before or at the target commit
-        result = []
-        for r in rows:
-            # Check if DIED event exists at or before target commit
-            died = self.conn.execute(
-                """SELECT 1 FROM evolution_events
-                   WHERE feature_id = ? AND event_type = 'DIED' AND commit_id <= ?
-                   LIMIT 1""",
-                (r[0], target_commit_id),
-            ).fetchone()
-
-            if not died:
-                result.append(
-                    {
-                        "id": r[0],
-                        "stable_id": r[1],
-                        "canonical_name": r[2],
-                        "entry_type": r[3],
-                        "entry_signature": r[4],
-                        "status": r[5],
-                        "first_seen_at": r[6],
-                        "last_seen_at": r[7],
-                        "call_tree_nodes": r[8],
-                        "call_chain": json.loads(r[9]) if r[9] else [],
-                    }
-                )
-
-        return result
+        return [
+            {
+                "id": r[0],
+                "stable_id": r[1],
+                "canonical_name": r[2],
+                "entry_type": r[3],
+                "entry_signature": r[4],
+                "status": r[5],
+                "first_seen_at": r[6],
+                "last_seen_at": r[7],
+                "call_tree_nodes": r[8],
+                "call_chain": json.loads(r[9]) if r[9] else [],
+                "event_count": r[10],
+            }
+            for r in rows
+        ]
 
     # --- capabilities (clustered features) ---
 

@@ -64,6 +64,30 @@ def test_matcher_is_hydrated_from_active_features(tmp_path):
     assert match.matched_feature_id == "api.py::handler"
 
 
+def test_matcher_uses_call_tree_and_content_fallbacks_for_renames():
+    matcher = FeatureMatcher()
+    matcher.register_feature(
+        "api.py::create_order",
+        "http",
+        "post /orders",
+        call_tree=["validate_order", "save_order", "publish_event"],
+        content="validate order save order publish event",
+    )
+
+    l2 = matcher.match(
+        "http",
+        "post /purchases",
+        call_tree=["validate_order", "save_order", "publish_event", "audit_order"],
+    )
+    l3 = matcher.match(
+        "http", "post /renamed-again", content="validate order save order publish event v2"
+    )
+
+    assert (l2.matched_feature_id, l2.match_level) == ("api.py::create_order", "L2")
+    assert (l3.matched_feature_id, l3.match_level) == ("api.py::create_order", "L3")
+    assert l2.evidence["rule"] == "call-tree-structure"
+
+
 def test_missing_entry_point_generates_died_event(tmp_path):
     store = EvolutionStore(str(tmp_path / "evolution.db"))
     first_commit = _commit(store, "first")

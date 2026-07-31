@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
-from .analyzer import EvolutionAnalyzer, SnapshotData
+from .analyzer import EvolutionAnalyzer, EvolutionEvent, SnapshotData
 from .codegraph_reader import CodeGraphReader
 from .config import Config
 from .matcher import FeatureMatcher
@@ -84,10 +84,15 @@ class EvolutionEngine:
     def _hydrate_matcher(self):
         """Restore active feature identities when update runs in a new process."""
         for feature in self.store.get_active_features():
+            snapshot = self.store.get_latest_snapshot(feature["id"])
+            chain = snapshot.get("call_chain", []) if snapshot else []
+            nodes = [edge.get("to", "") for edge in chain]
             self.matcher.register_feature(
                 feature["stable_id"],
                 feature["entry_type"],
                 feature["entry_signature"],
+                call_tree=nodes,
+                content=" ".join(nodes),
             )
 
     def _source_status(self) -> str:
@@ -297,7 +302,17 @@ class EvolutionEngine:
         entry_points = self.reader.get_entry_points()
 
         for ep in entry_points:
-            seen.add(self._process_one_entry_point(ep, commit_id))
+            stable_id = self._process_one_entry_point(ep, commit_id)
+            if stable_id in seen:
+                feature = self.store.get_feature(stable_id)
+                if feature:
+                    self.store.insert_event(
+                        feature["id"],
+                        commit_id,
+                        "SPLIT",
+                        {"reason": "multiple entry points matched one prior identity"},
+                    )
+            seen.add(stable_id)
 
         for stable_id, feature in active_before.items():
             if stable_id in seen:
@@ -340,7 +355,12 @@ class EvolutionEngine:
         )
 
         # Match to existing feature
-        match = self.matcher.match(entry_type, entry_signature)
+        content_fingerprint = " ".join(
+            f"{edge.get('from', '')} {edge.get('to', '')}" for edge in call_chain
+        )
+        match = self.matcher.match(
+            entry_type, entry_signature, call_tree=call_tree_node_ids, content=content_fingerprint
+        )
         descriptions = self._generate_descriptions(ep.name, ep.file_path)
 
         if match.matched_feature_id:
@@ -351,6 +371,28 @@ class EvolutionEngine:
                 prev = self.store.get_latest_snapshot(feature_id)
                 prev_data = SnapshotData(**prev) if prev else None
                 events = self.analyzer.analyze(prev_data, snapshot)
+                candidates = (match.evidence or {}).get("candidates", [])
+                if len(candidates) > 1:
+                    events.append(
+                        EvolutionEvent(
+                            "MERGED",
+                            {"source_features": candidates, "match_level": match.match_level},
+                        )
+                    )
+                if feature["entry_signature"] != entry_signature:
+                    events.append(
+                        EvolutionEvent(
+                            "RENAMED",
+                            {
+                                "from_signature": feature["entry_signature"],
+                                "to_signature": entry_signature,
+                                "match_level": match.match_level,
+                                "confidence": round(match.confidence, 4),
+                            },
+                        )
+                    )
+                    self.matcher.unregister_feature(entry_type, feature["entry_signature"])
+                    self.store.update_feature_signature(feature_id, entry_signature)
                 self.store.update_feature_last_seen(feature_id, commit_id)
             else:
                 logger.warning(f"Feature {match.matched_feature_id} in matcher but not in DB")
@@ -377,7 +419,13 @@ class EvolutionEngine:
             )
             if existing and existing["status"] == "removed":
                 self.store.mark_feature_active(feature_id, commit_id)
-            self.matcher.register_feature(stable_id, entry_type, entry_signature)
+            self.matcher.register_feature(
+                stable_id,
+                entry_type,
+                entry_signature,
+                call_tree=call_tree_node_ids,
+                content=content_fingerprint,
+            )
             events = self.analyzer.analyze(None, snapshot)
 
         # Write snapshot
@@ -399,6 +447,14 @@ class EvolutionEngine:
         for ev in events:
             if ev.event_type != "UNCHANGED":
                 self.store.insert_event(feature_id, commit_id, ev.event_type, ev.detail)
+        if match.matched_feature_id:
+            self.matcher.register_feature(
+                match.matched_feature_id,
+                entry_type,
+                entry_signature,
+                call_tree=call_tree_node_ids,
+                content=content_fingerprint,
+            )
         return match.matched_feature_id or stable_id
 
     @staticmethod

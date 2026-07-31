@@ -165,3 +165,4 @@ cd web && npm run build
 - [系统设计](docs/design.md)
 - [重构规划](docs/refactoring-plan.md)
 - [重构实施结果](docs/refactoring-result.md)
+- [功能完整性与架构优化审计](docs/architecture-audit.md)

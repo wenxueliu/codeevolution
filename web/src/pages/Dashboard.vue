@@ -1,5 +1,7 @@
 <template>
   <div class="dashboard">
+    <div v-if="error" class="request-error">{{ error.message }}</div>
+    <div v-if="loading" class="request-loading">加载中...</div>
     <h1>仪表盘</h1>
 
     <div class="stats-grid">
@@ -62,19 +64,20 @@ export default {
     await Promise.all([this.loadStats(), this.loadEventStats(), this.loadRecentEvents()])
   },
   methods: {
-    api(p) { return '/api/' + p + '?repo=' + encodeURIComponent(this.repoName || '') },
     async loadStats() {
-      try { const r = await fetch(this.api('stats')); this.stats = await r.json() } catch(e) {}
+      await this.$runAsync(async () => { this.stats = await this.$api.get('/api/stats', { repo: this.repoName || '' }) })
     },
     async loadEventStats() {
-      try {
-        const r = await fetch(this.api('event-stats'));
-        const data = await r.json();
+      await this.$runAsync(async () => {
+        const data = await this.$api.get('/api/event-stats', { repo: this.repoName || '' })
         this.eventTypeStats = data.stats || [];
-      } catch(e) {}
+      })
     },
     async loadRecentEvents() {
-      try { const r = await fetch(this.api('events') + '&limit=10'); const data = await r.json(); this.recentEvents = data.events || [] } catch(e) {}
+      await this.$runAsync(async () => {
+        const data = await this.$api.get('/api/events', { repo: this.repoName || '', limit: 10 })
+        this.recentEvents = data.events || []
+      })
     },
     barWidth(count) {
       const max = Math.max(...this.eventTypeStats.map(s => s.count));

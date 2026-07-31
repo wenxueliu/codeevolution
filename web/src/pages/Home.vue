@@ -1,5 +1,7 @@
 <template>
   <div class="home">
+    <div v-if="error" class="request-error">{{ error.message }}</div>
+    <div v-if="loading" class="request-loading">加载中...</div>
     <h1>代码仓列表</h1>
 
     <div class="repo-grid" v-if="repos.length">
@@ -29,11 +31,10 @@ export default {
   async created() { await this.loadRepos() },
   methods: {
     async loadRepos() {
-      try {
-        const r = await fetch('/api/repos')
-        const data = await r.json()
+      await this.$runAsync(async () => {
+        const data = await this.$api.get('/api/repos')
         this.repos = data.repos || []
-      } catch(e) { console.error(e) }
+      })
     },
   },
 }

@@ -47,4 +47,6 @@ export default {
 .nav-right { display: flex; align-items: center; }
 .nav-repo { color: #e94560; font-size: 13px; font-weight: 600; }
 .main { flex: 1; padding: 24px; max-width: 1400px; width: 100%; margin: 0 auto; }
+.request-error { margin-bottom: 16px; padding: 10px 14px; border-radius: 6px; background: #f8d7da; color: #721c24; }
+.request-loading { margin-bottom: 12px; color: #666; font-size: 13px; }
 </style>

@@ -88,3 +88,48 @@ def test_callers_depth_and_chain_semantics(tmp_path):
         assert reader.get_call_tree("a", max_depth=1) == ["a", "b"]
         assert reader.get_call_tree("a", max_depth=0) == ["a"]
         assert reader.get_call_chain("a")[0]["from"] == "caller"
+
+
+def test_repository_contract_tolerates_null_and_bad_decorator_json(tmp_path):
+    database = tmp_path / "codegraph.db"
+    _empty_codegraph(database)
+    connection = sqlite3.connect(database)
+    connection.executemany(
+        """INSERT INTO nodes(id, kind, name, qualified_name, file_path, language,
+                   start_line, end_line, is_exported, is_async, is_static, decorators)
+           VALUES (?, 'function', ?, ?, 'app.py', 'python', 1, 2, 0, 0, 0, ?)""",
+        [
+            ("null", "null_decorators", "app::null", None),
+            ("bad", "bad_decorators", "app::bad", "{not-json"),
+        ],
+    )
+    connection.commit()
+    connection.close()
+
+    with SQLiteCodeGraphRepository(str(database)) as repository:
+        functions = repository.functions()
+    assert [function.decorators for function in functions] == [[], []]
+
+
+def test_metadata_contract_tolerates_older_schema_and_missing_tables(tmp_path):
+    old_database = tmp_path / "old.db"
+    connection = sqlite3.connect(old_database)
+    connection.executescript(
+        """CREATE TABLE files(path TEXT, language TEXT);
+           CREATE TABLE nodes(id TEXT, kind TEXT, name TEXT);"""
+    )
+    connection.execute("INSERT INTO files VALUES ('app.py', 'python')")
+    connection.execute("INSERT INTO nodes VALUES ('i', 'import', 'redis')")
+    connection.commit()
+    connection.close()
+    with SQLiteCodeGraphRepository(str(old_database)) as repository:
+        metadata = repository.inspect_metadata()
+    assert metadata["language"] == "python"
+    assert metadata["imports"] == [{"name": "redis", "signature": None}]
+    assert metadata["edges"] == 0
+    assert metadata["indexed_at"] is None
+
+    empty_database = tmp_path / "empty.db"
+    sqlite3.connect(empty_database).close()
+    with SQLiteCodeGraphRepository(str(empty_database)) as repository:
+        assert repository.inspect_metadata()["nodes"] == 0

@@ -7,6 +7,8 @@ import FeatureList from './pages/FeatureList.vue'
 import FeatureDetail from './pages/FeatureDetail.vue'
 import EventList from './pages/EventList.vue'
 import Capabilities from './pages/Capabilities.vue'
+import { apiClient } from './api/apiClient.js'
+import { runAsync } from './composables/useAsync.js'
 
 const routes = [
   { path: '/', name: 'home', component: Home },
@@ -23,5 +25,12 @@ const router = createRouter({
 })
 
 const app = createApp(App)
+app.config.globalProperties.$api = apiClient
+app.mixin({
+  data: () => ({ loading: false, error: null }),
+  methods: {
+    $runAsync(task) { return runAsync(this, task) },
+  },
+})
 app.use(router)
 app.mount('#app')

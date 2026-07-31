@@ -1,5 +1,7 @@
 <template>
   <div class="feature-list">
+    <div v-if="error" class="request-error">{{ error.message }}</div>
+    <div v-if="loading" class="request-loading">加载中...</div>
     <div class="header">
       <h1>功能列表</h1>
       <div class="controls">
@@ -89,19 +91,21 @@ export default {
     this.loadFeatures();
   },
   methods: {
-    api(p) { return '/api/' + p + (p.includes('?') ? '&' : '?') + 'repo=' + encodeURIComponent(this.repoName || '') },
     async loadCommits() {
-      try { const r = await fetch(this.api('commits?limit=200')); const data = await r.json(); this.commits = data.commits || [] } catch(e) {}
+      await this.$runAsync(async () => {
+        const data = await this.$api.get('/api/commits', { repo: this.repoName || '', limit: 200 })
+        this.commits = data.commits || []
+      })
     },
     async loadFeatures() {
-      const params = new URLSearchParams({ status: this.statusFilter, search: this.search, limit: '' + this.pageSize, offset: '' + this.offset });
-      if (this.selectedCommit) params.set('at_commit', this.selectedCommit);
-      try {
-        const r = await fetch(this.api('features') + '&' + params);
-        const data = await r.json();
+      await this.$runAsync(async () => {
+        const data = await this.$api.get('/api/features', {
+          repo: this.repoName || '', status: this.statusFilter, search: this.search,
+          limit: this.pageSize, offset: this.offset, at_commit: this.selectedCommit,
+        })
         this.features = data.features || [];
         this.total = data.total || 0;
-      } catch(e) { console.error(e) }
+      })
     },
     searchFeatures() { this.offset = 0; this.loadFeatures(); },
     onCommitChange() { this.offset = 0; this.loadFeatures(); },

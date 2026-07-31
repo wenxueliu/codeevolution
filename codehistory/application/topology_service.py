@@ -6,6 +6,20 @@ class TopologyService:
         self.builder = builder
         self.cache = cache
 
+    @classmethod
+    def from_repositories(cls, repositories: list[dict], cache=None):
+        """Compose the production topology stack outside delivery adapters."""
+        from ..analysis.topology.builder import TopologyBuilder
+        from ..analysis.topology.cross_repo_impl import CrossRepoImplementation
+
+        analyzer = CrossRepoImplementation(repositories)
+        return cls(TopologyBuilder(analyzer), cache)
+
+    @property
+    def analyzer(self):
+        """Expose formatting compatibility until renderers accept domain DTOs directly."""
+        return self.builder.analyzer
+
     def get_or_build(self, force: bool = False):
         if self.cache is not None and not force:
             cached = self.cache.load()

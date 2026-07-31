@@ -1,5 +1,7 @@
 <template>
   <div class="event-list-page">
+    <div v-if="error" class="request-error">{{ error.message }}</div>
+    <div v-if="loading" class="request-loading">加载中...</div>
     <div class="header">
       <h1>事件日志</h1>
       <div class="controls">
@@ -75,18 +77,15 @@ export default {
   },
   created() { this.loadEvents() },
   methods: {
-    api(p) { return '/api/' + p + (p.includes('?')?'&':'?') + 'repo=' + encodeURIComponent(this.repoName || '') },
     async loadEvents() {
-      const params = new URLSearchParams({
-        feature_stable_id: this.searchFeature, event_type: this.eventTypeFilter,
-        limit: '' + this.pageSize, offset: '' + this.offset,
-      });
-      try {
-        const r = await fetch(this.api('events') + '&' + params);
-        const data = await r.json();
+      await this.$runAsync(async () => {
+        const data = await this.$api.get('/api/events', {
+          repo: this.repoName || '', feature_stable_id: this.searchFeature,
+          event_type: this.eventTypeFilter, limit: this.pageSize, offset: this.offset,
+        })
         this.events = data.events || [];
         this.total = data.total || 0;
-      } catch(e) { console.error(e) }
+      })
     },
     nextPage() { this.offset += this.pageSize; this.loadEvents() },
     prevPage() { this.offset = Math.max(0, this.offset - this.pageSize); this.loadEvents() },

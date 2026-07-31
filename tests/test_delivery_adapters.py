@@ -3,7 +3,7 @@ import sys
 import pytest
 
 from codehistory import cli
-from codehistory.api import app, create_app
+from codehistory.api import _request_dependencies, app, create_app, get_evolution_service
 
 
 def test_create_app_preserves_routes_and_injects_configuration():
@@ -11,6 +11,16 @@ def test_create_app_preserves_routes_and_injects_configuration():
     assert isolated is not app
     assert isolated.state.dependencies["cors_origins"] == ["https://example.test"]
     assert isolated.openapi()["paths"] == app.openapi()["paths"]
+
+
+def test_create_app_injects_application_service_into_real_requests():
+    service = type("Service", (), {"stats": lambda self: {"injected": True}})()
+    isolated = create_app({"evolution_service": service})
+    token = _request_dependencies.set(isolated.state.dependencies)
+    try:
+        assert get_evolution_service().stats() == {"injected": True}
+    finally:
+        _request_dependencies.reset(token)
 
 
 def test_cli_dispatches_through_parser_handler(monkeypatch):

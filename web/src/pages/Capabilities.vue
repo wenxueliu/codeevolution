@@ -1,5 +1,7 @@
 <template>
   <div class="capabilities">
+    <div v-if="error" class="request-error">{{ error.message }}</div>
+    <div v-if="loading" class="request-loading">加载中...</div>
     <h1>特性聚类</h1>
     <p class="subtitle">基于类/模块分组 + 调用链重叠合并</p>
 
@@ -51,11 +53,10 @@ export default {
   async created() { await this.load() },
   methods: {
     async load() {
-      try {
-        const r = await fetch('/api/capabilities?repo=' + encodeURIComponent(this.repoName || ''))
-        const data = await r.json()
+      await this.$runAsync(async () => {
+        const data = await this.$api.get('/api/capabilities', { repo: this.repoName || '' })
         this.capabilities = data.capabilities || []
-      } catch(e) { console.error(e) }
+      })
     },
   },
 }

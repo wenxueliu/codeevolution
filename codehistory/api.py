@@ -1,12 +1,14 @@
 """FastAPI backend for the CodeHistory web dashboard — multi-repo support."""
 
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .application.evolution_service import EvolutionQueryService
 from .registry import get_repo, list_repos, register_repo
 from .store import EvolutionStore
 
@@ -20,9 +22,15 @@ app.add_middleware(
 )
 
 _stores: dict[str, EvolutionStore] = {}
+_request_dependencies: ContextVar[dict] = ContextVar("codehistory_dependencies", default={})
 
 
 def get_store(repo: str = "") -> EvolutionStore:
+    dependencies = _request_dependencies.get()
+    if factory := dependencies.get("store_factory"):
+        return factory(repo)
+    if injected := dependencies.get("store"):
+        return injected
     if not repo:
         repos = list_repos()
         if repos:
@@ -38,6 +46,15 @@ def get_store(repo: str = "") -> EvolutionStore:
         _stores[repo] = EvolutionStore(db_path)
 
     return _stores[repo]
+
+
+def get_evolution_service(repo: str = "") -> EvolutionQueryService:
+    dependencies = _request_dependencies.get()
+    if factory := dependencies.get("evolution_service_factory"):
+        return factory(repo)
+    if injected := dependencies.get("evolution_service"):
+        return injected
+    return EvolutionQueryService(get_store(repo))
 
 
 # --- Repo management ---
@@ -80,8 +97,7 @@ def api_register_repo(name: str = Query(...), path: str = Query(...)):
 
 @app.get("/api/stats")
 def get_stats(repo: str = Query("")):
-    store = get_store(repo)
-    return store.get_stats()
+    return get_evolution_service(repo).stats()
 
 
 @app.get("/api/features")
@@ -93,44 +109,16 @@ def list_features(
     limit: int = Query(100),
     offset: int = Query(0),
 ):
-    store = get_store(repo)
     if at_commit:
-        all_features = store.get_features_at_commit(at_commit)
-    else:
-        all_features = store.get_all_features()
-
-    if status != "all":
-        all_features = [f for f in all_features if f["status"] == status]
-    if search:
-        s = search.lower()
-        all_features = [
-            f
-            for f in all_features
-            if s in f["canonical_name"].lower() or s in f["entry_signature"].lower()
-        ]
-
-    total = len(all_features)
-    features = all_features[offset : offset + limit]
-    for f in features:
-        timeline = store.get_feature_timeline(f["stable_id"])
-        f["event_count"] = len(timeline)
-        if not at_commit:
-            snapshot = store.get_latest_snapshot(f["id"])
-            if snapshot:
-                f["call_chain"] = snapshot.get("call_chain", [])
-                f["call_tree_nodes"] = snapshot.get("call_tree_nodes", 0)
-            else:
-                f["call_chain"] = []
-                f["call_tree_nodes"] = 0
-
-    return {"total": total, "features": features}
+        return get_evolution_service(repo).list_features_at_commit(
+            at_commit, status, search, limit, offset
+        )
+    return get_evolution_service(repo).list_features(status, search, limit, offset)
 
 
 @app.get("/api/commits")
 def list_commits(repo: str = Query(""), limit: int = Query(200)):
-    store = get_store(repo)
-    commits = store.get_commits(limit=limit)
-    return {"total": len(commits), "commits": commits}
+    return get_evolution_service(repo).commits(limit)
 
 
 @app.get("/api/features/{stable_id:path}/explain")
@@ -140,47 +128,25 @@ def explain_feature(stable_id: str, repo: str = Query("")):
 
     if not is_available():
         return {"available": False, "message": "Set OPENAI_API_KEY to enable AI explanations"}
-    store = get_store(repo)
-    feature = store.get_feature(stable_id)
-    if not feature:
+    context = get_evolution_service(repo).explanation_context(stable_id)
+    if not context:
         return {"error": "Feature not found"}
-    snapshot = store.get_latest_snapshot(feature["id"])
-    call_chain = snapshot.get("call_chain", []) if snapshot else []
-    callee_names = set()
-    for edge in call_chain:
-        to_name = edge.get("to", "").replace("self.", "")
-        if to_name:
-            callee_names.add(to_name)
-    features_context = []
-    for f in store.get_all_features():
-        if f["canonical_name"] in callee_names:
-            features_context.append(f)
+    feature = context["feature"]
     result = explain_feature(
         feature_name=feature["canonical_name"],
         description=feature.get("description", ""),
         description_zh=feature.get("description_zh", ""),
-        call_chain=call_chain,
-        features_context=features_context,
+        call_chain=context["call_chain"],
+        features_context=context["related_features"],
     )
     return {"available": True, "explanation": result}
 
 
 @app.get("/api/features/{stable_id:path}")
 def get_feature_detail(stable_id: str, repo: str = Query("")):
-    store = get_store(repo)
-    feature = store.get_feature(stable_id)
+    feature = get_evolution_service(repo).feature_detail(stable_id)
     if not feature:
         return {"error": "Feature not found"}
-    timeline = store.get_feature_timeline(stable_id)
-    feature["timeline"] = timeline
-    feature["event_count"] = len(timeline)
-    snapshot = store.get_latest_snapshot(feature["id"])
-    if snapshot:
-        feature["call_chain"] = snapshot.get("call_chain", [])
-        feature["call_tree_nodes"] = snapshot.get("call_tree_nodes", 0)
-        feature["call_tree_depth"] = snapshot.get("call_tree_depth", 0)
-    else:
-        feature["call_chain"] = []
     return feature
 
 
@@ -192,61 +158,14 @@ def list_events(
     limit: int = Query(50),
     offset: int = Query(0),
 ):
-    store = get_store(repo)
-    conn = store.conn
-    conditions = []
-    params = []
-    if feature_stable_id:
-        conditions.append("f.stable_id = ?")
-        params.append(feature_stable_id)
-    if event_type:
-        conditions.append("e.event_type = ?")
-        params.append(event_type)
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-    rows = conn.execute(
-        f"""SELECT e.id, e.event_type, e.detail, e.feature_id, e.commit_id,
-                   c.hash, c.timestamp, c.author, c.message,
-                   f.canonical_name, f.stable_id
-            FROM evolution_events e
-            JOIN commits c ON e.commit_id = c.id
-            JOIN features f ON e.feature_id = f.id
-            {where}
-            ORDER BY c.timestamp DESC
-            LIMIT ? OFFSET ?""",
-        params + [limit, offset],
-    ).fetchall()
-
-    count_result = conn.execute(
-        f"""SELECT COUNT(*) FROM evolution_events e
-            JOIN features f ON e.feature_id = f.id {where}""",
-        params,
-    ).fetchone()
-
-    events = [
-        {
-            "id": r[0],
-            "event_type": r[1],
-            "detail": r[2],
-            "feature_id": r[3],
-            "commit_id": r[4],
-            "commit_hash": r[5],
-            "timestamp": r[6],
-            "author": r[7],
-            "message": r[8],
-            "canonical_name": r[9],
-            "stable_id": r[10],
-        }
-        for r in rows
-    ]
-
-    return {"total": count_result[0] if count_result else 0, "events": events}
+    return get_evolution_service(repo).query_events(
+        feature_stable_id=feature_stable_id, event_type=event_type, limit=limit, offset=offset
+    )
 
 
 @app.get("/api/capabilities")
 def get_capabilities(repo: str = Query("")):
-    store = get_store(repo)
-    return {"capabilities": store.get_capabilities()}
+    return {"capabilities": get_evolution_service(repo).capabilities()}
 
 
 @app.get("/api/llm-status")
@@ -258,11 +177,7 @@ def llm_status():
 
 @app.get("/api/event-stats")
 def event_stats(repo: str = Query("")):
-    store = get_store(repo)
-    rows = store.conn.execute(
-        "SELECT event_type, COUNT(*) as cnt FROM evolution_events GROUP BY event_type ORDER BY cnt DESC"
-    ).fetchall()
-    return {"stats": [{"event_type": r[0], "count": r[1]} for r in rows]}
+    return {"stats": get_evolution_service(repo).event_stats()}
 
 
 _route_app = app
@@ -286,6 +201,15 @@ def create_app(dependencies: dict | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @created.middleware("http")
+    async def bind_dependencies(request, call_next):
+        token = _request_dependencies.set(request.app.state.dependencies)
+        try:
+            return await call_next(request)
+        finally:
+            _request_dependencies.reset(token)
+
     for route in _route_app.router.routes:
         if getattr(route, "path", "").startswith("/api/"):
             created.router.routes.append(route)

@@ -6,11 +6,13 @@ import logging
 import sys
 from pathlib import Path
 
-from .codegraph_reader import CodeGraphReader
+from .analysis.topology.flow import FlowTracer
+from .analysis.topology.impact import ImpactAnalyzer
+from .application.knowledge_service import KnowledgeService
+from .application.topology_service import TopologyService
 from .config import Config
-from .cross_repo import CrossRepoAnalyzer
+from .delivery.renderers import TopologyRenderer
 from .engine import EvolutionEngine
-from .knowledge import KnowledgeExtractor
 from .mcp_server import run_server
 from .registry import (
     build_topology_cache,
@@ -153,12 +155,11 @@ def cmd_knowledge(args):
         print(f"Run: cd {args.repo} && codegraph init")
         sys.exit(1)
 
-    reader = CodeGraphReader(cg_db)
-    extractor = KnowledgeExtractor(reader)
+    service = KnowledgeService.from_codegraph(cg_db)
 
     try:
         if args.section == "api" or args.section == "all":
-            api = extractor.extract_api_contract()
+            api = service.extract_api_contract()
             print(f"\n{'=' * 60}")
             print(f"API Contract: {len(api.endpoints)} endpoints")
             print(f"{'=' * 60}")
@@ -166,7 +167,7 @@ def cmd_knowledge(args):
                 print(f"  {ep.method:6s} {ep.path:40s} → {ep.handler_name}")
 
         if args.section == "modules" or args.section == "all":
-            mod = extractor.extract_module_topology()
+            mod = service.extract_module_topology()
             print(f"\n{'=' * 60}")
             print(f"Module Topology: {len(mod.modules)} modules, coupling={mod.coupling_score}")
             print(f"{'=' * 60}")
@@ -177,7 +178,7 @@ def cmd_knowledge(args):
                 )
 
         if args.section == "entities" or args.section == "all":
-            ents = extractor.extract_core_entities(20)
+            ents = service.extract_core_entities(20)
             print(f"\n{'=' * 60}")
             print("Core Entities (Top 20 by PageRank)")
             print(f"{'=' * 60}")
@@ -187,7 +188,7 @@ def cmd_knowledge(args):
                 )
 
         if args.section == "tests" or args.section == "all":
-            cov = extractor.extract_test_coverage_stats()
+            cov = service.extract_test_coverage_stats()
             print(f"\n{'=' * 60}")
             print("Test Coverage")
             print(f"{'=' * 60}")
@@ -197,12 +198,12 @@ def cmd_knowledge(args):
             print(f"  Uncovered (gaps):     {cov['gap_count']}")
 
             if args.section == "tests":
-                gaps = extractor.extract_test_gaps()
+                gaps = service.extract_test_gaps()
                 for g in gaps[:20]:
                     print(f"  [!] {g.qualified_name} ({g.file_path}:{g.line})")
 
         if args.section == "layers" or args.section == "all":
-            viols = extractor.extract_layer_violations()
+            viols = service.extract_layer_violations()
             print(f"\n{'=' * 60}")
             print(f"Layer Violations: {len(viols)}")
             print(f"{'=' * 60}")
@@ -211,7 +212,7 @@ def cmd_knowledge(args):
                 print(f"    {v.source_name} → {v.target_name}")
 
         if args.section == "config" or args.section == "all":
-            configs = extractor.extract_config_consumption()
+            configs = service.extract_config_consumption()
             print(f"\n{'=' * 60}")
             print(f"Config Consumption: {len(configs)} config files with consumers")
             print(f"{'=' * 60}")
@@ -223,7 +224,7 @@ def cmd_knowledge(args):
                     print(f"    key={c['config_key']:30s} → {c['consumer_name']}")
 
         if args.section == "deps" or args.section == "all":
-            deps = extractor.extract_external_dependencies()
+            deps = service.extract_external_dependencies()
             print(f"\n{'=' * 60}")
             print("External Dependencies")
             print(f"{'=' * 60}")
@@ -233,7 +234,7 @@ def cmd_knowledge(args):
                     print(f"    {d['label']:30s} → {d['file_count']} files")
 
         if args.section == "auth" or args.section == "all":
-            auth = extractor.extract_authorization_model()
+            auth = service.extract_authorization_model()
             print(f"\n{'=' * 60}")
             print(f"Authorization Model: {len(auth)} protected endpoints/middleware")
             print(f"{'=' * 60}")
@@ -246,7 +247,7 @@ def cmd_knowledge(args):
                 print(f"  [{a['auth_level']:12s}] {a['function']}{extras}")
 
         if args.section == "heatmap" or args.section == "all":
-            heat = extractor.extract_heat_map()
+            heat = service.extract_heat_map()
             counts = {"hot": 0, "warm": 0, "cold": 0}
             for h in heat:
                 counts[h["heat"]] += 1
@@ -273,7 +274,7 @@ def cmd_knowledge(args):
             print(f"\n{'=' * 60}")
             print("Business Descriptions (LLM)")
             print(f"{'=' * 60}")
-            descs = extractor.extract_business_descriptions(limit=20)
+            descs = service.extract_business_descriptions(limit=20)
             for d in descs:
                 if "error" in d:
                     print(f"  Error: {d['error']}")
@@ -289,7 +290,7 @@ def cmd_knowledge(args):
             print(f"\n{'=' * 60}")
             print("Business Rules (LLM)")
             print(f"{'=' * 60}")
-            rules = extractor.extract_business_rules_llm(limit=15)
+            rules = service.extract_business_rules_llm(limit=15)
             for r in rules:
                 if "error" in r:
                     print(f"  Error: {r['error']}")
@@ -303,7 +304,7 @@ def cmd_knowledge(args):
             print(f"\n{'=' * 60}")
             print("Error Catalog (LLM)")
             print(f"{'=' * 60}")
-            errors = extractor.extract_error_catalog(limit=20)
+            errors = service.extract_error_catalog(limit=20)
             for e in errors:
                 if "error" in e:
                     print(f"  Error: {e['error']}")
@@ -318,7 +319,7 @@ def cmd_knowledge(args):
             print(f"\n{'=' * 60}")
             print("State Machines (LLM)")
             print(f"{'=' * 60}")
-            machines = extractor.extract_state_machines()
+            machines = service.extract_state_machines()
             for sm in machines:
                 if "error" in sm:
                     print(f"  Error: {sm['error']}")
@@ -331,13 +332,13 @@ def cmd_knowledge(args):
                     print(f"    {t.get('from', '?')} → {t.get('to', '?')}: {t.get('trigger', '?')}")
 
         if args.output:
-            result = extractor.extract_all(include_llm=args.llm)
+            result = service.report(include_llm=args.llm)
             with open(args.output, "w") as f:
                 json.dump(result, f, indent=2, default=str)
             print(f"\nFull report written to {args.output}")
 
     finally:
-        reader.close()
+        service.close()
 
 
 def main():
@@ -528,10 +529,10 @@ def cmd_topology(args):
             return
 
     print(f"Analyzing {len(entries)} services...")
-    analyzer = CrossRepoAnalyzer(entries)
-    topology = analyzer.analyze()
+    service = TopologyService.from_repositories(entries)
+    topology = service.get_or_build(force=True)
     build_topology_cache()  # update cache
-    print(analyzer.format_topology(topology))
+    print(TopologyRenderer(service.analyzer).topology(topology))
 
 
 def cmd_impact(args):
@@ -555,11 +556,10 @@ def cmd_impact(args):
                 )
             return
 
-    analyzer = CrossRepoAnalyzer(entries)
-    topology = analyzer.analyze()
+    service = TopologyService.from_repositories(entries)
+    impact = service.impact(ImpactAnalyzer(service.analyzer), args.service, force=True)
     build_topology_cache()
-    impact = analyzer.impact_analysis(topology, args.service)
-    print(analyzer.format_impact(impact))
+    print(TopologyRenderer(service.analyzer).impact(impact))
 
 
 def cmd_trace(args):
@@ -579,11 +579,12 @@ def cmd_trace(args):
                 print(f"{indent}  {step['source_service']} → {step['target_service']}")
             return
 
-    analyzer = CrossRepoAnalyzer(entries)
-    topology = analyzer.analyze()
+    service = TopologyService.from_repositories(entries)
+    chain = service.trace(
+        FlowTracer(service.analyzer), args.service, args.path or None, force=True
+    )
     build_topology_cache()
-    chain = analyzer.trace_flow(topology, args.service, args.path or None)
-    print(analyzer.format_trace(chain))
+    print(TopologyRenderer(service.analyzer).trace(chain))
 
 
 def cmd_discover(args):
@@ -715,9 +716,7 @@ def cmd_init_all(args):
         except sp.TimeoutExpired:
             print(f"  [FAIL] {name}: timed out after 120s")
         except FileNotFoundError:
-            print(
-                "  [FAIL] codegraph not found in PATH. Install: npm i -g @colbymchenry/codegraph"
-            )
+            print("  [FAIL] codegraph not found in PATH. Install: npm i -g @colbymchenry/codegraph")
             break
 
     print("\nDone. Run 'codehistory check' to verify status.")

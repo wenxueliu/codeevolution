@@ -1,5 +1,6 @@
 <template>
   <div class="feature-detail" v-if="feature">
+    <div v-if="error" class="request-error">{{ error.message }}</div>
     <div class="back-row">
       <router-link :to="'/repo/' + repoName + '/features'" class="back-link">&larr; 返回功能列表</router-link>
     </div>
@@ -70,6 +71,7 @@
       <p v-else class="empty">暂无时间线数据</p>
     </div>
   </div>
+  <div v-else-if="error" class="request-error">{{ error.message }}</div>
   <div v-else class="loading">加载中...</div>
 </template>
 
@@ -191,26 +193,27 @@ export default {
   created() { this.loadFeature() },
   methods: {
     async loadFeature() {
-      try {
-        const r = await fetch('/api/features/' + encodeURIComponent(this.stableId) + '?repo=' + encodeURIComponent(this.repoName || ''))
-        this.feature = await r.json()
+      await this.$runAsync(async () => {
+        this.feature = await this.$api.get('/api/features/' + encodeURIComponent(this.stableId), {
+          repo: this.repoName || '',
+        })
         // Check if LLM is available
-        this.checkLLM()
-      } catch(e) { console.error(e) }
+        await this.checkLLM()
+      })
     },
     async checkLLM() {
-      try {
-        const r = await fetch('/api/llm-status')
-        const d = await r.json()
+      await this.$runAsync(async () => {
+        const d = await this.$api.get('/api/llm-status')
         this.llmAvailable = d.available
-      } catch(e) {}
+      })
     },
     async loadExplanation() {
       this.explainLoading = true
       this.explainError = null
       try {
-        const r = await fetch('/api/features/' + encodeURIComponent(this.stableId) + '/explain?repo=' + encodeURIComponent(this.repoName || ''))
-        const d = await r.json()
+        const d = await this.$api.get('/api/features/' + encodeURIComponent(this.stableId) + '/explain', {
+          repo: this.repoName || '',
+        })
         if (d.available && d.explanation) {
           this.explanation = d.explanation
         } else if (!d.available) {
