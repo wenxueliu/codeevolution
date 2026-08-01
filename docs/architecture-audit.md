@@ -3,6 +3,18 @@
 > 审计日期：2026-08-01  
 > 范围：重构规划、当前生产实现、交付入口和测试门禁
 
+## 实施状态（2026-08-01）
+
+本审计提出的架构迁移已按 P0 → P1 → P2 顺序实施。当前状态如下：
+
+- P0 已完成：知识算法已拆分，旧模块为兼容 facade；CLI、API、MCP 已统一经过 application service；Evolution 查询已下推 Store repository；CodeGraph SQL 已全部收敛到 typed SQLite adapter；核心与全量覆盖率门禁及 facade 深比较测试已建立。
+- P1 已完成：三服务 E2E fixture 覆盖 HTTP、MQ、gRPC、DB、循环、菱形及未知目标；Web 已使用统一 API client、`useAsync` 和错误模型；`create_app(dependencies)` 支持 service/store 注入；CI 已包含 lint、双覆盖率、Python build、Web test/build 和性能门禁。
+- P2 已完成的静态能力：HTTP/MQ/gRPC/DB flow 均保存匹配规则、证据、置信度和规则版本；框架检测规则可配置；L2/L3 feature matcher 已实现；Topology 支持按 CodeGraph DB 指纹增量复用；大型仓库 benchmark 已建立。
+- P2 已建立但仍需部署侧接入：运行时拓扑校验器可聚合标准化 OpenTelemetry span，输出 confirmed、static-only、runtime-only、调用次数和平均延迟；实际 OTLP collector/exporter adapter 仍需根据部署环境接入。
+- 尚未实现：rename/split/merge 显式演进事件，以及外部 trace/log/error 持久化关联。它们属于产品增强，不再阻塞本次架构迁移闭环。
+
+当前自动门禁实测：核心覆盖率 60.95%，全量覆盖率 46.76%；大型查询 benchmark 在 2,000 features 下执行 2 条 SELECT，峰值内存约 0.10 MiB。
+
 ## 1. 总体结论
 
 CodeHistory 的产品能力框架基本完整，已经覆盖单仓知识提取、多仓拓扑分析和功能演进追踪三条主线。
@@ -247,4 +259,3 @@ Vue 页面仍分别直接调用 `fetch()`，部分异常使用空 `catch` 吞掉
 - 核心与全量覆盖率均达到约定门禁。
 - 微服务 E2E fixture 覆盖 HTTP、MQ、gRPC 和复杂拓扑。
 - Python package build 与 Web production build 均在 CI 通过。
-
