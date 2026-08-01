@@ -11,7 +11,8 @@
 - P1 已完成：三服务 E2E fixture 覆盖 HTTP、MQ、gRPC、DB、循环、菱形及未知目标；Web 已使用统一 API client、`useAsync` 和错误模型；`create_app(dependencies)` 支持 service/store 注入；CI 已包含 lint、双覆盖率、Python build、Web test/build 和性能门禁。
 - P2 已完成的静态能力：HTTP/MQ/gRPC/DB flow 均保存匹配规则、证据、置信度和规则版本；框架检测规则可配置；L2/L3 feature matcher 已实现；Topology 支持按 CodeGraph DB 指纹增量复用；大型仓库 benchmark 已建立。
 - P2 已建立但仍需部署侧接入：运行时拓扑校验器可聚合标准化 OpenTelemetry span，输出 confirmed、static-only、runtime-only、调用次数和平均延迟；实际 OTLP collector/exporter adapter 仍需根据部署环境接入。
-- 尚未实现：rename/split/merge 显式演进事件，以及外部 trace/log/error 持久化关联。它们属于产品增强，不再阻塞本次架构迁移闭环。
+- 已实现：L2/L3 匹配触发的 `RENAMED`、`SPLIT`、`MERGED` 显式演进事件。
+- 尚未实现：外部 trace/log/error 的 collector adapter 与持久化关联；它属于部署相关产品增强，不再阻塞本次架构迁移闭环。
 
 当前自动门禁实测：核心覆盖率 60.95%，全量覆盖率 46.76%；大型查询 benchmark 在 2,000 features 下执行 2 条 SELECT，峰值内存约 0.10 MiB。
 

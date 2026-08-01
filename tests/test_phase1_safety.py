@@ -88,6 +88,24 @@ def test_matcher_uses_call_tree_and_content_fallbacks_for_renames():
     assert l2.evidence["rule"] == "call-tree-structure"
 
 
+def test_split_event_is_persisted_when_two_entries_match_one_identity(tmp_path):
+    store = EvolutionStore(str(tmp_path / "evolution.db"))
+    commit_id = _commit(store, "first")
+    feature_id = _feature(store, commit_id)
+    engine = EvolutionEngine.__new__(EvolutionEngine)
+    engine.store = store
+    engine.matcher = FeatureMatcher()
+    engine.analyzer = EvolutionAnalyzer()
+    engine._reader = SimpleNamespace(get_entry_points=lambda: ["first", "second"])
+    engine._process_one_entry_point = lambda _entry, _commit_id: "api.py::handler"
+
+    engine._process_entry_points(commit_id)
+
+    events = store.get_feature_timeline("api.py::handler")
+    assert feature_id == store.get_feature("api.py::handler")["id"]
+    assert events[-1]["event_type"] == "SPLIT"
+
+
 def test_missing_entry_point_generates_died_event(tmp_path):
     store = EvolutionStore(str(tmp_path / "evolution.db"))
     first_commit = _commit(store, "first")
