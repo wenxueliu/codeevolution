@@ -190,6 +190,8 @@ class CrossRepoImplementation:
         """
         self.repos = repos
         self.rules = rules or TopologyRuleSet(http_client_callers=HTTP_CLIENT_CALLERS)
+        self._service_cache: dict[tuple[str, str], tuple[tuple[int, int], ServiceNode, list, list]] = {}
+        self.cache_stats = {"hits": 0, "misses": 0}
 
     def _cg_db(self, repo_path: str) -> str:
         return str(Path(repo_path) / ".codegraph" / "codegraph.db")
@@ -198,6 +200,7 @@ class CrossRepoImplementation:
 
     def analyze(self) -> UnifiedTopology:
         """Run the full multi-service analysis."""
+        self.cache_stats = {"hits": 0, "misses": 0}
         services: list[ServiceNode] = []
         all_outbound: list[OutboundCall] = []
         all_inbound: dict[str, list[dict]] = {}  # service_name → [api_endpoint]
@@ -207,6 +210,19 @@ class CrossRepoImplementation:
             if not Path(db_path).exists():
                 print(f"  [skip] {repo['name']}: no CodeGraph DB at {db_path}")
                 continue
+
+            cache_key = (repo["name"], repo["path"])
+            stat = Path(db_path).stat()
+            fingerprint = (stat.st_mtime_ns, stat.st_size)
+            cached = self._service_cache.get(cache_key)
+            if cached and cached[0] == fingerprint:
+                _, svc, outbound, inbound = cached
+                services.append(svc)
+                all_outbound.extend(outbound)
+                all_inbound[repo["name"]] = inbound
+                self.cache_stats["hits"] += 1
+                continue
+            self.cache_stats["misses"] += 1
 
             svc = self._analyze_service(repo["name"], repo["path"], db_path)
             services.append(svc)
@@ -230,6 +246,12 @@ class CrossRepoImplementation:
                 }
                 for ep in api.endpoints
             ]
+            self._service_cache[cache_key] = (
+                fingerprint,
+                svc,
+                outbound,
+                all_inbound[repo["name"]],
+            )
 
         # Match outbound calls to inbound APIs
         cross_edges = self._match_cross_edges(all_outbound, all_inbound)

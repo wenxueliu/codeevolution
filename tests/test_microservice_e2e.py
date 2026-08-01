@@ -1,5 +1,6 @@
 """Real multi-repository CodeGraph fixtures for topology acceptance tests."""
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -181,3 +182,25 @@ def test_custom_topology_rules_drive_detection_and_evidence_version(tmp_path):
 
     assert topology.services[0].db_type == "acme-db"
     assert topology.cross_edges[0].rule_version == "acme-v2"
+
+
+def test_incremental_topology_reuses_unchanged_service_analysis(tmp_path):
+    repositories = [
+        _service(tmp_path, "gateway", "/gateway", [("orders", "/orders")]),
+        _service(tmp_path, "orders", "/orders", [("users", "/users")]),
+        _service(tmp_path, "users", "/users", []),
+    ]
+    service = TopologyService.from_repositories(repositories)
+
+    first = service.get_or_build(force=True)
+    assert service.analyzer.cache_stats == {"hits": 0, "misses": 3}
+    second = service.get_or_build(force=True)
+    assert second == first
+    assert service.analyzer.cache_stats == {"hits": 3, "misses": 0}
+
+    changed_database = Path(repositories[1]["path"]) / ".codegraph" / "codegraph.db"
+    stat = changed_database.stat()
+    os.utime(changed_database, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    third = service.get_or_build(force=True)
+    assert third == first
+    assert service.analyzer.cache_stats == {"hits": 2, "misses": 1}
