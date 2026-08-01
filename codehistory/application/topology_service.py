@@ -37,3 +37,8 @@ class TopologyService:
     def trace(self, tracer, service: str, path: str = "", force: bool = False):
         topology = self.get_or_build(force=force)
         return tracer.trace(topology, service, path)
+
+    def validate_runtime(self, spans: list[dict], force: bool = False):
+        from ..analysis.topology.runtime_validation import RuntimeTopologyValidator
+
+        return RuntimeTopologyValidator().validate(self.get_or_build(force=force), spans)
