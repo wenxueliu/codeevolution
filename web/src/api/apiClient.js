@@ -39,6 +39,7 @@ export function createApiClient(fetchAdapter = globalThis.fetch) {
 
   return {
     get(path, query) { return request(path, { query }) },
+    delete(path) { return request(path, { method: 'DELETE' }) },
     request,
   }
 }

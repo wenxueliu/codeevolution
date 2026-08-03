@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from codehistory import registry
 from codehistory.infrastructure.registry_json import RegistryRepository
 from codehistory.infrastructure.topology_cache_json import CACHE_SCHEMA_VERSION, TopologyCache
 
@@ -40,3 +41,29 @@ def test_failed_atomic_replace_preserves_previous_cache(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="disk failure"):
         cache.save({"services": ["invalid"]})
     assert json.loads(path.read_text(encoding="utf-8"))["services"] == ["valid"]
+
+
+def test_grouped_service_registration_preserves_legacy_primary_path(tmp_path, monkeypatch):
+    registry_dir = tmp_path / "registry"
+    monkeypatch.setattr(registry, "REGISTRY_DIR", registry_dir)
+    monkeypatch.setattr(registry, "REGISTRY_FILE", registry_dir / "registry.json")
+
+    backend = tmp_path / "mall"
+    frontend = tmp_path / "mall-admin-web"
+    for repository in (backend, frontend):
+        (repository / ".git").mkdir(parents=True)
+    (backend / "pom.xml").write_text("<project />", encoding="utf-8")
+    (frontend / "package.json").write_text('{"name":"mall-admin-web"}', encoding="utf-8")
+
+    entry = registry.register_repo("mall", [str(backend), str(frontend)])
+
+    assert entry["path"] == str(backend)
+    assert entry["role"] == "fullstack"
+    assert [member["name"] for member in entry["repositories"]] == [
+        "mall",
+        "mall-admin-web",
+    ]
+    assert registry.repository_members(entry) == entry["repositories"]
+    assert registry.repository_members({"name": "legacy", "path": "/repo"}) == [
+        {"name": "legacy", "path": "/repo"}
+    ]

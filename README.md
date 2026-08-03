@@ -30,6 +30,9 @@ npm i -g @colbymchenry/codegraph
 .venv/bin/codehistory register -n my-svc -r /path/to/repo
 .venv/bin/codehistory topology
 
+# 将多个仓库注册为一个逻辑服务（例如前端 + 后端）
+.venv/bin/codehistory register -n mall -r /path/to/mall -r /path/to/mall-admin-web
+
 # 启动 Web 面板
 .venv/bin/codehistory web --port 8765
 # 浏览器访问 http://localhost:8765
@@ -98,7 +101,7 @@ codehistory knowledge -r <repo> [-s api|modules|entities|tests|layers|config|dep
 codehistory knowledge -r <repo> -s business|rules|errors|states --llm
 
 # 多仓微服务
-codehistory register -n <name> -r <path>    # 注册服务（自动检测语言/角色/DB/MQ）
+codehistory register -n <name> -r <path> [-r <path> ...]  # 注册单仓或多仓逻辑服务
 codehistory discover -d <dir>               # 扫描目录发现 git 仓库
 codehistory init-all                        # 一键初始化所有服务的 CodeGraph
 codehistory check                           # 所有服务健康检查
@@ -153,6 +156,17 @@ delivery → application → analysis/domain/ports ← infrastructure
 `codegraph_reader.py`、`knowledge.py`、`cross_repo.py`、`p2_advanced.py`、`registry.py` 和 `llm.py` 保留原有公开入口，作为渐进迁移期间的兼容 facade。
 
 ## 开发与验证
+
+### 一键构建与启停
+
+```bash
+make start    # 首次自动 npm ci，构建前端并后台启动 :8765
+make status   # 查看 PID 和日志位置
+make restart  # 重新构建并重启
+make stop     # 停止服务
+```
+
+Windows PowerShell 使用 `py scripts\service.py start|stop|restart|status`。运行文件保存在 `.run/`，日志为 `.run/codehistory.log`。
 
 ```bash
 # 静态检查

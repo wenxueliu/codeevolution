@@ -109,6 +109,13 @@ class KnowledgeExtractor:
                         "line": item.line,
                         "params": item.params,
                         "return_type": item.return_type,
+                        "request_headers": item.request_headers,
+                        "query_params": item.query_params,
+                        "path_params": item.path_params,
+                        "request_body": item.request_body,
+                        "response_body": item.response_body,
+                        "call_chain": item.call_chain,
+                        "frontend_callers": item.frontend_callers,
                     }
                     for item in api.endpoints[:100]
                 ],
@@ -139,6 +146,10 @@ class KnowledgeExtractor:
                     "in_degree": item.in_degree,
                     "out_degree": item.out_degree,
                     "layer": item.layer,
+                    "field_count": item.field_count,
+                    "relationship_count": item.relationship_count,
+                    "score": item.score,
+                    "annotations": item.annotations,
                 }
                 for item in entities
             ],

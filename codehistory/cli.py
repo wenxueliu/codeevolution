@@ -28,6 +28,7 @@ from .registry import (
     load_topology_cache,
     refresh_meta,
     register_repo,
+    repository_members,
 )
 
 
@@ -98,7 +99,9 @@ def cmd_register(args):
 
     try:
         entry = register_repo(args.name, args.repo)
-        print(f"Registered: {entry['name']} -> {entry['path']}")
+        print(f"Registered service: {entry['name']}")
+        for member in repository_members(entry):
+            print(f"  - {member['name']}: {member['path']}")
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
@@ -114,7 +117,10 @@ def cmd_repos(args):
         print("Use 'codehistory register --name <name> --repo <path>' to register one.")
         return
     for r in repos:
-        print(f"  {r['name']}: {r['path']}")
+        members = repository_members(r)
+        print(f"  {r['name']}: {len(members)} repository(s)")
+        for member in members:
+            print(f"    - {member['name']}: {member['path']}")
 
 
 def cmd_status(args):
@@ -390,7 +396,13 @@ def main():
     # register
     p = subparsers.add_parser("register", help="Register a repo for multi-repo dashboard")
     p.add_argument("--name", "-n", required=True, help="Short name for the repo")
-    p.add_argument("--repo", "-r", required=True, help="Path to git repository")
+    p.add_argument(
+        "--repo",
+        "-r",
+        required=True,
+        action="append",
+        help="Path to git repository (repeat to group repositories as one service)",
+    )
     p.set_defaults(handler=cmd_register)
 
     # repos
@@ -520,9 +532,10 @@ def cmd_topology(args):
 
     # Check prerequisites
     for e in entries:
-        cg_db = Path(e["path"]) / ".codegraph" / "codegraph.db"
-        if not cg_db.exists():
-            print(f"  [!] {e['name']}: run: cd {e['path']} && codegraph init")
+        for member in repository_members(e):
+            cg_db = Path(member["path"]) / ".codegraph" / "codegraph.db"
+            if not cg_db.exists():
+                print(f"  [!] {e['name']}/{member['name']}: run codegraph init")
 
     # Use cache if available
     if not args.no_cache and not is_topology_cache_stale(entries):
@@ -694,34 +707,39 @@ def cmd_init_all(args):
 
     for e in entries:
         name = e["name"]
-        path = e["path"]
-        cg_db = Path(path) / ".codegraph" / "codegraph.db"
-        if cg_db.exists():
-            print(f"  [skip] {name}: already initialized")
-            continue
+        for member in repository_members(e):
+            member_name, path = member["name"], member["path"]
+            cg_db = Path(path) / ".codegraph" / "codegraph.db"
+            if cg_db.exists():
+                print(f"  [skip] {name}/{member_name}: already initialized")
+                continue
 
-        print(f"  [{name}] codegraph init {path} ...")
-        try:
-            result = sp.run(
-                ["codegraph", "init", path],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if result.returncode == 0:
-                # Refresh metadata after init
-                refresh_meta(name)
-                print(f"  [ OK ] {name}")
-            else:
-                last_line = (
-                    result.stderr.strip().split("\n")[-1] if result.stderr else "unknown error"
+            print(f"  [{name}/{member_name}] codegraph init {path} ...")
+            try:
+                result = sp.run(
+                    ["codegraph", "init", path],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
                 )
-                print(f"  [FAIL] {name}: {last_line[:100]}")
-        except sp.TimeoutExpired:
-            print(f"  [FAIL] {name}: timed out after 120s")
-        except FileNotFoundError:
-            print("  [FAIL] codegraph not found in PATH. Install: npm i -g @colbymchenry/codegraph")
-            break
+                if result.returncode == 0:
+                    print(f"  [ OK ] {name}/{member_name}")
+                else:
+                    last_line = (
+                        result.stderr.strip().split("\n")[-1]
+                        if result.stderr
+                        else "unknown error"
+                    )
+                    print(f"  [FAIL] {name}/{member_name}: {last_line[:100]}")
+            except sp.TimeoutExpired:
+                print(f"  [FAIL] {name}/{member_name}: timed out after 120s")
+            except FileNotFoundError:
+                print(
+                    "  [FAIL] codegraph not found in PATH. "
+                    "Install: npm i -g @colbymchenry/codegraph"
+                )
+                return
+        refresh_meta(name)
 
     print("\nDone. Run 'codehistory check' to verify status.")
 

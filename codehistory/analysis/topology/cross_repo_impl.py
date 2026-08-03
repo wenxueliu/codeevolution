@@ -201,11 +201,16 @@ class CrossRepoImplementation:
     def analyze(self) -> UnifiedTopology:
         """Run the full multi-service analysis."""
         self.cache_stats = {"hits": 0, "misses": 0}
-        services: list[ServiceNode] = []
+        services_by_name: dict[str, ServiceNode] = {}
         all_outbound: list[OutboundCall] = []
         all_inbound: dict[str, list[dict]] = {}  # service_name → [api_endpoint]
 
-        for repo in self.repos:
+        repositories = [
+            {**member, "name": service["name"]}
+            for service in self.repos
+            for member in service.get("repositories", [service])
+        ]
+        for repo in repositories:
             db_path = self._cg_db(repo["path"])
             if not Path(db_path).exists():
                 print(f"  [skip] {repo['name']}: no CodeGraph DB at {db_path}")
@@ -217,15 +222,15 @@ class CrossRepoImplementation:
             cached = self._service_cache.get(cache_key)
             if cached and cached[0] == fingerprint:
                 _, svc, outbound, inbound = cached
-                services.append(svc)
+                self._merge_service(services_by_name, svc)
                 all_outbound.extend(outbound)
-                all_inbound[repo["name"]] = inbound
+                all_inbound.setdefault(repo["name"], []).extend(inbound)
                 self.cache_stats["hits"] += 1
                 continue
             self.cache_stats["misses"] += 1
 
             svc = self._analyze_service(repo["name"], repo["path"], db_path)
-            services.append(svc)
+            self._merge_service(services_by_name, svc)
 
             outbound = self._extract_outbound_calls(repo["name"], db_path)
             all_outbound.extend(outbound)
@@ -236,7 +241,7 @@ class CrossRepoImplementation:
 
             with SQLiteCodeGraphRepository(db_path) as reader:
                 api = ApiContractExtractor(reader).extract()
-            all_inbound[repo["name"]] = [
+            inbound = [
                 {
                     "method": ep.method,
                     "path": ep.path,
@@ -246,12 +251,15 @@ class CrossRepoImplementation:
                 }
                 for ep in api.endpoints
             ]
+            all_inbound.setdefault(repo["name"], []).extend(inbound)
             self._service_cache[cache_key] = (
                 fingerprint,
                 svc,
                 outbound,
-                all_inbound[repo["name"]],
+                inbound,
             )
+
+        services = list(services_by_name.values())
 
         # Match outbound calls to inbound APIs
         cross_edges = self._match_cross_edges(all_outbound, all_inbound)
@@ -276,6 +284,25 @@ class CrossRepoImplementation:
             dependency_graph=dict(dep_graph),
             potential_edges=potential,
         )
+
+    @staticmethod
+    def _merge_service(services: dict[str, ServiceNode], incoming: ServiceNode) -> None:
+        current = services.get(incoming.name)
+        if current is None:
+            services[incoming.name] = incoming
+            return
+        languages = [item for item in current.language.split("+") if item]
+        if incoming.language not in languages:
+            languages.append(incoming.language)
+        current.language = "+".join(languages)
+        if current.role != incoming.role and "frontend" in (current.role, incoming.role):
+            current.role = "fullstack"
+        for field_name in ("db_type", "mq_type"):
+            values = [item for item in getattr(current, field_name).split("+") if item]
+            incoming_value = getattr(incoming, field_name)
+            if incoming_value and incoming_value not in values:
+                values.append(incoming_value)
+            setattr(current, field_name, "+".join(values))
 
     # ── Service analysis ────────────────────────────────────────────────
 
@@ -526,21 +553,6 @@ class CrossRepoImplementation:
         for call in outbound:
             url = call.url_or_pattern
             if not url:
-                potential.append(
-                    {
-                        "source_service": call.caller_service,
-                        "source_function": call.caller_function,
-                        "source_file": call.caller_file,
-                        "source_line": call.caller_line,
-                        "http_method": call.http_method,
-                        "url": "",
-                        "suspected_target": "",
-                        "reason": "URL could not be extracted from static evidence",
-                        "confidence": 0.0,
-                        "match_rule": "unmatched",
-                        "rule_version": self.rules.version,
-                    }
-                )
                 continue
 
             method = call.http_method

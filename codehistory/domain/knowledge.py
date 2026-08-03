@@ -61,6 +61,13 @@ class ApiEndpoint:
     return_type: str | None = None
     decorators: list[str] = field(default_factory=list)
     downstream_calls: list[str] = field(default_factory=list)
+    request_headers: list[dict] = field(default_factory=list)
+    query_params: list[dict] = field(default_factory=list)
+    path_params: list[dict] = field(default_factory=list)
+    request_body: dict | None = None
+    response_body: dict | None = None
+    call_chain: list[dict] = field(default_factory=list)
+    frontend_callers: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -87,6 +94,10 @@ class CoreEntity:
     in_degree: int
     out_degree: int
     layer: str = ""
+    field_count: int = 0
+    relationship_count: int = 0
+    score: float = 0.0
+    annotations: list[str] = field(default_factory=list)
 
 
 @dataclass

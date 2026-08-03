@@ -15,6 +15,9 @@ from ...domain.knowledge import ApiContract, ApiEndpoint
 class _QuerySource(Protocol):
     def route_nodes(self) -> list[dict[str, Any]]: ...
     def decorated_handlers(self) -> list[dict[str, Any]]: ...
+    def handler_for_route(self, file_path: str, route_line: int) -> dict[str, Any] | None: ...
+    def api_call_chain(self, node_id: str, limit: int = 30) -> list[dict[str, Any]]: ...
+    def type_schema(self, type_name: str) -> dict[str, Any] | None: ...
 
 
 class ApiContractExtractor:
@@ -37,15 +40,8 @@ class ApiContractExtractor:
             method, _, path = (route.get("name") or "").partition(" ")
             if not method or not path:
                 continue
-            endpoints.append(
-                ApiEndpoint(
-                    method=method.upper(),
-                    path=path,
-                    handler_name="",
-                    file_path=route["file_path"],
-                    line=route["start_line"],
-                )
-            )
+            handler = self._route_handler(route)
+            endpoints.append(self._endpoint(method.upper(), path, route, handler))
 
         handlers = self._source.decorated_handlers()  # type: ignore[union-attr]
         for handler in handlers:
@@ -71,6 +67,106 @@ class ApiContractExtractor:
         for endpoint in endpoints:
             groups[self.resource_prefix(endpoint.path)].append(endpoint)
         return ApiContract(endpoints=endpoints, resource_groups=dict(sorted(groups.items())))
+
+    def _route_handler(self, route: dict[str, Any]) -> dict[str, Any] | None:
+        if hasattr(self._source, "handler_for_route"):
+            return self._source.handler_for_route(  # type: ignore[union-attr]
+                route["file_path"], route["start_line"]
+            )
+        return None
+
+    def _endpoint(
+        self,
+        method: str,
+        path: str,
+        route: dict[str, Any],
+        handler: dict[str, Any] | None,
+    ) -> ApiEndpoint:
+        if not handler:
+            return ApiEndpoint(
+                method=method,
+                path=path,
+                handler_name="",
+                file_path=route["file_path"],
+                line=route["start_line"],
+            )
+        signature = handler.get("signature") or ""
+        contract = self.parse_request_contract(signature)
+        response_type = self.parse_return_type(signature)
+        response_body = self._schema_for_type(response_type) if response_type else None
+        call_chain = (
+            self._source.api_call_chain(handler["id"])  # type: ignore[union-attr]
+            if hasattr(self._source, "api_call_chain")
+            else []
+        )
+        return ApiEndpoint(
+            method=method,
+            path=path,
+            handler_name=handler["qualified_name"],
+            file_path=handler["file_path"],
+            line=handler["start_line"],
+            params=self.parse_params(signature),
+            return_type=response_type,
+            request_headers=contract["headers"],
+            query_params=contract["query"],
+            path_params=contract["path"],
+            request_body=contract["body"],
+            response_body=response_body,
+            call_chain=call_chain,
+        )
+
+    def _schema_for_type(self, type_name: str | None) -> dict | None:
+        if not type_name:
+            return None
+        candidates = re.findall(r"[A-Za-z_$][\w$]*", type_name)
+        ignored = {"void", "int", "long", "float", "double", "boolean", "string", "list", "map", "set", "optional", "commonresult", "commonpage"}
+        model = next((item for item in reversed(candidates) if item.lower() not in ignored), None)
+        schema = (
+            self._source.type_schema(model)  # type: ignore[union-attr]
+            if model and hasattr(self._source, "type_schema")
+            else None
+        )
+        return {"type": type_name, "model": schema}
+
+    def parse_request_contract(self, signature: str) -> dict[str, Any]:
+        params_text = signature.split("(", 1)[1].rsplit(")", 1)[0] if "(" in signature else ""
+        result: dict[str, Any] = {"headers": [], "query": [], "path": [], "body": None}
+        for raw in self.split_params(params_text):
+            annotation = re.search(r"@(RequestHeader|RequestBody|RequestParam|PathVariable)\s*(\([^)]*\))?", raw)
+            cleaned = re.sub(r"@[A-Za-z_$][\w$]*(?:\([^)]*\))?\s*", "", raw).strip()
+            tokens = cleaned.split()
+            if len(tokens) < 2:
+                continue
+            name, type_name = tokens[-1], " ".join(tokens[:-1])
+            item = {"name": name, "type": type_name, "required": "required = false" not in raw}
+            if annotation:
+                explicit = re.search(r"(?:value|name)\s*=\s*['\"]([^'\"]+)|['\"]([^'\"]+)", annotation.group(2) or "")
+                if explicit:
+                    item["name"] = explicit.group(1) or explicit.group(2)
+                kind = annotation.group(1)
+                if kind == "RequestHeader":
+                    result["headers"].append(item)
+                elif kind == "RequestParam":
+                    result["query"].append(item)
+                elif kind == "PathVariable":
+                    result["path"].append(item)
+                elif kind == "RequestBody":
+                    result["body"] = {**item, **(self._schema_for_type(type_name) or {})}
+            else:
+                result["query"].append(item)
+        return result
+
+    @staticmethod
+    def split_params(value: str) -> list[str]:
+        parts, start, depth = [], 0, 0
+        for index, char in enumerate(value):
+            depth += char in "<(["
+            depth -= char in ">)]"
+            if char == "," and depth == 0:
+                parts.append(value[start:index].strip())
+                start = index + 1
+        tail = value[start:].strip()
+        return parts + ([tail] if tail else [])
 
     @staticmethod
     def _decode_decorators(raw: Any) -> list[str]:
@@ -113,13 +209,21 @@ class ApiContractExtractor:
             return []
         params_text = signature.split("(", 1)[1].rsplit(")", 1)[0]
         params = []
-        for raw_param in params_text.split(","):
-            param = raw_param.strip()
+        for raw_param in ApiContractExtractor.split_params(params_text):
+            param = re.sub(r"@[A-Za-z_$][\w$]*(?:\([^)]*\))?\s*", "", raw_param).strip()
             if not param or param == "self":
                 continue
-            params.append(param.split(":", 1)[0].strip() if ":" in param else param.split()[0])
+            if ":" in param:
+                params.append(param.split(":", 1)[0].strip())
+            else:
+                params.append(param.split()[-1])
         return params
 
     @staticmethod
     def parse_return_type(signature: str) -> str | None:
-        return signature.split("->")[-1].strip().rstrip(":") if "->" in signature else None
+        if "->" in signature:
+            return signature.split("->")[-1].strip().rstrip(":")
+        if "(" in signature:
+            value = signature.split("(", 1)[0].strip()
+            return value or None
+        return None

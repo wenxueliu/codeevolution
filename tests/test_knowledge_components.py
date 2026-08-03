@@ -28,6 +28,37 @@ class QueryStub:
             }
         ]
 
+    def handler_for_route(self, _file_path, _route_line):
+        return {
+            "id": "handler-1",
+            "name": "get_user_by_id",
+            "qualified_name": "routes.py::get_user_by_id",
+            "file_path": "routes.py",
+            "start_line": 8,
+            "signature": 'CommonResult<User> (@RequestHeader("Authorization") String token, @PathVariable Long user_id, @RequestBody UserRequest request)',
+            "decorators": None,
+        }
+
+    def api_call_chain(self, _node_id):
+        return [{"id": "handler-1", "name": "get_user_by_id"}, {"id": "service", "name": "find_user"}]
+
+    def type_schema(self, type_name):
+        return {"name": type_name, "fields": [{"name": "id", "signature": "Long id"}]}
+
+
+class DomainQueryStub:
+    def domain_type_nodes(self):
+        return [
+            {"id": "product", "kind": "class", "name": "Product", "qualified_name": "domain::Product", "file_path": "src/domain/Product.java", "decorators": '[@Entity]'},
+            {"id": "service", "kind": "class", "name": "ProductService", "qualified_name": "service::ProductService", "file_path": "src/service/ProductService.java", "decorators": None},
+        ]
+
+    def domain_type_relationships(self):
+        return [{"source": "service", "target": "product", "kind": "references"}]
+
+    def domain_type_field_counts(self):
+        return [{"id": "product", "field_count": 8}, {"id": "service", "field_count": 1}]
+
 
 class TopologyQueryStub:
     def module_import_edges(self):
@@ -78,7 +109,22 @@ def test_api_contract_extractor_owns_the_real_extraction_algorithm():
     ]
     assert contract.endpoints[1].params == ["user_id"]
     assert contract.endpoints[1].return_type == "User"
+    assert contract.endpoints[0].request_headers[0]["name"] == "Authorization"
+    assert contract.endpoints[0].request_body["type"] == "UserRequest"
+    assert contract.endpoints[0].response_body["type"] == "CommonResult<User>"
+    assert [node["name"] for node in contract.endpoints[0].call_chain] == [
+        "get_user_by_id",
+        "find_user",
+    ]
     assert list(contract.resource_groups) == ["users"]
+
+
+def test_core_entities_are_domain_types_not_methods():
+    entities = CoreEntityExtractor(DomainQueryStub()).extract()
+
+    assert [entity.name for entity in entities] == ["Product", "ProductService"]
+    assert all(entity.kind == "class" for entity in entities)
+    assert entities[0].field_count == 8
 
 
 def test_module_topology_extractor_owns_graph_building_and_analysis():

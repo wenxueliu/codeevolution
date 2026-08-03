@@ -99,40 +99,73 @@ def save_registry(entries: list[dict]):
     RegistryRepository(REGISTRY_FILE).save(entries)
 
 
-def register_repo(name: str, path: str) -> dict:
-    """Register a new repo with auto-detected metadata.
+def repository_members(entry: dict) -> list[dict]:
+    """Return normalized member repositories for legacy and grouped services."""
+    repositories = entry.get("repositories")
+    if repositories:
+        return repositories
+    return [{"name": entry["name"], "path": entry["path"]}]
 
-    Scans the repo's CodeGraph database (if available) and git remotes
-    to populate service metadata at registration time.
+
+def register_repo(name: str, path: str | list[str]) -> dict:
+    """Register one or more repositories as a logical service.
+
+    The legacy ``path`` field remains the primary repository for backwards
+    compatibility. Grouped services additionally contain ``repositories``.
     """
-    abs_path = str(Path(path).resolve())
-    if not Path(abs_path, ".git").exists():
-        raise ValueError(f"Not a git repository: {abs_path}")
+    raw_paths = [path] if isinstance(path, str) else path
+    abs_paths = list(dict.fromkeys(str(Path(item).resolve()) for item in raw_paths))
+    if not abs_paths:
+        raise ValueError("At least one repository path is required")
+    for abs_path in abs_paths:
+        if not Path(abs_path, ".git").exists():
+            raise ValueError(f"Not a git repository: {abs_path}")
 
     entries = load_registry()
 
     for e in entries:
         if e["name"] == name:
             raise ValueError(f"Repo name '{name}' already registered")
-        if e["path"] == abs_path:
-            raise ValueError(f"Repo path already registered as '{e['name']}'")
+        registered_paths = {member["path"] for member in repository_members(e)}
+        duplicate = registered_paths.intersection(abs_paths)
+        if duplicate:
+            raise ValueError(
+                f"Repo path already registered as '{e['name']}': {sorted(duplicate)[0]}"
+            )
 
-    meta = detect_service(abs_path)
+    members = []
+    metas = []
+    for abs_path in abs_paths:
+        meta = detect_service(abs_path)
+        metas.append(meta)
+        members.append(
+            {
+                "name": Path(abs_path).name,
+                "path": abs_path,
+                "language": meta.language,
+                "role": meta.role,
+                "cg_initialized": meta.cg_initialized,
+            }
+        )
 
     from datetime import datetime, timezone
 
+    roles = {meta.role for meta in metas if meta.role}
+    role = "fullstack" if "frontend" in roles and len(roles) > 1 else next(iter(roles), "")
     entry = {
         "name": name,
-        "path": abs_path,
-        "language": meta.language,
-        "role": meta.role,
-        "db_types": meta.db_types,
-        "mq_types": meta.mq_types,
-        "cache_types": meta.cache_types,
-        "cg_initialized": meta.cg_initialized,
-        "git_remotes": meta.git_remotes,
+        "path": abs_paths[0],
+        "language": "+".join(dict.fromkeys(meta.language for meta in metas if meta.language)),
+        "role": role,
+        "db_types": sorted({item for meta in metas for item in meta.db_types}),
+        "mq_types": sorted({item for meta in metas for item in meta.mq_types}),
+        "cache_types": sorted({item for meta in metas for item in meta.cache_types}),
+        "cg_initialized": all(meta.cg_initialized for meta in metas),
+        "git_remotes": sorted({item for meta in metas for item in meta.git_remotes}),
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
+    if len(members) > 1:
+        entry["repositories"] = members
     entries.append(entry)
     save_registry(entries)
     return entry
@@ -143,16 +176,29 @@ def refresh_meta(name: str) -> dict | None:
     entries = load_registry()
     for e in entries:
         if e["name"] == name:
-            meta = detect_service(e["path"])
+            members = repository_members(e)
+            metas = [detect_service(member["path"]) for member in members]
             from datetime import datetime, timezone
 
-            e["language"] = meta.language
-            e["role"] = meta.role
-            e["db_types"] = meta.db_types
-            e["mq_types"] = meta.mq_types
-            e["cache_types"] = meta.cache_types
-            e["cg_initialized"] = meta.cg_initialized
-            e["git_remotes"] = meta.git_remotes
+            roles = {meta.role for meta in metas if meta.role}
+            e["language"] = "+".join(
+                dict.fromkeys(meta.language for meta in metas if meta.language)
+            )
+            e["role"] = (
+                "fullstack" if "frontend" in roles and len(roles) > 1 else next(iter(roles), "")
+            )
+            e["db_types"] = sorted({item for meta in metas for item in meta.db_types})
+            e["mq_types"] = sorted({item for meta in metas for item in meta.mq_types})
+            e["cache_types"] = sorted({item for meta in metas for item in meta.cache_types})
+            e["cg_initialized"] = all(meta.cg_initialized for meta in metas)
+            e["git_remotes"] = sorted({item for meta in metas for item in meta.git_remotes})
+            if e.get("repositories"):
+                for member, meta in zip(e["repositories"], metas):
+                    member.update(
+                        language=meta.language,
+                        role=meta.role,
+                        cg_initialized=meta.cg_initialized,
+                    )
             e["registered_at"] = datetime.now(timezone.utc).isoformat()
             save_registry(entries)
             return e
@@ -386,7 +432,7 @@ def discover_repos(root_dir: str, max_depth: int = 2) -> list[dict]:
 
         # Skip if already registered
         existing = list_repos()
-        if any(e["path"] == repo_path for e in existing):
+        if any(member["path"] == repo_path for e in existing for member in repository_members(e)):
             continue
 
         # Quick scan
@@ -433,37 +479,43 @@ def check_services() -> list[dict]:
     for e in entries:
         status = "ok"
         issues = []
-        meta = detect_service(e["path"])
+        metas = []
+        for member in repository_members(e):
+            member_path = member["path"]
+            meta = detect_service(member_path)
+            metas.append(meta)
+            label = member.get("name") or Path(member_path).name
+            if not Path(member_path).exists():
+                status = "error"
+                issues.append(f"{label}: repository directory not found")
+            elif not Path(member_path, ".git").exists():
+                status = "error"
+                issues.append(f"{label}: not a git repository (.git missing)")
+            elif not meta.cg_initialized:
+                if status != "error":
+                    status = "warning"
+                issues.append(f"{label}: CodeGraph not initialized — run: codegraph init")
+            elif meta.cg_stale:
+                if status not in ("error", "warning"):
+                    status = "warning"
+                issues.append(f"{label}: index stale ({meta.cg_age_hours}h old)")
 
-        if not Path(e["path"]).exists():
-            status = "error"
-            issues.append("Repository directory not found")
-        elif not Path(e["path"], ".git").exists():
-            status = "error"
-            issues.append("Not a git repository (.git missing)")
-        elif not meta.cg_initialized:
-            status = "warning"
-            issues.append("CodeGraph not initialized — run: codegraph init")
-        elif meta.cg_stale:
-            status = "warning"
-            issues.append(f"Index stale ({meta.cg_age_hours}h old) — run: codegraph sync")
-        elif meta.cg_age_hours > 24:
-            status = "info"
-            issues.append(f"Index {meta.cg_age_hours}h old — consider running: codegraph sync")
+        languages = "+".join(dict.fromkeys(meta.language for meta in metas if meta.language))
 
         results.append(
             {
                 "name": e["name"],
                 "path": e["path"],
+                "repositories": repository_members(e),
                 "status": status,
-                "language": meta.language,
-                "role": meta.role,
-                "cg_initialized": meta.cg_initialized,
-                "cg_symbols": meta.cg_nodes,
-                "cg_edges": meta.cg_edges,
-                "cg_age_hours": meta.cg_age_hours,
-                "db_types": meta.db_types,
-                "mq_types": meta.mq_types,
+                "language": languages,
+                "role": e.get("role", ""),
+                "cg_initialized": all(meta.cg_initialized for meta in metas),
+                "cg_symbols": sum(meta.cg_nodes for meta in metas),
+                "cg_edges": sum(meta.cg_edges for meta in metas),
+                "cg_age_hours": max((meta.cg_age_hours for meta in metas), default=0),
+                "db_types": sorted({item for meta in metas for item in meta.db_types}),
+                "mq_types": sorted({item for meta in metas for item in meta.mq_types}),
                 "issues": issues,
             }
         )
@@ -495,10 +547,9 @@ def is_topology_cache_stale(entries: list[dict]) -> bool:
 
     cache_time = cached.get("_built_at", 0)
     for e in entries:
-        cg_db = Path(e["path"]) / ".codegraph" / "codegraph.db"
-        if cg_db.exists():
-            mtime = cg_db.stat().st_mtime
-            if mtime > cache_time:
+        for member in repository_members(e):
+            cg_db = Path(member["path"]) / ".codegraph" / "codegraph.db"
+            if cg_db.exists() and cg_db.stat().st_mtime > cache_time:
                 return True
     return False
 

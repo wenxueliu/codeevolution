@@ -2,8 +2,14 @@ import sys
 
 import pytest
 
-from codehistory import cli
-from codehistory.api import _request_dependencies, app, create_app, get_evolution_service
+from codehistory import api, cli
+from codehistory.api import (
+    _request_dependencies,
+    app,
+    create_app,
+    get_evolution_service,
+    get_knowledge_report,
+)
 
 
 def test_create_app_preserves_routes_and_injects_configuration():
@@ -21,6 +27,56 @@ def test_create_app_injects_application_service_into_real_requests():
         assert get_evolution_service().stats() == {"injected": True}
     finally:
         _request_dependencies.reset(token)
+
+
+def test_knowledge_route_uses_injected_service_without_closing_it():
+    class FakeKnowledgeService:
+        def __init__(self):
+            self.closed = False
+
+        def report(self, include_llm=False):
+            return {"include_llm": include_llm, "api_contract": {"endpoint_count": 2}}
+
+        def close(self):
+            self.closed = True
+
+    service = FakeKnowledgeService()
+    isolated = create_app({"knowledge_service": service})
+    token = _request_dependencies.set(isolated.state.dependencies)
+    try:
+        assert get_knowledge_report(repo="demo", include_llm=True) == {
+            "include_llm": True,
+            "api_contract": {"endpoint_count": 2},
+        }
+        assert service.closed is False
+    finally:
+        _request_dependencies.reset(token)
+
+
+def test_unregister_route_removes_registration_and_closes_cached_store(monkeypatch):
+    removed = []
+
+    class FakeStore:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    store = FakeStore()
+    api._stores["orders"] = store
+    monkeypatch.setattr(api, "get_repo", lambda name: {"name": name})
+    monkeypatch.setattr(api, "unregister_repo", removed.append)
+    try:
+        assert api.api_unregister_repo("orders") == {
+            "ok": True,
+            "name": "orders",
+            "deleted_data": False,
+        }
+        assert removed == ["orders"]
+        assert store.closed is True
+        assert "orders" not in api._stores
+    finally:
+        api._stores.pop("orders", None)
 
 
 def test_cli_dispatches_through_parser_handler(monkeypatch):

@@ -601,7 +601,96 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
         return self.get_entry_points()
 
     def route_nodes(self) -> list[dict[str, Any]]:
-        return self.query("SELECT name, file_path, start_line FROM nodes WHERE kind = 'route'")
+        return self.query(
+            "SELECT id, name, qualified_name, file_path, start_line FROM nodes WHERE kind = 'route'"
+        )
+
+    def handler_for_route(self, file_path: str, route_line: int) -> dict[str, Any] | None:
+        rows = self.query(
+            """SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
+                      signature, decorators
+               FROM nodes
+               WHERE file_path = ? AND kind IN ('function', 'method')
+                 AND start_line <= ? AND end_line >= ?
+               ORDER BY ABS(start_line - ?) ASC LIMIT 1""",
+            [file_path, route_line, route_line, route_line],
+        )
+        if rows:
+            return rows[0]
+        rows = self.query(
+            """SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
+                      signature, decorators
+               FROM nodes
+               WHERE file_path = ? AND kind IN ('function', 'method')
+                 AND ABS(start_line - ?) <= 3
+               ORDER BY ABS(start_line - ?) ASC LIMIT 1""",
+            [file_path, route_line, route_line],
+        )
+        return rows[0] if rows else None
+
+    def api_call_chain(self, node_id: str, limit: int = 30) -> list[dict[str, Any]]:
+        node_ids = self.get_call_tree(node_id, max_depth=8)[:limit]
+        if not node_ids:
+            return []
+        placeholders = ",".join("?" for _ in node_ids)
+        rows = self.query(
+            f"""SELECT id, name, qualified_name, file_path, start_line, kind
+                FROM nodes WHERE id IN ({placeholders})""",
+            node_ids,
+        )
+        by_id = {row["id"]: row for row in rows}
+        return [by_id[node] for node in node_ids if node in by_id]
+
+    def type_schema(self, type_name: str) -> dict[str, Any] | None:
+        rows = self.query(
+            """SELECT id, name, qualified_name, file_path, kind, decorators
+               FROM nodes WHERE name = ? AND kind IN ('class','interface','record','struct','type')
+               ORDER BY CASE WHEN file_path LIKE '%/domain/%' OR file_path LIKE '%/model/%'
+                             OR file_path LIKE '%/dto/%' OR file_path LIKE '%/param/%'
+                        THEN 0 ELSE 1 END LIMIT 1""",
+            [type_name],
+        )
+        if not rows:
+            return None
+        model = rows[0]
+        fields = self.query(
+            """SELECT n.name, n.signature, n.kind
+               FROM edges e JOIN nodes n ON n.id = e.target
+               WHERE e.source = ? AND e.kind = 'contains'
+                 AND n.kind IN ('field','property','variable') ORDER BY n.start_line""",
+            [model["id"]],
+        )
+        return {
+            "name": model["name"],
+            "qualified_name": model["qualified_name"],
+            "file": model["file_path"],
+            "fields": fields[:100],
+        }
+
+    def domain_type_nodes(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT id, kind, name, qualified_name, file_path, start_line, decorators
+               FROM nodes
+               WHERE kind IN ('class','interface','record','struct','type','enum')
+                 AND file_path NOT LIKE '%/test/%' AND file_path NOT LIKE '%/tests/%'"""
+        )
+
+    def domain_type_relationships(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT e.source, e.target, e.kind
+               FROM edges e JOIN nodes s ON s.id=e.source JOIN nodes t ON t.id=e.target
+               WHERE s.kind IN ('class','interface','record','struct','type','enum')
+                 AND t.kind IN ('class','interface','record','struct','type','enum')
+                 AND e.kind IN ('references','type_of','extends','implements')"""
+        )
+
+    def domain_type_field_counts(self) -> list[dict[str, Any]]:
+        return self.query(
+            """SELECT e.source AS id, COUNT(*) AS field_count
+               FROM edges e JOIN nodes n ON n.id=e.target
+               WHERE e.kind='contains' AND n.kind IN ('field','property','variable','enum_member')
+               GROUP BY e.source"""
+        )
 
     def decorated_handlers(self) -> list[dict[str, Any]]:
         return self.query(

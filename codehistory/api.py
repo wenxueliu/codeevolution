@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .application.evolution_service import EvolutionQueryService
-from .registry import get_repo, list_repos, register_repo
+from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
+from .registry import get_repo, list_repos, register_repo, repository_members, unregister_repo
 from .store import EvolutionStore
 
 app = FastAPI(title="CodeHistory API")
@@ -57,6 +58,49 @@ def get_evolution_service(repo: str = "") -> EvolutionQueryService:
     return EvolutionQueryService(get_store(repo))
 
 
+def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
+    """Return a knowledge service and whether the caller owns its lifecycle."""
+    dependencies = _request_dependencies.get()
+    if factory := dependencies.get("knowledge_service_factory"):
+        return factory(repo), True
+    if injected := dependencies.get("knowledge_service"):
+        return injected, False
+
+    if not repo:
+        repos = list_repos()
+        if not repos:
+            raise HTTPException(400, "No repos registered. Register a repo first.")
+        repo = repos[0]["name"]
+
+    entry = get_repo(repo)
+    if not entry:
+        raise HTTPException(404, f"Repo '{repo}' not found")
+    services = []
+    missing = []
+    for member in repository_members(entry):
+        codegraph_db = Path(member["path"]) / ".codegraph" / "codegraph.db"
+        if not codegraph_db.exists():
+            missing.append(member.get("name") or Path(member["path"]).name)
+            continue
+        services.append(
+            (
+                member.get("name") or Path(member["path"]).name,
+                KnowledgeService.from_codegraph(str(codegraph_db)),
+                member["path"],
+            )
+        )
+    if missing:
+        for _, service, _path in services:
+            service.close()
+        raise HTTPException(
+            409,
+            f"CodeGraph database not found for: {', '.join(missing)}. Run codegraph init first.",
+        )
+    if len(services) == 1:
+        return services[0][1], True
+    return GroupedKnowledgeService(services), True
+
+
 # --- Repo management ---
 
 
@@ -65,7 +109,11 @@ def api_list_repos():
     repos = list_repos()
     result = []
     for r in repos:
-        entry = {"name": r["name"], "path": r["path"]}
+        entry = {
+            "name": r["name"],
+            "path": r["path"],
+            "repositories": repository_members(r),
+        }
         try:
             store = _stores.get(r["name"])
             if not store:
@@ -90,6 +138,17 @@ def api_register_repo(name: str = Query(...), path: str = Query(...)):
         return {"ok": True, "repo": entry}
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.delete("/api/repos/{name}")
+def api_unregister_repo(name: str):
+    """Remove a logical service registration without deleting repository data."""
+    if not get_repo(name):
+        raise HTTPException(404, f"Repo '{name}' not found")
+    if store := _stores.pop(name, None):
+        store.close()
+    unregister_repo(name)
+    return {"ok": True, "name": name, "deleted_data": False}
 
 
 # --- Scoped API routes ---
@@ -178,6 +237,20 @@ def llm_status():
 @app.get("/api/event-stats")
 def event_stats(repo: str = Query("")):
     return {"stats": get_evolution_service(repo).event_stats()}
+
+
+@app.get("/api/knowledge")
+def get_knowledge_report(
+    repo: str = Query(""),
+    include_llm: bool = Query(False),
+):
+    """Extract the current knowledge report directly from the repo's CodeGraph index."""
+    service, owned = get_knowledge_service(repo)
+    try:
+        return service.report(include_llm=include_llm)
+    finally:
+        if owned:
+            service.close()
 
 
 _route_app = app

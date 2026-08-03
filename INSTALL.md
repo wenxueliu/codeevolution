@@ -167,6 +167,9 @@ $env:CODEHISTORY_LLM_MODEL = "gpt-4o-mini"
 .venv/bin/codehistory register -n order-svc -r /repos/order-service
 .venv/bin/codehistory register -n user-svc  -r /repos/user-service
 
+# 也可将前端和后端等多个独立仓库归入同一逻辑服务
+.venv/bin/codehistory register -n mall -r /repos/mall -r /repos/mall-admin-web
+
 # 一键初始化所有服务的 CodeGraph
 .venv/bin/codehistory init-all
 

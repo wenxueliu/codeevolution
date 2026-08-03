@@ -6,4 +6,6 @@ dist/
 .codehistory/
 web/node_modules/
 web/dist/
+web/coverage/
 .codegraph/
+.run/

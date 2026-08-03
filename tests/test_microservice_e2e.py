@@ -4,11 +4,10 @@ import os
 import sqlite3
 from pathlib import Path
 
+from codehistory.analysis.topology.rules import TopologyRuleSet
 from codehistory.application.advanced_topology_service import AdvancedTopologyService
 from codehistory.application.topology_service import TopologyService
 from codehistory.cross_repo import CrossRepoAnalyzer
-from codehistory.analysis.topology.rules import TopologyRuleSet
-
 
 SCHEMA = """
 CREATE TABLE nodes (
@@ -204,3 +203,19 @@ def test_incremental_topology_reuses_unchanged_service_analysis(tmp_path):
     third = service.get_or_build(force=True)
     assert third == first
     assert service.analyzer.cache_stats == {"hits": 2, "misses": 1}
+
+
+def test_grouped_repositories_are_merged_into_one_logical_service(tmp_path):
+    backend = _service(tmp_path, "mall-backend", "/api/products", [])
+    frontend = _service(tmp_path, "mall-admin-web", "/admin", [])
+    grouped = {
+        "name": "mall",
+        "path": backend["path"],
+        "repositories": [backend, frontend],
+    }
+
+    topology = TopologyService.from_repositories([grouped]).get_or_build(force=True)
+
+    assert len(topology.services) == 1
+    assert topology.services[0].name == "mall"
+    assert {api["path"] for api in topology.services[0].apis} == {"/api/products", "/admin"}
