@@ -37,6 +37,8 @@ npm i -g @colbymchenry/codegraph
 
 `codehistory web` 会从 `web/dist/` 加载前端静态资源。如果修改了 `web/src/`，需要重新运行 `cd web && npm run build` 后再启动服务。前端开发时可分别启动后端 `.venv/bin/codehistory web --port 8765` 和前端 `cd web && npm run dev`，然后访问 `http://localhost:5173`。
 
+Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#windows-powershell)，其中包含虚拟环境路径、前端构建和 CodeGraph 初始化命令。
+
 ## 三大子系统
 
 ### 1. Knowledge Extractor — 单仓知识提取（13 维）

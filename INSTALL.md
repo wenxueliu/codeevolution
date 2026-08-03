@@ -105,6 +105,61 @@ export CODEHISTORY_LLM_MODEL="gpt-4o-mini"
 
 `codehistory web` 从 `web/dist/` 提供前端页面。如果访问根路径时只看到 `Frontend not built`，请回到 CodeHistory 目录执行 `cd web && npm ci && npm run build`，再重启后端。
 
+## Windows (PowerShell)
+
+先安装 64 位 Python 3.10+、Node.js 18+ 和 Git，并确认它们已加入 `PATH`：
+
+```powershell
+py --version
+node --version
+npm --version
+git --version
+```
+
+在 CodeHistory 目录中安装后端与前端依赖：
+
+```powershell
+cd services\codehistory
+
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+
+Push-Location web
+npm ci
+npm run build
+Pop-Location
+
+npm install --global @colbymchenry/codegraph
+```
+
+不需要执行 `Activate.ps1`，因此不会受 PowerShell 脚本执行策略影响。如果需要 LLM 支持，另行执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[llm]"
+```
+
+为目标仓库初始化 CodeGraph，然后提取知识并启动 Web 面板：
+
+```powershell
+$TargetRepo = "C:\path\to\your\repo"
+
+Push-Location $TargetRepo
+codegraph init
+Pop-Location
+
+.\.venv\Scripts\codehistory.exe knowledge -r $TargetRepo
+.\.venv\Scripts\codehistory.exe web --port 8765
+```
+
+浏览器访问 `http://localhost:8765`。如果修改了前端，在 CodeHistory 目录重新执行 `Push-Location web; npm run build; Pop-Location`，再重启后端。
+
+可选的 LLM 环境变量可在当前 PowerShell 会话中设置：
+
+```powershell
+$env:OPENAI_API_KEY = "sk-..."
+$env:CODEHISTORY_LLM_MODEL = "gpt-4o-mini"
+```
+
 ## 多仓微服务设置
 
 ```bash
