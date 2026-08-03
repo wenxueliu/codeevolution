@@ -11,11 +11,17 @@ cd services/codehistory
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 
+# 构建前端（首次启动 Web 面板前必须执行）
+cd web
+npm ci
+npm run build
+cd ..
+
 # 安装 CodeGraph（代码解析引擎）
 npm i -g @colbymchenry/codegraph
 
 # 初始化代码图谱
-cd /path/to/your/repo && codegraph init
+(cd /path/to/your/repo && codegraph init)
 
 # 提取知识（13 维，秒级）
 .venv/bin/codehistory knowledge -r /path/to/your/repo
@@ -26,7 +32,10 @@ cd /path/to/your/repo && codegraph init
 
 # 启动 Web 面板
 .venv/bin/codehistory web --port 8765
+# 浏览器访问 http://localhost:8765
 ```
+
+`codehistory web` 会从 `web/dist/` 加载前端静态资源。如果修改了 `web/src/`，需要重新运行 `cd web && npm run build` 后再启动服务。前端开发时可分别启动后端 `.venv/bin/codehistory web --port 8765` 和前端 `cd web && npm run dev`，然后访问 `http://localhost:5173`。
 
 ## 三大子系统
 

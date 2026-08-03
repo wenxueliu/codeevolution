@@ -56,12 +56,16 @@ python3 -m venv .venv
 .venv/bin/pip install -e ".[llm]"
 ```
 
-前端已预构建在 `web/dist/`，除非修改前端代码否则不需要 `npm install`。
+首次启动 Web 面板前需要安装前端依赖并生成 `web/dist/`：
 
 ```bash
-# 如果要修改前端：
-cd web && npm install && npm run build
+cd web
+npm ci
+npm run build
+cd ..
 ```
+
+修改 `web/src/` 后需要重新执行 `cd web && npm run build`，否则后端仍会加载上一次构建的静态资源。
 
 ## 验证安装
 
@@ -89,7 +93,7 @@ export CODEHISTORY_LLM_MODEL="gpt-4o-mini"
 
 ```bash
 # 1. 初始化 CodeGraph
-cd /path/to/your/project && codegraph init
+(cd /path/to/your/project && codegraph init)
 
 # 2. 提取知识
 .venv/bin/codehistory knowledge -r /path/to/your/project
@@ -98,6 +102,8 @@ cd /path/to/your/project && codegraph init
 .venv/bin/codehistory web --port 8765
 # 浏览器打开 http://localhost:8765
 ```
+
+`codehistory web` 从 `web/dist/` 提供前端页面。如果访问根路径时只看到 `Frontend not built`，请回到 CodeHistory 目录执行 `cd web && npm ci && npm run build`，再重启后端。
 
 ## 多仓微服务设置
 
