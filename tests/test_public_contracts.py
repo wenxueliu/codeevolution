@@ -101,7 +101,9 @@ def test_openapi_path_snapshot():
     schema = app.openapi()
     assert schema["info"]["title"] == "CodeHistory API"
     assert sorted(schema["paths"]) == [
+        "/api/audit-logs",
         "/api/capabilities",
+        "/api/chat",
         "/api/commits",
         "/api/event-stats",
         "/api/events",

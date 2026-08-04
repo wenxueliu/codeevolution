@@ -8,6 +8,7 @@ import FeatureDetail from '../src/pages/FeatureDetail.vue'
 import FeatureList from '../src/pages/FeatureList.vue'
 import Home from '../src/pages/Home.vue'
 import Knowledge from '../src/pages/Knowledge.vue'
+import RepositoryAssistant from '../src/components/RepositoryAssistant.vue'
 
 const { mermaidRun } = vi.hoisted(() => ({ mermaidRun: vi.fn() }))
 vi.mock('mermaid', () => ({ default: { initialize: vi.fn(), run: mermaidRun } }))
@@ -18,6 +19,7 @@ function mountPage(component, responses = {}, props = {}) {
   const api = {
     get: vi.fn(async (path) => typeof responses[path] === 'function' ? responses[path]() : responses[path] ?? {}),
     delete: vi.fn(async () => ({ ok: true })),
+    request: vi.fn(async (path) => typeof responses[path] === 'function' ? responses[path]() : responses[path] ?? {}),
   }
   const wrapper = mount(component, {
     props,
@@ -33,6 +35,23 @@ function mountPage(component, responses = {}, props = {}) {
 afterEach(() => vi.restoreAllMocks())
 
 describe('repository and knowledge pages', () => {
+  it('opens repository assistant, executes a question and renders audit logs', async () => {
+    const { wrapper, api } = mountPage(RepositoryAssistant, {
+      '/api/chat': { answer: '查询到调用方', operations: [{ operation: 'codegraph.find_callers', source: 'codegraph', rows: [{ name: 'checkout' }] }] },
+      '/api/audit-logs': { logs: [{ id: 1, status: 'success', question: '谁调用它', plan: [{ operation: 'codegraph.find_callers' }], result_count: 1, duration_ms: 2, created_at: 1 }] },
+    }, { repoName: 'mall' })
+    await wrapper.find('.assistant-toggle').trigger('click')
+    await wrapper.find('textarea').setValue('谁调用 createOrder')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/chat', expect.objectContaining({ method: 'POST' }))
+    expect(wrapper.text()).toContain('查询到调用方')
+    expect(wrapper.text()).toContain('codegraph.find_callers')
+    await wrapper.findAll('.tabs button')[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('谁调用它')
+  })
+
   it('loads grouped repositories, navigates, cancels and confirms removal', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
     const { wrapper, api } = mountPage(Home, {

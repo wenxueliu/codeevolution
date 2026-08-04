@@ -168,6 +168,14 @@ make stop     # 停止服务
 
 Windows PowerShell 使用 `py scripts\service.py start|stop|restart|status`。运行文件保存在 `.run/`，日志为 `.run/codehistory.log`。
 
+### 代码仓问答与审计
+
+进入任一已注册服务后，可通过页面右侧“代码问答”打开助手。配置 `OPENAI_API_KEY`（以及可选的
+`CODEHISTORY_LLM_MODEL`、`CODEHISTORY_LLM_BASE`）后，大模型会把问题转换为最多三个结构化只读操作；
+未配置模型时使用本地意图识别。后端仅执行 CodeGraph 符号/调用查询和演进库功能/事件/统计白名单，
+不接受模型生成的任意 SQL。每次成功或失败的操作都会写入
+`~/.codehistory/assistant-audit.db`，可在对话框“审计日志”页或 `GET /api/audit-logs` 查看。
+
 ```bash
 # 静态检查
 .venv/bin/ruff check codehistory tests scripts/check_coverage.py

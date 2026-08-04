@@ -7,9 +7,12 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
+from .application.chat_service import ChatService
 from .application.evolution_service import EvolutionQueryService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
+from .infrastructure.audit_store import AuditStore
 from .registry import get_repo, list_repos, register_repo, repository_members, unregister_repo
 from .store import EvolutionStore
 
@@ -23,7 +26,13 @@ app.add_middleware(
 )
 
 _stores: dict[str, EvolutionStore] = {}
+_audit_store: AuditStore | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codehistory_dependencies", default={})
+
+
+class ChatRequest(BaseModel):
+    repo: str = ""
+    question: str = Field(min_length=1, max_length=2000)
 
 
 def get_store(repo: str = "") -> EvolutionStore:
@@ -56,6 +65,37 @@ def get_evolution_service(repo: str = "") -> EvolutionQueryService:
     if injected := dependencies.get("evolution_service"):
         return injected
     return EvolutionQueryService(get_store(repo))
+
+
+def get_audit_store() -> AuditStore:
+    global _audit_store
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("audit_store"):
+        return injected
+    if _audit_store is None:
+        _audit_store = AuditStore(str(Path.home() / ".codehistory" / "assistant-audit.db"))
+    return _audit_store
+
+
+def get_chat_service() -> ChatService:
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("chat_service"):
+        return injected
+    llm_client = dependencies.get("llm_client")
+    if llm_client is None:
+        from .semantic.client import LiteLLMClient
+        from .semantic.config import get_llm_config
+
+        config = get_llm_config()
+        llm_client = LiteLLMClient(config) if config else None
+
+    def resolve_members(repo: str):
+        entry = get_repo(repo)
+        if not entry:
+            raise ValueError(f"Repo '{repo}' not found")
+        return repository_members(entry)
+
+    return ChatService(get_audit_store(), resolve_members, get_store, llm_client)
 
 
 def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
@@ -253,15 +293,36 @@ def get_knowledge_report(
             service.close()
 
 
+@app.post("/api/chat")
+def ask_repository(request: ChatRequest):
+    """Plan and execute constrained repository queries, recording every attempt."""
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(400, "Question must not be empty")
+    try:
+        return get_chat_service().ask(request.repo, question)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.get("/api/audit-logs")
+def list_assistant_audit_logs(repo: str = Query(""), limit: int = Query(50, ge=1, le=200)):
+    return {"logs": get_audit_store().list(repo, limit)}
+
+
 _route_app = app
 
 
 @asynccontextmanager
 async def _lifespan(application):
+    global _audit_store
     yield
     for store in list(_stores.values()):
         store.close()
     _stores.clear()
+    if _audit_store is not None:
+        _audit_store.close()
+        _audit_store = None
 
 
 def create_app(dependencies: dict | None = None) -> FastAPI:

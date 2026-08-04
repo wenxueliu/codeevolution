@@ -4,12 +4,38 @@ import pytest
 
 from codehistory import api, cli
 from codehistory.api import (
+    ChatRequest,
     _request_dependencies,
     app,
+    ask_repository,
     create_app,
     get_evolution_service,
     get_knowledge_report,
+    list_assistant_audit_logs,
 )
+
+
+def test_chat_and_audit_routes_use_injected_services():
+    class ChatStub:
+        def ask(self, repo, question):
+            return {"answer": question, "repo": repo}
+
+    class AuditStub:
+        def list(self, repo, limit):
+            return [{"repository": repo, "limit": limit}]
+
+    dependencies = {"chat_service": ChatStub(), "audit_store": AuditStub()}
+    token = _request_dependencies.set(dependencies)
+    try:
+        assert ask_repository(ChatRequest(repo="mall", question="调用链")) == {
+            "answer": "调用链",
+            "repo": "mall",
+        }
+        assert list_assistant_audit_logs("mall", 10) == {
+            "logs": [{"repository": "mall", "limit": 10}]
+        }
+    finally:
+        _request_dependencies.reset(token)
 
 
 def test_create_app_preserves_routes_and_injects_configuration():

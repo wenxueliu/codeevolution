@@ -19,11 +19,15 @@
     <main class="main">
       <router-view />
     </main>
+    <RepositoryAssistant :repo-name="repoName" />
   </div>
 </template>
 
 <script>
+import RepositoryAssistant from './components/RepositoryAssistant.vue'
+
 export default {
+  components: { RepositoryAssistant },
   computed: {
     repoName() {
       return this.$route.params.repoName || ''
