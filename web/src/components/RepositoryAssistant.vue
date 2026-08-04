@@ -46,12 +46,22 @@
           <label>测试名称<input v-model.trim="testName" required placeholder="例如：创建商品" /></label>
           <label>目标名称<input v-model.trim="targetName" required placeholder="例如：mall-admin" /></label>
           <label>目标地址<input v-model.trim="targetUrl" required type="url" placeholder="http://localhost:8080" /></label>
+          <label>额外允许域名<input v-model.trim="allowedOrigins" placeholder="https://login.example.com, ..." /></label>
           <button :disabled="uiBusy">{{ uiBusy ? '正在打开...' : '打开并开始录制' }}</button>
         </form>
         <div v-else class="record-actions">
           <button @click="collectRecording" :disabled="uiBusy">同步步骤</button>
           <button class="danger" @click="stopRecording" :disabled="uiBusy">停止录制</button>
         </div>
+        <form v-if="activeRecording" class="checkpoint-form" @submit.prevent="addCheckpoint">
+          <select v-model="checkpointType">
+            <option value="assert-visible">文本可见</option><option value="assert-url">URL 包含</option>
+            <option value="assert-response">接口应答</option><option value="fixture">Fixture 请求</option>
+            <option value="upload">文件上传</option><option value="drag">拖拽</option>
+          </select>
+          <input v-model.trim="checkpointValue" required :placeholder="checkpointPlaceholder" />
+          <button :disabled="uiBusy">添加检查点</button>
+        </form>
         <p v-if="uiError" class="error">{{ uiError }}</p>
         <div class="recordings-heading"><b>录制记录</b><button @click="loadRecordings">刷新</button></div>
         <article v-for="recording in recordings" :key="recording.id" class="recording-entry">
@@ -81,8 +91,17 @@ export default {
   data: () => ({
     open: false, tab: 'chat', question: '', sending: false, auditLoading: false,
     messages: [], logs: [], targets: [], recordings: [], activeRecording: null,
-    targetName: '', targetUrl: '', testName: '', uiBusy: false, uiError: '', collectTimer: null,
+    targetName: '', targetUrl: '', testName: '', allowedOrigins: '', uiBusy: false, uiError: '', collectTimer: null,
+    checkpointType: 'assert-visible', checkpointValue: '',
   }),
+  computed: {
+    checkpointPlaceholder() {
+      if (this.checkpointType === 'assert-visible') return '期望出现的文本'
+      if (this.checkpointType === 'assert-url') return 'URL 中应包含的内容'
+      if (this.checkpointType === 'assert-response') return '/api/orders 200'
+      return 'JSON，例如 {"url":"..."}'
+    },
+  },
   beforeUnmount() { this.stopCollectTimer() },
   methods: {
     async send() {
@@ -127,7 +146,7 @@ export default {
       try {
         const target = await this.$api.request('/api/ui-test-targets', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repo: this.repoName, name: this.targetName, base_url: this.targetUrl, allowed_origins: [] }),
+          body: JSON.stringify({ repo: this.repoName, name: this.targetName, base_url: this.targetUrl, allowed_origins: this.allowedOrigins.split(',').map(item => item.trim()).filter(Boolean) }),
         })
         const existing = this.targets.findIndex(item => item.id === target.id)
         if (existing >= 0) this.targets.splice(existing, 1, target); else this.targets.push(target)
@@ -161,6 +180,28 @@ export default {
       } catch (error) { this.uiError = error.message || '停止录制失败' }
       finally { this.uiBusy = false }
     },
+    async addCheckpoint() {
+      if (!this.activeRecording) return
+      this.uiBusy = true; this.uiError = ''
+      try {
+        const checkpoint = this.buildCheckpoint()
+        this.activeRecording = await this.$api.request(`/api/ui-recordings/${this.activeRecording.id}/checkpoints`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(checkpoint),
+        })
+        this.checkpointValue = ''
+      } catch (error) { this.uiError = error.message || '添加检查点失败' }
+      finally { this.uiBusy = false }
+    },
+    buildCheckpoint() {
+      if (this.checkpointType === 'assert-visible') return { action: this.checkpointType, target: { strategy: 'text', value: this.checkpointValue }, payload: {} }
+      if (this.checkpointType === 'assert-url') return { action: this.checkpointType, target: {}, payload: { value: this.checkpointValue } }
+      if (this.checkpointType === 'assert-response') {
+        const [path, status = '200'] = this.checkpointValue.split(/\s+/)
+        return { action: this.checkpointType, target: {}, payload: { path, status: Number(status) } }
+      }
+      const value = JSON.parse(this.checkpointValue)
+      return { action: this.checkpointType, target: value.target || {}, payload: value }
+    },
     async runRecording(recording) {
       this.uiBusy = true; this.uiError = ''
       try {
@@ -190,6 +231,7 @@ header div { display: flex; flex-direction: column; gap: 3px; } header small { c
 .recorder-status { padding: 10px; border-radius: 6px; background: #f3f5f8; margin-bottom: 12px; } .recorder-status.recording { background: #fff0f2; color: #c52d47; }
 .target-form { display: grid; gap: 9px; padding-bottom: 14px; border-bottom: 1px solid #eee; } .target-form label { display: grid; gap: 4px; font-size: 12px; color: #666; } .target-form input { padding: 8px; border: 1px solid #ccc; border-radius: 5px; } .target-form button, .record-actions button, .recording-entry button { border: 0; border-radius: 5px; padding: 7px 11px; background: #e94560; color: #fff; cursor: pointer; }
 .record-actions { display: flex; gap: 8px; margin-bottom: 12px; } .record-actions .danger { background: #a82038; }
+.checkpoint-form { display: grid; grid-template-columns: 110px 1fr auto; gap: 6px; margin-bottom: 12px; } .checkpoint-form select, .checkpoint-form input { min-width: 0; padding: 7px; border: 1px solid #ccc; border-radius: 5px; } .checkpoint-form button { border: 0; border-radius: 5px; color: #fff; background: #596579; }
 .recordings-heading { display: flex; justify-content: space-between; margin: 14px 0 6px; } .recordings-heading button { border: 0; background: none; color: #e94560; cursor: pointer; }
 .recording-entry { padding: 11px 0; border-bottom: 1px solid #eee; } .recording-entry > div { display: flex; justify-content: space-between; gap: 8px; } .recording-entry span, .recording-entry small { color: #888; font-size: 11px; } .recording-entry p { margin: 5px 0; font-size: 12px; } .recording-entry pre { max-height: 160px; } .run-result { margin-left: 8px; } .run-result.passed { color: #16834b; } .run-result.failed { color: #a82038; }
 </style>

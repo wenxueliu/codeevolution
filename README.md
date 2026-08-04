@@ -185,6 +185,11 @@ WebBridge 回放；失败运行会保存截图。目标 origin 必须先登记�
 `<redacted>`。录制数据保存在 `~/.codehistory/ui-tests.db`，测试标签页不会被自动关闭。
 容器或只读 HOME 环境可通过 `CODEHISTORY_DATA_DIR` 指定可写的数据目录。
 
+Phase 2 会通过 CDP 为整页刷新预注册录制器，并用受限的 `window.name` 缓冲区承接白名单 origin
+之间尚未同步的操作；新标签页、文件选择和 HTML5 拖拽也会写入 DSL。检查点支持可见文本、URL、
+接口状态、同源 fixture 请求、上传和拖拽。敏感输入回放时从录制步骤指定的环境变量读取；上传文件
+必须位于 `CODEHISTORY_UI_UPLOAD_ROOT` 下。Fixture URL 和所有新标签页仍受目标 origin 白名单约束。
+
 ```bash
 # 静态检查
 .venv/bin/ruff check codehistory tests scripts/check_coverage.py

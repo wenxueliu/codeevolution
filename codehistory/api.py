@@ -54,6 +54,13 @@ class UiRecordingRequest(BaseModel):
     start_url: str
 
 
+class UiCheckpointRequest(BaseModel):
+    action: str
+    target: dict = Field(default_factory=dict)
+    payload: dict = Field(default_factory=dict)
+    page_url: str = ""
+
+
 def get_store(repo: str = "") -> EvolutionStore:
     dependencies = _request_dependencies.get()
     if factory := dependencies.get("store_factory"):
@@ -382,6 +389,16 @@ def stop_ui_recording(recording_id: int):
     try:
         return get_ui_recording_service().stop(recording_id)
     except (ValueError, WebBridgeError) as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/api/ui-recordings/{recording_id}/checkpoints")
+def add_ui_recording_checkpoint(recording_id: int, request: UiCheckpointRequest):
+    try:
+        return get_ui_recording_service().add_checkpoint(
+            recording_id, request.action, request.target, request.payload, request.page_url
+        )
+    except ValueError as error:
         raise HTTPException(400, str(error)) from error
 
 

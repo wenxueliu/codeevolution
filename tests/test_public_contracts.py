@@ -118,6 +118,7 @@ def test_openapi_path_snapshot():
         "/api/stats",
         "/api/ui-recordings",
         "/api/ui-recordings/start",
+        "/api/ui-recordings/{recording_id}/checkpoints",
         "/api/ui-recordings/{recording_id}/collect",
         "/api/ui-recordings/{recording_id}/run",
         "/api/ui-recordings/{recording_id}/stop",

@@ -141,6 +141,31 @@ class UiTestStore:
             )
             self.connection.commit()
 
+    def append_checkpoint(
+        self, recording_id: int, action: str, target: dict, payload: dict, page_url: str = ""
+    ) -> dict:
+        with self.lock:
+            sequence = self.connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM ui_recording_steps WHERE recording_id=?",
+                (recording_id,),
+            ).fetchone()[0]
+            self.connection.execute(
+                """INSERT INTO ui_recording_steps
+                   (recording_id, sequence, action, target, payload, page_url, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    recording_id,
+                    sequence,
+                    action,
+                    json.dumps(target, ensure_ascii=False),
+                    json.dumps(payload, ensure_ascii=False),
+                    page_url,
+                    int(time.time()),
+                ),
+            )
+            self.connection.commit()
+        return self.get_recording(recording_id)
+
     def finish_recording(self, recording_id: int, network_log: list) -> dict:
         with self.lock:
             self.connection.execute(

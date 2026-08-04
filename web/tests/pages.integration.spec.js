@@ -108,6 +108,26 @@ describe('repository and knowledge pages', () => {
     wrapper.unmount()
   })
 
+  it('builds and saves phase-two UI checkpoints', async () => {
+    const active = { id: 9, status: 'recording', steps: [] }
+    const { wrapper, api } = mountPage(RepositoryAssistant, {
+      '/api/ui-recordings/9/checkpoints': { ...active, steps: [{ action: 'assert-visible' }] },
+    }, { repoName: 'mall' })
+    wrapper.vm.activeRecording = active
+    wrapper.vm.checkpointType = 'assert-visible'; wrapper.vm.checkpointValue = '保存成功'
+    expect(wrapper.vm.checkpointPlaceholder).toContain('文本')
+    await wrapper.vm.addCheckpoint()
+    expect(api.request).toHaveBeenCalledWith('/api/ui-recordings/9/checkpoints', expect.objectContaining({ method: 'POST' }))
+    wrapper.vm.checkpointType = 'assert-url'; wrapper.vm.checkpointValue = '/orders'
+    expect(wrapper.vm.buildCheckpoint().payload.value).toBe('/orders')
+    wrapper.vm.checkpointType = 'assert-response'; wrapper.vm.checkpointValue = '/api/orders 201'
+    expect(wrapper.vm.buildCheckpoint().payload.status).toBe(201)
+    wrapper.vm.checkpointType = 'fixture'; wrapper.vm.checkpointValue = '{"url":"http://shop.test/reset","method":"POST"}'
+    expect(wrapper.vm.checkpointPlaceholder).toContain('JSON')
+    expect(wrapper.vm.buildCheckpoint().payload.method).toBe('POST')
+    wrapper.unmount()
+  })
+
   it('loads grouped repositories, navigates, cancels and confirms removal', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
     const { wrapper, api } = mountPage(Home, {

@@ -20,12 +20,18 @@ class BridgeStub:
             return {"type": "object", "value": result}
         if action == "evaluate" and "querySelectorAll('select')" in (args or {}).get("code", ""):
             return {"type": "boolean", "value": True}
+        if action == "evaluate" and "getBoundingClientRect" in (args or {}).get("code", ""):
+            return {"value": {"from": {"x": 1, "y": 2}, "to": {"x": 5, "y": 6}}}
+        if action == "evaluate" and "await fetch" in (args or {}).get("code", ""):
+            return {"value": {"ok": True, "status": 200}}
+        if action == "evaluate" and (args or {}).get("code") == "location.href":
+            return {"value": "http://shop.test/orders"}
         if action == "network" and (args or {}).get("cmd") == "list":
             return {"requests": [{"method": "POST", "url": "http://shop.test/api/orders?token=x", "status": 200}]}
         if action == "snapshot":
             if self.missing:
                 return {"tree": []}
-            return {"tree": [{"role": "button", "name": "保存", "ref": "@e9"}]}
+            return {"tree": [{"role": "button", "name": "保存", "ref": "@e9"}, {"role": "StaticText", "name": "Welcome"}]}
         if action == "screenshot":
             return {"path": "/tmp/failed.jpg"}
         return {"success": True}
@@ -43,6 +49,7 @@ def test_external_ui_recording_collects_steps_network_and_replays(tmp_path):
     service = UiRecordingService(store, bridge, locator_attempts=1)
     target = service.add_target("mall", "shop", "http://shop.test", [])
     recording = service.start("mall", target["id"], "创建商品", "http://shop.test/add")
+    assert any(action == "cdp" and args.get("method") == "Page.addScriptToEvaluateOnNewDocument" for _, action, args in bridge.calls)
     collected = service.collect(recording["id"])
     assert [step["action"] for step in collected["steps"]] == ["fill", "click"]
     assert collected["steps"][0]["payload"]["value"] == "ab"
@@ -54,20 +61,23 @@ def test_external_ui_recording_collects_steps_network_and_replays(tmp_path):
     assert run["screenshot_path"] == "/tmp/failed.jpg"
 
 
-def test_replay_passes_with_testid_selectors_and_native_selects(tmp_path):
+def test_replay_passes_with_testid_selectors_native_selects_and_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("UI_SECRET_PASSWORD", "correct-horse")
     store = UiTestStore(str(tmp_path / "ui.db"))
     bridge = BridgeStub([
         {"action": "click", "target": {"strategy": "testid", "value": "save"}, "url": "http://shop.test", "timestamp": 1000},
         {"action": "select", "target": {"strategy": "testid", "value": "status"}, "value": "active", "url": "http://shop.test", "timestamp": 1100},
+        {"action": "fill", "target": {"strategy": "testid", "value": "password"}, "value": "<redacted>", "secret": "UI_SECRET_PASSWORD", "url": "http://shop.test", "timestamp": 1200},
     ])
     service = UiRecordingService(store, bridge)
     target = service.add_target("mall", "shop", "http://shop.test", [])
     recording = service.start("mall", target["id"], "保存", "http://shop.test")
     service.stop(recording["id"])
     run = service.replay(recording["id"])
-    assert run["status"] == "passed"
+    assert run["status"] == "passed", run
     assert any(action == "click" and args["selector"] == '[data-testid="save"]' for _, action, args in bridge.calls)
     assert any(action == "evaluate" and "active" in args["code"] for _, action, args in bridge.calls)
+    assert any(action == "fill" and args.get("value") == "correct-horse" for _, action, args in bridge.calls)
 
 
 def test_target_origin_and_snapshot_matching_are_strict(tmp_path):
@@ -82,3 +92,29 @@ def test_target_origin_and_snapshot_matching_are_strict(tmp_path):
         raise AssertionError("foreign origins must be rejected")
     assert find_reference([{"role": "button", "name": "保存", "ref": "@e1"}], {"strategy": "role-name", "role": "button", "name": "保存"}) == "@e1"
     assert normalize_actions([]) == []
+
+
+def test_phase_two_checkpoints_fixtures_uploads_and_drags(tmp_path, monkeypatch):
+    upload = tmp_path / "uploads"
+    upload.mkdir()
+    (upload / "sample.txt").write_text("sample")
+    monkeypatch.setenv("CODEHISTORY_UI_UPLOAD_ROOT", str(upload))
+    store = UiTestStore(str(tmp_path / "ui.db"))
+    bridge = BridgeStub()
+    service = UiRecordingService(store, bridge, locator_attempts=1)
+    target = service.add_target("mall", "shop", "http://shop.test", ["https://login.test"])
+    recording = service.start("mall", target["id"], "advanced", "http://shop.test/orders")
+    for action, target_spec, payload in [
+        ("assert-visible", {"strategy": "text", "value": "Welcome"}, {}),
+        ("assert-url", {}, {"value": "/orders"}),
+        ("assert-response", {}, {"path": "/api/orders", "status": 200}),
+        ("fixture", {}, {"url": "http://shop.test/api/test/reset", "method": "POST", "body": {"ok": True}}),
+        ("upload", {"strategy": "testid", "value": "file"}, {"files": ["sample.txt"]}),
+        ("drag", {"strategy": "testid", "value": "source"}, {"destination": {"strategy": "testid", "value": "target"}}),
+    ]:
+        service.add_checkpoint(recording["id"], action, target_spec, payload)
+    service.stop(recording["id"])
+    run = service.replay(recording["id"])
+    assert run["status"] == "passed", run
+    assert any(action == "upload" for _, action, _ in bridge.calls)
+    assert sum(action == "cdp" and args.get("method") == "Input.dispatchMouseEvent" for _, action, args in bridge.calls) == 4
