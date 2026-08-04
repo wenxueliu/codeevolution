@@ -19,7 +19,7 @@ function mountPage(component, responses = {}, props = {}) {
   const api = {
     get: vi.fn(async (path) => typeof responses[path] === 'function' ? responses[path]() : responses[path] ?? {}),
     delete: vi.fn(async () => ({ ok: true })),
-    request: vi.fn(async (path) => typeof responses[path] === 'function' ? responses[path]() : responses[path] ?? {}),
+    request: vi.fn(async (path, options) => typeof responses[path] === 'function' ? responses[path](options) : responses[path] ?? {}),
   }
   const wrapper = mount(component, {
     props,
@@ -50,6 +50,62 @@ describe('repository and knowledge pages', () => {
     await wrapper.findAll('.tabs button')[1].trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('谁调用它')
+  })
+
+  it('registers an external target, records steps and replays through WebBridge APIs', async () => {
+    const recording = { id: 7, name: '创建商品', status: 'recording', start_url: 'http://shop.test/add', steps: [], network_log: [] }
+    const recorded = { ...recording, status: 'recorded', steps: [{ action: 'click', target: { role: 'button', name: '保存' } }], network_log: [{ path: '/api/product' }] }
+    const { wrapper, api } = mountPage(RepositoryAssistant, {
+      '/api/ui-test-targets': { targets: [] },
+      '/api/ui-recordings': { recordings: [] },
+      '/api/ui-recordings/start': recording,
+      '/api/ui-recordings/7/collect': recording,
+      '/api/ui-recordings/7/stop': recorded,
+      '/api/ui-recordings/7/run': { id: 2, status: 'passed' },
+    }, { repoName: 'mall' })
+    await wrapper.find('.assistant-toggle').trigger('click')
+    await wrapper.findAll('.tabs button')[2].trigger('click')
+    await flushPromises()
+    wrapper.vm.targetName = 'shop'; wrapper.vm.targetUrl = 'http://shop.test/add'; wrapper.vm.testName = '创建商品'
+    api.request.mockImplementationOnce(async () => ({ id: 3, name: 'shop', base_url: 'http://shop.test' }))
+    await wrapper.find('.target-form').trigger('submit')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/ui-recordings/start', expect.objectContaining({ method: 'POST' }))
+    wrapper.vm.activeRecording = recording
+    await wrapper.vm.stopRecording()
+    wrapper.vm.recordings = [recorded]
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.recording-entry button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('passed')
+    wrapper.unmount()
+  })
+
+  it('handles active recordings, target updates and recorder request failures', async () => {
+    const active = { id: 8, name: '编辑商品', status: 'recording', steps: [] }
+    const { wrapper, api } = mountPage(RepositoryAssistant, {
+      '/api/ui-test-targets': { targets: [{ id: 4, name: 'shop' }] },
+      '/api/ui-recordings': { recordings: [active] },
+      '/api/ui-recordings/start': active,
+    }, { repoName: 'mall' })
+    wrapper.vm.startCollectTimer = vi.fn()
+    await wrapper.vm.showUiTests()
+    expect(wrapper.vm.activeRecording.id).toBe(8)
+    wrapper.vm.targetName = 'shop'; wrapper.vm.targetUrl = 'http://shop.test'; wrapper.vm.testName = '编辑商品'
+    await wrapper.vm.startRecording()
+    expect(api.request).toHaveBeenCalledWith('/api/ui-test-targets', expect.objectContaining({ method: 'POST' }))
+
+    wrapper.vm.activeRecording = null
+    await wrapper.vm.collectRecording(); await wrapper.vm.stopRecording()
+    wrapper.vm.activeRecording = active
+    api.request.mockRejectedValue(new Error('bridge offline'))
+    await wrapper.vm.collectRecording()
+    expect(wrapper.vm.uiError).toContain('bridge offline')
+    await wrapper.vm.stopRecording()
+    expect(wrapper.vm.uiBusy).toBe(false)
+    await wrapper.vm.runRecording({ id: 8 })
+    expect(wrapper.vm.uiError).toContain('bridge offline')
+    wrapper.unmount()
   })
 
   it('loads grouped repositories, navigates, cancels and confirms removal', async () => {

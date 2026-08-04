@@ -116,6 +116,12 @@ def test_openapi_path_snapshot():
         "/api/repos/register",
         "/api/repos/{name}",
         "/api/stats",
+        "/api/ui-recordings",
+        "/api/ui-recordings/start",
+        "/api/ui-recordings/{recording_id}/collect",
+        "/api/ui-recordings/{recording_id}/run",
+        "/api/ui-recordings/{recording_id}/stop",
+        "/api/ui-test-targets",
     ]
 
 

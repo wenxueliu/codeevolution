@@ -1,0 +1,251 @@
+"""Record and replay external-system UI flows through Kimi WebBridge."""
+
+from __future__ import annotations
+
+import json
+import time
+from urllib.parse import urlsplit
+
+from ..infrastructure.webbridge_client import WebBridgeError
+
+RECORDER_SCRIPT = r"""(() => {
+  if (window.__codehistoryRecorder) return 'already-installed';
+  const restored = JSON.parse(sessionStorage.getItem('__codehistory_recording') || '[]');
+  const sensitive = /password|token|secret|authorization|cookie|api.?key/i;
+  const roleOf = el => el.getAttribute('role') || ({BUTTON:'button',A:'link',INPUT:'textbox',TEXTAREA:'textbox',SELECT:'combobox'})[el.tagName] || '';
+  const nameOf = el => (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.getAttribute('placeholder') || el.getAttribute('name') || '').trim().replace(/\s+/g,' ').slice(0,100);
+  const targetOf = source => {
+    const el = source.closest?.('[data-testid],button,a,input,textarea,select,[role]') || source;
+    if (el.dataset?.testid) return {strategy:'testid',value:el.dataset.testid};
+    return {strategy:'role-name',role:roleOf(el),name:nameOf(el)};
+  };
+  const state = {actions:restored};
+  const save = item => { state.actions.push({...item,url:location.href,timestamp:Date.now()}); sessionStorage.setItem('__codehistory_recording',JSON.stringify(state.actions)); };
+  const click = event => save({action:'click',target:targetOf(event.target)});
+  const change = event => { const el=event.target; save({action:el.tagName==='SELECT'?'select':'fill',target:targetOf(el),value:(el.type==='password'||sensitive.test(el.name||''))?'<redacted>':el.value}); };
+  const navigation = () => save({action:'navigate',target:{},value:location.href});
+  document.addEventListener('click',click,true); document.addEventListener('change',change,true);
+  window.addEventListener('hashchange',navigation); window.addEventListener('popstate',navigation);
+  for (const method of ['pushState','replaceState']) { const original=history[method]; history[method]=function(...args){ const result=original.apply(this,args); navigation(); return result; }; }
+  state.export = () => { const result=state.actions.splice(0); sessionStorage.setItem('__codehistory_recording','[]'); return result; };
+  state.stop = () => { document.removeEventListener('click',click,true); document.removeEventListener('change',change,true); window.removeEventListener('hashchange',navigation); window.removeEventListener('popstate',navigation); };
+  window.__codehistoryRecorder=state; return 'installed';
+})()"""
+
+EXPORT_SCRIPT = "(() => window.__codehistoryRecorder ? window.__codehistoryRecorder.export() : [])()"
+STOP_SCRIPT = "(() => { if(window.__codehistoryRecorder) window.__codehistoryRecorder.stop(); return true })()"
+
+
+class UiRecordingService:
+    def __init__(self, store, bridge, locator_attempts: int = 20):
+        self.store = store
+        self.bridge = bridge
+        self.locator_attempts = locator_attempts
+
+    def add_target(self, repository: str, name: str, base_url: str, origins: list[str]):
+        base_origin = origin(base_url)
+        allowed = list(dict.fromkeys([base_origin, *(origin(item) for item in origins)]))
+        return self.store.add_target(repository, name, base_url, allowed)
+
+    def start(self, repository: str, target_id: int, name: str, start_url: str):
+        target = self._target(target_id, repository)
+        self._validate_url(start_url, target)
+        session = f"ui-recording-{int(time.time() * 1000)}"
+        self.bridge.command(
+            session,
+            "navigate",
+            {"url": start_url, "newTab": True, "group_title": f"UI 录制：{name}"},
+        )
+        self.bridge.command(session, "network", {"cmd": "start"})
+        self.bridge.command(session, "evaluate", {"code": RECORDER_SCRIPT})
+        return self.store.create_recording(repository, target_id, name, start_url, session)
+
+    def collect(self, recording_id: int):
+        recording = self._recording(recording_id)
+        if recording["status"] != "recording":
+            return recording
+        data = self.bridge.command(
+            recording["webbridge_session"], "evaluate", {"code": EXPORT_SCRIPT}
+        )
+        actions = data.get("value") if isinstance(data, dict) else []
+        self.store.append_steps(recording_id, normalize_actions(actions or []))
+        return self.store.get_recording(recording_id)
+
+    def stop(self, recording_id: int):
+        recording = self.collect(recording_id)
+        session = recording["webbridge_session"]
+        try:
+            network = self.bridge.command(session, "network", {"cmd": "list", "filter": "/api/"})
+            network_log = sanitize_network(network)
+        except WebBridgeError:
+            network_log = []
+        self.bridge.command(session, "evaluate", {"code": STOP_SCRIPT})
+        try:
+            self.bridge.command(session, "network", {"cmd": "stop"})
+        except WebBridgeError:
+            pass
+        return self.store.finish_recording(recording_id, network_log)
+
+    def replay(self, recording_id: int):
+        recording = self._recording(recording_id)
+        target = self._target(recording["target_id"], recording["repository"])
+        self._validate_url(recording["start_url"], target)
+        session = f"ui-test-run-{recording_id}-{int(time.time())}"
+        run = self.store.create_run(recording_id, session)
+        started = time.perf_counter()
+        current = 0
+        try:
+            self.bridge.command(
+                session,
+                "navigate",
+                {
+                    "url": recording["start_url"],
+                    "newTab": True,
+                    "group_title": f"UI 测试：{recording['name']}",
+                },
+            )
+            for step in recording["steps"]:
+                current = step["sequence"]
+                self._execute(session, step, target)
+            return self.store.finish_run(
+                run["id"], "passed", current_step=current,
+                duration_ms=(time.perf_counter() - started) * 1000,
+            )
+        except Exception as error:
+            screenshot = ""
+            try:
+                screenshot = self.bridge.command(
+                    session, "screenshot", {"format": "jpeg", "quality": 85}
+                ).get("path", "")
+            except WebBridgeError:
+                pass
+            return self.store.finish_run(
+                run["id"], "failed", current_step=current,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                error=str(error), screenshot_path=screenshot,
+            )
+
+    def _execute(self, session: str, step: dict, target: dict):
+        action = step["action"]
+        payload = step["payload"]
+        if action == "navigate":
+            url = payload.get("value") or step["page_url"]
+            self._validate_url(url, target)
+            self.bridge.command(session, "navigate", {"url": url})
+            return
+        target_spec = step["target"]
+        if target_spec.get("strategy") == "testid":
+            escaped = str(target_spec.get("value", "")).replace("\\", "\\\\").replace('"', '\\"')
+            reference = f'[data-testid="{escaped}"]'
+        else:
+            reference = None
+            for _attempt in range(self.locator_attempts):
+                snapshot = self.bridge.command(session, "snapshot")
+                reference = find_reference(snapshot.get("tree", []), target_spec)
+                if reference:
+                    break
+                time.sleep(0.25)
+        if not reference:
+            raise AssertionError(f"Element not found: {step['target']}")
+        if action == "click":
+            self.bridge.command(session, "click", {"selector": reference})
+        elif action == "fill":
+            value = payload.get("value", "")
+            if value == "<redacted>":
+                raise ValueError("A recorded secret must be configured before replay")
+            self.bridge.command(session, "fill", {"selector": reference, "value": value})
+        elif action == "select":
+            value = payload.get("value", "")
+            code = select_script(target_spec, value)
+            changed = self.bridge.command(session, "evaluate", {"code": code}).get("value")
+            if not changed:
+                raise AssertionError(f"Select not found: {target_spec}")
+
+    def _target(self, target_id: int, repository: str):
+        target = self.store.get_target(target_id)
+        if not target or target["repository"] != repository:
+            raise ValueError("UI test target not found")
+        return target
+
+    def _recording(self, recording_id: int):
+        recording = self.store.get_recording(recording_id)
+        if not recording:
+            raise ValueError("UI recording not found")
+        return recording
+
+    @staticmethod
+    def _validate_url(url: str, target: dict):
+        if origin(url) not in target["allowed_origins"]:
+            raise ValueError("URL origin is not allowed for this UI test target")
+
+
+def origin(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("A valid HTTP(S) URL is required")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def normalize_actions(actions: list[dict]) -> list[dict]:
+    result = []
+    for action in actions:
+        if action.get("action") == "fill" and result and result[-1].get("action") == "fill" and result[-1].get("target") == action.get("target"):
+            result[-1] = action
+        else:
+            result.append(action)
+    return result
+
+
+def find_reference(tree, target: dict):
+    if isinstance(tree, list):
+        for item in tree:
+            if found := find_reference(item, target):
+                return found
+        return None
+    if not isinstance(tree, dict):
+        return None
+    if target.get("strategy") == "role-name":
+        if tree.get("role") == target.get("role") and normalized_name(tree.get("name", "")) == normalized_name(target.get("name", "")):
+            return tree.get("ref")
+    for child in tree.get("children", []):
+        if found := find_reference(child, target):
+            return found
+    return None
+
+
+def sanitize_network(value) -> list:
+    items = value.get("requests", value.get("items", [])) if isinstance(value, dict) else []
+    result = []
+    for item in items[:200]:
+        url = item.get("url", "")
+        parsed = urlsplit(url)
+        result.append(
+            {
+                "method": item.get("method", "GET"),
+                "path": parsed.path,
+                "status": item.get("status") or item.get("statusCode"),
+            }
+        )
+    return result
+
+
+def normalized_name(value: str) -> str:
+    return " ".join(str(value).split())
+
+
+def select_script(target: dict, value: str) -> str:
+    """Build a JSON-escaped selector script for native select elements."""
+    target_json = json.dumps(target, ensure_ascii=False)
+    value_json = json.dumps(value, ensure_ascii=False)
+    return f"""(() => {{
+      const target={target_json}, value={value_json};
+      const roleOf=el=>el.getAttribute('role')||({{SELECT:'combobox'}})[el.tagName]||'';
+      const nameOf=el=>(el.getAttribute('aria-label')||el.getAttribute('title')||el.innerText||el.getAttribute('name')||'').trim().replace(/\\s+/g,' ').slice(0,100);
+      const elements=[...document.querySelectorAll('select')];
+      const el=target.strategy==='testid'
+        ? document.querySelector(`[data-testid="${{CSS.escape(target.value)}}"]`)
+        : elements.find(item=>roleOf(item)===target.role&&nameOf(item)===target.name);
+      if(!el) return false; el.value=value;
+      el.dispatchEvent(new Event('input',{{bubbles:true}})); el.dispatchEvent(new Event('change',{{bubbles:true}}));
+      return true;
+    }})()"""

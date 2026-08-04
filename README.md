@@ -176,6 +176,15 @@ Windows PowerShell 使用 `py scripts\service.py start|stop|restart|status`。�
 不接受模型生成的任意 SQL。每次成功或失败的操作都会写入
 `~/.codehistory/assistant-audit.db`，可在对话框“审计日志”页或 `GET /api/audit-logs` 查看。
 
+### 外部系统 UI 录制（Phase 1）
+
+进入已注册服务后，在右侧“代码问答 → UI 测试”填写测试名称、目标名称和 HTTP(S) 地址。
+CodeHistory 通过本机 Kimi WebBridge 打开独立标签页并注入录制器，可采集点击、输入、原生下拉选择、
+SPA 路由和 `/api/` 网络请求。停止后生成稳定的 role/name 或 `data-testid` DSL，并可直接使用
+WebBridge 回放；失败运行会保存截图。目标 origin 必须先登记，密码、Token 等敏感输入只记录为
+`<redacted>`。录制数据保存在 `~/.codehistory/ui-tests.db`，测试标签页不会被自动关闭。
+容器或只读 HOME 环境可通过 `CODEHISTORY_DATA_DIR` 指定可写的数据目录。
+
 ```bash
 # 静态检查
 .venv/bin/ruff check codehistory tests scripts/check_coverage.py

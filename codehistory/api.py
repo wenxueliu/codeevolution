@@ -1,5 +1,6 @@
 """FastAPI backend for the CodeHistory web dashboard — multi-repo support."""
 
+import os
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -12,7 +13,10 @@ from pydantic import BaseModel, Field
 from .application.chat_service import ChatService
 from .application.evolution_service import EvolutionQueryService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
+from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
+from .infrastructure.ui_test_store import UiTestStore
+from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
 from .registry import get_repo, list_repos, register_repo, repository_members, unregister_repo
 from .store import EvolutionStore
 
@@ -27,12 +31,27 @@ app.add_middleware(
 
 _stores: dict[str, EvolutionStore] = {}
 _audit_store: AuditStore | None = None
+_ui_test_store: UiTestStore | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codehistory_dependencies", default={})
 
 
 class ChatRequest(BaseModel):
     repo: str = ""
     question: str = Field(min_length=1, max_length=2000)
+
+
+class UiTargetRequest(BaseModel):
+    repo: str
+    name: str = Field(min_length=1, max_length=100)
+    base_url: str
+    allowed_origins: list[str] = Field(default_factory=list)
+
+
+class UiRecordingRequest(BaseModel):
+    repo: str
+    target_id: int
+    name: str = Field(min_length=1, max_length=150)
+    start_url: str
 
 
 def get_store(repo: str = "") -> EvolutionStore:
@@ -73,7 +92,7 @@ def get_audit_store() -> AuditStore:
     if injected := dependencies.get("audit_store"):
         return injected
     if _audit_store is None:
-        _audit_store = AuditStore(str(Path.home() / ".codehistory" / "assistant-audit.db"))
+        _audit_store = AuditStore(str(codehistory_data_dir() / "assistant-audit.db"))
     return _audit_store
 
 
@@ -96,6 +115,21 @@ def get_chat_service() -> ChatService:
         return repository_members(entry)
 
     return ChatService(get_audit_store(), resolve_members, get_store, llm_client)
+
+
+def get_ui_recording_service() -> UiRecordingService:
+    global _ui_test_store
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("ui_recording_service"):
+        return injected
+    if _ui_test_store is None:
+        _ui_test_store = UiTestStore(str(codehistory_data_dir() / "ui-tests.db"))
+    bridge = dependencies.get("webbridge_client") or WebBridgeClient()
+    return UiRecordingService(_ui_test_store, bridge)
+
+
+def codehistory_data_dir() -> Path:
+    return Path(os.environ.get("CODEHISTORY_DATA_DIR", str(Path.home() / ".codehistory")))
 
 
 def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
@@ -310,12 +344,66 @@ def list_assistant_audit_logs(repo: str = Query(""), limit: int = Query(50, ge=1
     return {"logs": get_audit_store().list(repo, limit)}
 
 
+@app.post("/api/ui-test-targets")
+def create_ui_test_target(request: UiTargetRequest):
+    try:
+        return get_ui_recording_service().add_target(
+            request.repo, request.name, request.base_url, request.allowed_origins
+        )
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.get("/api/ui-test-targets")
+def list_ui_test_targets(repo: str = Query(...)):
+    return {"targets": get_ui_recording_service().store.list_targets(repo)}
+
+
+@app.post("/api/ui-recordings/start")
+def start_ui_recording(request: UiRecordingRequest):
+    try:
+        return get_ui_recording_service().start(
+            request.repo, request.target_id, request.name, request.start_url
+        )
+    except (ValueError, WebBridgeError) as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/api/ui-recordings/{recording_id}/collect")
+def collect_ui_recording(recording_id: int):
+    try:
+        return get_ui_recording_service().collect(recording_id)
+    except (ValueError, WebBridgeError) as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/api/ui-recordings/{recording_id}/stop")
+def stop_ui_recording(recording_id: int):
+    try:
+        return get_ui_recording_service().stop(recording_id)
+    except (ValueError, WebBridgeError) as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.get("/api/ui-recordings")
+def list_ui_recordings(repo: str = Query(...)):
+    return {"recordings": get_ui_recording_service().store.list_recordings(repo)}
+
+
+@app.post("/api/ui-recordings/{recording_id}/run")
+def run_ui_recording(recording_id: int):
+    try:
+        return get_ui_recording_service().replay(recording_id)
+    except (ValueError, WebBridgeError) as error:
+        raise HTTPException(400, str(error)) from error
+
+
 _route_app = app
 
 
 @asynccontextmanager
 async def _lifespan(application):
-    global _audit_store
+    global _audit_store, _ui_test_store
     yield
     for store in list(_stores.values()):
         store.close()
@@ -323,6 +411,9 @@ async def _lifespan(application):
     if _audit_store is not None:
         _audit_store.close()
         _audit_store = None
+    if _ui_test_store is not None:
+        _ui_test_store.close()
+        _ui_test_store = None
 
 
 def create_app(dependencies: dict | None = None) -> FastAPI:
