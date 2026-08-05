@@ -51,6 +51,8 @@ class RuntimeTopologyValidator:
     def _aggregate(spans: list[dict]) -> list[dict]:
         groups: dict[tuple[str, str, str, str], dict] = {}
         for span in spans:
+            if span.get("kind", "span") != "span":
+                continue
             key = (
                 str(span.get("source_service") or ""),
                 str(span.get("target_service") or ""),

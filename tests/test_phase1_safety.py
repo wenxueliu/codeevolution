@@ -18,6 +18,14 @@ def _commit(store: EvolutionStore, hash_: str) -> int:
     return store.insert_commit(hash_, None, 1, "tester", "test: fixture")
 
 
+def test_commit_hash_lookup_stays_behind_store_boundary(tmp_path):
+    store = EvolutionStore(str(tmp_path / "evolution.db"))
+    commit_id = _commit(store, "abc123")
+
+    assert store.get_commit_hash(commit_id) == "abc123"
+    assert store.get_commit_hash(commit_id + 1) is None
+
+
 def _feature(store: EvolutionStore, commit_id: int) -> int:
     return store.insert_feature("api.py::handler", "handler", "http", "handler", commit_id)
 

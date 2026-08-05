@@ -100,6 +100,10 @@ class EvolutionQueryService:
         feature.update(timeline=timeline, event_count=len(timeline))
         snapshot = self.store.get_latest_snapshot(feature["id"])
         feature.update(snapshot or {"call_chain": []})
+        if hasattr(self.store, "list_runtime_observations"):
+            feature["runtime_observations"] = self.store.list_runtime_observations(
+                feature_id=feature["id"]
+            )
         return feature
 
     def capabilities(self) -> list[dict]:

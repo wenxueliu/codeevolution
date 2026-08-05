@@ -3,6 +3,7 @@ from .evolution_command_service import EvolutionCommandService
 from .evolution_service import EvolutionQueryService
 from .knowledge_service import KnowledgeService
 from .repository_service import RepositoryService
+from .runtime_telemetry_service import RuntimeTelemetryService
 from .topology_service import TopologyService
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "EvolutionQueryService",
     "KnowledgeService",
     "RepositoryService",
+    "RuntimeTelemetryService",
     "TopologyService",
 ]

@@ -10,6 +10,7 @@ import Home from '../src/pages/Home.vue'
 import Knowledge from '../src/pages/Knowledge.vue'
 import Refactoring from '../src/pages/Refactoring.vue'
 import RepositoryAssistant from '../src/components/RepositoryAssistant.vue'
+import LLMSettings from '../src/components/LLMSettings.vue'
 
 const { mermaidRun } = vi.hoisted(() => ({ mermaidRun: vi.fn() }))
 vi.mock('mermaid', () => ({ default: { initialize: vi.fn(), run: mermaidRun } }))
@@ -36,6 +37,23 @@ function mountPage(component, responses = {}, props = {}) {
 afterEach(() => vi.restoreAllMocks())
 
 describe('repository and knowledge pages', () => {
+  it('loads, saves and tests page-managed LLM configuration without exposing a key', async () => {
+    const { wrapper, api } = mountPage(LLMSettings, {
+      '/api/llm-config': { available: true, source: 'page', model: 'openai/test', api_base: 'https://llm.test/v1', api_key_configured: true, stored_configured: true },
+      '/api/llm-config/test': { ok: true, message: '连接成功', model: 'openai/test' },
+    }, { open: true })
+    await flushPromises()
+    expect(wrapper.text()).toContain('页面配置')
+    expect(wrapper.find('input[type="password"]').element.value).toBe('')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/llm-config', expect.objectContaining({ method: 'PUT' }))
+    await wrapper.find('.secondary').trigger('click')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/llm-config/test', { method: 'POST' })
+    expect(wrapper.text()).toContain('连接成功')
+  })
+
   it('shows refactoring scope, advice and test protection details', async () => {
     const plan = {
       repository_member: 'mall',
@@ -369,7 +387,7 @@ describe('evolution dashboard pages', () => {
     expect(wrapper.vm.explainError).toContain('offline')
     api.get.mockResolvedValueOnce({ available: false })
     await wrapper.vm.loadExplanation()
-    expect(wrapper.vm.explainError).toContain('OPENAI_API_KEY')
+    expect(wrapper.vm.explainError).toContain('LLM 设置')
     api.get.mockResolvedValueOnce({ available: true })
     await wrapper.vm.loadExplanation()
     expect(wrapper.vm.explainError).toBe('生成失败')

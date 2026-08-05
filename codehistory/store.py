@@ -56,12 +56,32 @@ CREATE TABLE IF NOT EXISTS evolution_events (
     UNIQUE(feature_id, commit_id, event_type)
 );
 
+CREATE TABLE IF NOT EXISTS runtime_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    timestamp_ns INTEGER,
+    trace_id TEXT,
+    span_id TEXT,
+    source_service TEXT DEFAULT '',
+    target_service TEXT DEFAULT '',
+    method TEXT DEFAULT '',
+    path TEXT DEFAULT '',
+    latency_ms REAL DEFAULT 0,
+    severity TEXT DEFAULT '',
+    message TEXT DEFAULT '',
+    error_type TEXT DEFAULT '',
+    attributes TEXT DEFAULT '{}',
+    feature_id INTEGER REFERENCES features(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_commits_hash ON commits(hash);
 CREATE INDEX IF NOT EXISTS idx_commits_timestamp ON commits(timestamp);
 CREATE INDEX IF NOT EXISTS idx_features_stable_id ON features(stable_id);
 CREATE INDEX IF NOT EXISTS idx_features_status ON features(status);
 CREATE INDEX IF NOT EXISTS idx_snapshots_feature ON feature_snapshots(feature_id, commit_id);
 CREATE INDEX IF NOT EXISTS idx_events_feature ON evolution_events(feature_id, commit_id);
+CREATE INDEX IF NOT EXISTS idx_runtime_trace ON runtime_observations(trace_id);
+CREATE INDEX IF NOT EXISTS idx_runtime_feature ON runtime_observations(feature_id, timestamp_ns);
 """
 
 
@@ -171,9 +191,75 @@ class EvolutionStore:
         row = self.conn.execute("SELECT id FROM commits ORDER BY id DESC LIMIT 1").fetchone()
         return row[0] if row else None
 
+    def get_commit_hash(self, commit_id: int) -> str | None:
+        """Return a commit hash without exposing the SQLite connection to callers."""
+        row = self.conn.execute("SELECT hash FROM commits WHERE id = ?", (commit_id,)).fetchone()
+        return row[0] if row else None
+
     def get_oldest_commit_id(self) -> int | None:
         row = self.conn.execute("SELECT id FROM commits ORDER BY id ASC LIMIT 1").fetchone()
         return row[0] if row else None
+
+    # --- runtime telemetry ---
+
+    def insert_runtime_observation(self, observation: dict, feature_id: int | None = None) -> int:
+        """Persist one normalized trace, log, or error observation."""
+        cur = self.conn.execute(
+            """INSERT INTO runtime_observations
+               (kind, timestamp_ns, trace_id, span_id, source_service, target_service,
+                method, path, latency_ms, severity, message, error_type, attributes, feature_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                observation["kind"],
+                observation.get("timestamp_ns"),
+                observation.get("trace_id"),
+                observation.get("span_id"),
+                observation.get("source_service", ""),
+                observation.get("target_service", ""),
+                observation.get("method", ""),
+                observation.get("path", ""),
+                float(observation.get("latency_ms") or 0),
+                observation.get("severity", ""),
+                observation.get("message", ""),
+                observation.get("error_type", ""),
+                json.dumps(observation.get("attributes") or {}, sort_keys=True),
+                feature_id,
+            ),
+        )
+        self._commit_if_needed()
+        return cur.lastrowid
+
+    def list_runtime_observations(
+        self, feature_id: int | None = None, kind: str = "", limit: int = 100
+    ) -> list[dict]:
+        clauses, params = [], []
+        if feature_id is not None:
+            clauses.append("feature_id = ?")
+            params.append(feature_id)
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        rows = self.conn.execute(
+            f"""SELECT id, kind, timestamp_ns, trace_id, span_id, source_service,
+                       target_service, method, path, latency_ms, severity, message,
+                       error_type, attributes, feature_id
+                FROM runtime_observations {where}
+                ORDER BY timestamp_ns DESC, id DESC LIMIT ?""",
+            params,
+        ).fetchall()
+        keys = (
+            "id", "kind", "timestamp_ns", "trace_id", "span_id", "source_service",
+            "target_service", "method", "path", "latency_ms", "severity", "message",
+            "error_type", "attributes", "feature_id",
+        )
+        result = []
+        for row in rows:
+            item = dict(zip(keys, row))
+            item["attributes"] = json.loads(item["attributes"] or "{}")
+            result.append(item)
+        return result
 
     # --- features ---
 

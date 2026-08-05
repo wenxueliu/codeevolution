@@ -242,13 +242,7 @@ class EvolutionEngine:
         Uses a disposable worktree and leaves the user's working tree untouched.
         """
         last_commit = self.store.get_latest_commit_id()
-        start_from = None
-        if last_commit:
-            last_hash_row = self.store.conn.execute(
-                "SELECT hash FROM commits WHERE id = ?", (last_commit,)
-            ).fetchone()
-            if last_hash_row:
-                start_from = last_hash_row[0]
+        start_from = self.store.get_commit_hash(last_commit) if last_commit else None
 
         new_count = 0
         with self._isolated_worktree():

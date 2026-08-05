@@ -10,11 +10,29 @@
 - P0 已完成：知识算法已拆分，旧模块为兼容 facade；CLI、API、MCP 已统一经过 application service；Evolution 查询已下推 Store repository；CodeGraph SQL 已全部收敛到 typed SQLite adapter；核心与全量覆盖率门禁及 facade 深比较测试已建立。
 - P1 已完成：三服务 E2E fixture 覆盖 HTTP、MQ、gRPC、DB、循环、菱形及未知目标；Web 已使用统一 API client、`useAsync` 和错误模型；`create_app(dependencies)` 支持 service/store 注入；CI 已包含 lint、双覆盖率、Python build、Web test/build 和性能门禁。
 - P2 已完成的静态能力：HTTP/MQ/gRPC/DB flow 均保存匹配规则、证据、置信度和规则版本；框架检测规则可配置；L2/L3 feature matcher 已实现；Topology 支持按 CodeGraph DB 指纹增量复用；大型仓库 benchmark 已建立。
-- P2 已建立但仍需部署侧接入：运行时拓扑校验器可聚合标准化 OpenTelemetry span，输出 confirmed、static-only、runtime-only、调用次数和平均延迟；实际 OTLP collector/exporter adapter 仍需根据部署环境接入。
+- P2 已完成：运行时拓扑校验器可聚合标准化 OpenTelemetry span，输出 confirmed、static-only、runtime-only、调用次数和平均延迟；OTLP JSON adapter 可导入 trace、log 和 error，并关联静态 feature。
 - 已实现：L2/L3 匹配触发的 `RENAMED`、`SPLIT`、`MERGED` 显式演进事件。
-- 尚未实现：外部 trace/log/error 的 collector adapter 与持久化关联；它属于部署相关产品增强，不再阻塞本次架构迁移闭环。
+- 已实现：外部 trace/log/error 的 OTLP JSON collector adapter、SQLite 持久化、显式 feature ID/HTTP 路径关联，以及按 trace ID 关联日志和错误。
 
 当前自动门禁实测：核心覆盖率 60.95%，全量覆盖率 46.76%；大型查询 benchmark 在 2,000 features 下执行 2 条 SELECT，峰值内存约 0.10 MiB。
+
+## 待办清单（代码复核，2026-08-01）
+
+以下清单以当前代码与测试为准，后续章节中的历史“遗漏”描述不再作为未完成状态使用：
+
+- [x] P0：移除 `engine.py` 对 `EvolutionStore.conn` 的直接访问，由 Store repository 提供 commit hash 查询。
+- [x] P2：实现标准 OTLP JSON trace/log/error collector，将部署侧遥测输入标准化为运行时观测。
+- [x] P2：持久化运行时观测，并通过显式 feature 属性或 HTTP 入口签名关联到 feature timeline。
+- [x] P2：让 runtime topology 校验可直接消费 collector 输出，并为 collector、持久化和关联建立测试。
+- [ ] 门禁环境修复：安装 `ruff`，并对齐 FastAPI/Starlette 版本后恢复完整 lint、全量测试与覆盖率门禁。
+
+本轮验证：新增及 Store 边界定向测试 14 项通过；排除因本机 FastAPI/Starlette 版本不兼容而
+无法收集的两个 API 测试文件后，其余 Python 测试 53 项通过；Web 测试 1 项和生产构建通过。
+当前环境未安装 `ruff`，因此 lint 未执行。以上均为环境门禁问题，不是本轮测试失败。
+
+复核结论：原 3.1–3.8、4.1、4.3–4.5 所述迁移均已有对应实现与测试；4.2 中的内存态
+span 聚合和拓扑校验已实现，缺少的是部署输入 adapter 及持久化关联。另发现上述 P0 Store
+边界泄漏，因此一并纳入本轮修复。
 
 ## 1. 总体结论
 

@@ -197,6 +197,10 @@ Windows PowerShell 使用 `py scripts\service.py start|stop|restart|status`。�
 不接受模型生成的任意 SQL。每次成功或失败的操作都会写入
 `~/.codehistory/assistant-audit.db`，可在对话框“审计日志”页或 `GET /api/audit-logs` 查看。
 
+也可以通过页面顶部“LLM 设置”配置模型、API Base 和 API Key，并在保存后测试连接。页面配置默认
+保存在 `~/.codehistory/llm-config.json`（或 `CODEHISTORY_DATA_DIR` 指定的目录），文件权限限制为仅当前
+用户可读写，API 不会回传密钥。环境变量的优先级高于页面配置，适合部署环境统一管理凭据。
+
 ### 外部系统 UI 录制（Phase 1）
 
 进入已注册服务后，在右侧“代码问答 → UI 测试”填写测试名称、目标名称和 HTTP(S) 地址。

@@ -1,5 +1,6 @@
 """FastAPI backend for the CodeHistory web dashboard — multi-repo support."""
 
+import json
 import os
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -16,6 +17,7 @@ from .application.knowledge_service import GroupedKnowledgeService, KnowledgeSer
 from .application.refactoring_service import RefactoringPlanningService
 from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
+from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
@@ -68,6 +70,12 @@ class RefactoringTechniqueRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     objective: str = Field(min_length=1, max_length=500)
     checks: list[str] = Field(min_length=1, max_length=30)
+
+
+class LLMConfigRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+    api_base: str = Field(default="", max_length=1000)
+    api_key: str | None = Field(default=None, max_length=4000)
 
 
 def get_store(repo: str = "") -> EvolutionStore:
@@ -146,6 +154,13 @@ def get_ui_recording_service() -> UiRecordingService:
 
 def codehistory_data_dir() -> Path:
     return Path(os.environ.get("CODEHISTORY_DATA_DIR", str(Path.home() / ".codehistory")))
+
+
+def get_llm_config_store() -> LLMConfigStore:
+    dependencies = _request_dependencies.get()
+    return dependencies.get("llm_config_store") or LLMConfigStore(
+        codehistory_data_dir() / "llm-config.json"
+    )
 
 
 def get_refactoring_member(repo: str, member: str = "") -> tuple[str, str]:
@@ -386,9 +401,66 @@ def get_capabilities(repo: str = Query("")):
 
 @app.get("/api/llm-status")
 def llm_status():
-    from .llm import is_available
+    from .semantic.config import get_llm_config_status
 
-    return {"available": is_available()}
+    return get_llm_config_status()
+
+
+@app.get("/api/llm-config")
+def get_llm_settings():
+    from .semantic.config import get_environment_llm_config
+
+    environment = get_environment_llm_config()
+    stored = get_llm_config_store().load()
+    effective = environment or stored
+    return {
+        "available": effective is not None,
+        "source": "environment" if environment else ("page" if stored else "none"),
+        "model": effective.get("model", "") if effective else "",
+        "api_base": effective.get("api_base", "") if effective else "",
+        "api_key_configured": bool(effective and effective.get("api_key")),
+        "stored_configured": stored is not None,
+        "environment_override": environment is not None,
+    }
+
+
+@app.put("/api/llm-config")
+def save_llm_settings(request: LLMConfigRequest):
+    store = get_llm_config_store()
+    current = store.load() or {}
+    api_key = (request.api_key or "").strip() or current.get("api_key", "")
+    try:
+        store.save(
+            {"model": request.model, "api_base": request.api_base, "api_key": api_key}
+        )
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return {"ok": True, "api_key_configured": True}
+
+
+@app.delete("/api/llm-config")
+def delete_llm_settings():
+    return {"ok": True, "deleted": get_llm_config_store().delete()}
+
+
+@app.post("/api/llm-config/test")
+def test_llm_settings():
+    from .semantic.client import LiteLLMClient
+    from .semantic.config import get_llm_config
+
+    config = get_llm_config()
+    if not config:
+        raise HTTPException(409, "请先保存 LLM 配置")
+    content = LiteLLMClient(config).complete("Reply with exactly: OK", 8, 0)
+    if not content:
+        raise HTTPException(502, "LLM 未返回内容，请检查模型与服务地址")
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict) and parsed.get("error"):
+        raise HTTPException(502, f"连接失败：{parsed['error']}")
+    return {"ok": True, "message": "连接成功", "model": config["model"]}
 
 
 @app.get("/api/event-stats")

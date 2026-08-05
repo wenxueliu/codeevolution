@@ -112,6 +112,8 @@ def test_openapi_path_snapshot():
         "/api/features/{stable_id}",
         "/api/features/{stable_id}/explain",
         "/api/knowledge",
+        "/api/llm-config",
+        "/api/llm-config/test",
         "/api/llm-status",
         "/api/refactor-plans",
         "/api/refactor-techniques",

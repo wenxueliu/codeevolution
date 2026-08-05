@@ -222,7 +222,7 @@ export default {
         if (d.available && d.explanation) {
           this.explanation = d.explanation
         } else if (!d.available) {
-          this.explainError = '需要配置 OPENAI_API_KEY 环境变量'
+          this.explainError = '请先通过页面顶部“LLM 设置”或环境变量配置模型'
         } else {
           this.explainError = '生成失败'
         }

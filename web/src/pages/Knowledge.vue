@@ -17,7 +17,7 @@
     </div>
 
     <div class="notice" v-if="!llmLoaded">
-      业务描述、业务规则、错误目录和状态机需要 LLM，仅在点击抽取时调用。
+      业务描述、业务规则、错误目录和状态机需要 LLM，可通过页面顶部“LLM 设置”配置，仅在点击抽取时调用。
     </div>
 
     <div class="summary-grid" v-if="report">
