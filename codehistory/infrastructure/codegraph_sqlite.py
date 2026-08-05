@@ -641,6 +641,25 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
         by_id = {row["id"]: row for row in rows}
         return [by_id[node] for node in node_ids if node in by_id]
 
+    def api_call_chain_mermaid(self, node_id: str, limit: int = 30) -> str:
+        """Generate Mermaid flowchart DSL for the API call chain."""
+        edges = self.get_call_chain(node_id, max_depth=8)[:limit]
+        if not edges:
+            return "graph TD\n    N0[\"No downstream calls\"]"
+
+        alias_map: dict[str, str] = {}
+        lines = ["graph TD"]
+
+        for edge in edges:
+            for name in (edge["from"], edge["to"]):
+                if name not in alias_map:
+                    alias_map[name] = f"N{len(alias_map)}"
+                    safe = name.replace('"', "'").replace("\n", " ")
+                    lines.append(f"    {alias_map[name]}[\"{safe}\"]")
+            lines.append(f"    {alias_map[edge['from']]} --> {alias_map[edge['to']]}")
+
+        return "\n".join(lines)
+
     def type_schema(self, type_name: str) -> dict[str, Any] | None:
         rows = self.query(
             """SELECT id, name, qualified_name, file_path, kind, decorators

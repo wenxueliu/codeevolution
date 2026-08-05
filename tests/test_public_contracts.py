@@ -46,6 +46,7 @@ def test_legacy_dto_contracts_are_stable():
                 "request_body",
                 "response_body",
                 "call_chain",
+                "call_chain_mermaid",
                 "frontend_callers",
         ],
         cross_repo.UnifiedTopology: [

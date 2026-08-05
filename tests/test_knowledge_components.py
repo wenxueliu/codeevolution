@@ -42,6 +42,9 @@ class QueryStub:
     def api_call_chain(self, _node_id):
         return [{"id": "handler-1", "name": "get_user_by_id"}, {"id": "service", "name": "find_user"}]
 
+    def api_call_chain_mermaid(self, _node_id):
+        return "graph TD\n    N0[\"get_user_by_id\"]\n    N1[\"find_user\"]\n    N0 --> N1"
+
     def type_schema(self, type_name):
         return {"name": type_name, "fields": [{"name": "id", "signature": "Long id"}]}
 

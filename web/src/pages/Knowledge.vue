@@ -1,6 +1,6 @@
 <template>
   <div class="knowledge">
-    <UiState v-if="error" kind="error" title="知识提取失败" :message="error.message" action-label="重试" @action="load(false)" />
+    <UiState v-if="error" kind="error" title="知识提取失败" :message="error.message" action-label="重试" dismiss-label="关闭" @action="load(false)" @dismiss="error = null" />
     <UiState v-if="loading" kind="loading" title="正在从 CodeGraph 提取结构知识" message="大型仓库可能需要等待片刻，完成前可以继续浏览当前结果。" />
 
     <div class="page-header">
@@ -59,33 +59,39 @@
             <span>共 {{ filteredEndpoints.length }} 条</span>
           </div>
           <div class="table-wrap"><table><thead><tr><th>方法</th><th>路径</th><th>处理函数</th><th>请求/应答</th><th>前端调用</th></tr></thead><tbody>
-            <tr v-for="(item, index) in visibleEndpoints" :key="`${item.repository || ''}-${item.method}-${item.path}-${index}`" class="clickable" tabindex="0" @click="selectedEndpoint = item" @keydown.enter="selectedEndpoint = item">
-              <td><span class="method">{{ item.method }}</span></td><td><code>{{ item.path }}</code></td><td>{{ item.handler || '-' }}</td>
-              <td>{{ item.request_body?.type || '无请求体' }} → {{ item.response_body?.type || item.return_type || '未知' }}</td>
-              <td>{{ item.frontend_callers?.length || 0 }} 处</td>
-            </tr>
+            <template v-for="(item, index) in visibleEndpoints" :key="`${item.repository || ''}-${item.method}-${item.path}-${index}`">
+              <tr class="clickable" :class="{ expanded: expandedKeys.has(endpointKey(item, index)) }" tabindex="0" @click="toggleEndpoint(item, index)" @keydown.enter="toggleEndpoint(item, index)">
+                <td><span class="method">{{ item.method }}</span></td><td><code>{{ item.path }}</code></td><td>{{ item.handler || '-' }}</td>
+                <td>{{ item.request_body?.type || '无请求体' }} → {{ item.response_body?.type || item.return_type || '未知' }}</td>
+                <td>{{ item.frontend_callers?.length || 0 }} 处</td>
+              </tr>
+              <tr v-if="expandedKeys.has(endpointKey(item, index))" class="expand-detail">
+                <td colspan="5">
+                  <div class="contract-grid">
+                    <div><h4>请求头</h4><pre>{{ formatJson(item.request_headers || []) }}</pre></div>
+                    <div><h4>路径/查询参数</h4><pre>{{ formatJson({ path: item.path_params || [], query: item.query_params || [] }) }}</pre></div>
+                    <div><h4>请求体</h4><pre>{{ formatJson(item.request_body) }}</pre></div>
+                    <div><h4>应答体</h4><pre>{{ formatJson(item.response_body) }}</pre></div>
+                  </div>
+                  <h4>后端调用链</h4>
+                  <div v-if="item.call_chain_mermaid" class="mermaid-wrap">
+                    <pre class="mermaid">{{ item.call_chain_mermaid }}</pre>
+                  </div>
+                  <div v-else class="call-chain"><span v-for="(node, idx) in item.call_chain || []" :key="node.id">{{ node.name }}<b v-if="idx < item.call_chain.length - 1">→</b></span></div>
+                  <h4>前端调用位置</h4>
+                  <div class="frontend-call" v-for="call in item.frontend_callers || []" :key="call.definition_file + call.function">
+                    <b>{{ call.function }}</b> · <code>{{ call.definition_file }}:{{ call.definition_line }}</code>
+                    <div v-for="site in call.call_sites" :key="site.file + site.line"><code>{{ site.file }}:{{ site.line }}</code></div>
+                  </div>
+                  <p class="muted" v-if="!item.frontend_callers?.length">未匹配到前端调用。</p>
+                </td>
+              </tr>
+            </template>
           </tbody></table></div>
           <div class="pagination" v-if="endpointPages > 1">
             <button :disabled="endpointPage === 1" @click="endpointPage--">上一页</button>
             <span>第 {{ endpointPage }} / {{ endpointPages }} 页</span>
             <button :disabled="endpointPage === endpointPages" @click="endpointPage++">下一页</button>
-          </div>
-          <div class="api-detail" v-if="selectedEndpoint">
-            <div class="detail-heading"><h3>{{ selectedEndpoint.method }} {{ selectedEndpoint.path }}</h3><button @click="selectedEndpoint = null">关闭</button></div>
-            <div class="contract-grid">
-              <div><h4>请求头</h4><pre>{{ formatJson(selectedEndpoint.request_headers || []) }}</pre></div>
-              <div><h4>路径/查询参数</h4><pre>{{ formatJson({ path: selectedEndpoint.path_params || [], query: selectedEndpoint.query_params || [] }) }}</pre></div>
-              <div><h4>请求体</h4><pre>{{ formatJson(selectedEndpoint.request_body) }}</pre></div>
-              <div><h4>应答体</h4><pre>{{ formatJson(selectedEndpoint.response_body) }}</pre></div>
-            </div>
-            <h4>后端调用链</h4>
-            <div class="call-chain"><span v-for="(node, index) in selectedEndpoint.call_chain || []" :key="node.id">{{ node.name }}<b v-if="index < selectedEndpoint.call_chain.length - 1">→</b></span></div>
-            <h4>前端调用位置</h4>
-            <div class="frontend-call" v-for="call in selectedEndpoint.frontend_callers || []" :key="call.definition_file + call.function">
-              <b>{{ call.function }}</b> · <code>{{ call.definition_file }}:{{ call.definition_line }}</code>
-              <div v-for="site in call.call_sites" :key="site.file + site.line"><code>{{ site.file }}:{{ site.line }}</code></div>
-            </div>
-            <p class="muted" v-if="!selectedEndpoint.frontend_callers?.length">未匹配到前端调用。</p>
           </div>
         </template>
 
@@ -142,10 +148,27 @@ const SECTIONS = [
   ['state_machines', '状态机', 'Phase 3 · LLM', '状态、转换和触发器', true],
 ].map(([key, label, phase, description, llm = false]) => ({ key, label, phase, description, llm }))
 
+let mermaidPromise
+
+function loadMermaid() {
+  if (!mermaidPromise) {
+    mermaidPromise = import('mermaid').then(({ default: mermaid }) => {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'neutral',
+        securityLevel: 'loose',
+        fontFamily: 'system-ui, sans-serif',
+      })
+      return mermaid
+    })
+  }
+  return mermaidPromise
+}
+
 export default {
   components: { UiState },
   props: { repoName: String },
-  data() { return { report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS, selectedEndpoint: null, endpointSearch: '', endpointMethod: '', endpointPage: 1, endpointPageSize: 25, loadedAt: '', loadDuration: 0 } },
+  data() { return { report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS, expandedKeys: new Set(), endpointSearch: '', endpointMethod: '', endpointPage: 1, endpointPageSize: 25, loadedAt: '', loadDuration: 0 } },
   computed: {
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.report?.[this.activeSection] ?? {} },
@@ -178,6 +201,7 @@ export default {
         this.report = await this.$api.get('/api/knowledge', { repo: this.repoName || '', include_llm: includeLlm })
         this.llmLoaded = includeLlm
         this.endpointPage = 1
+        this.expandedKeys = new Set()
         this.loadedAt = new Date().toLocaleTimeString()
         this.loadDuration = Math.round(performance.now() - started)
       })
@@ -188,6 +212,31 @@ export default {
     },
     isDisabled(value) { return Boolean(value && !Array.isArray(value) && value.note) },
     formatJson(value) { return JSON.stringify(value, null, 2) },
+    endpointKey(item, index) { return `${item.method || ''}-${item.path || ''}-${index}` },
+    async toggleEndpoint(item, index) {
+      const key = this.endpointKey(item, index)
+      if (this.expandedKeys.has(key)) {
+        this.expandedKeys.delete(key)
+      } else {
+        this.expandedKeys.add(key)
+      }
+      // trigger reactivity for Set
+      this.expandedKeys = new Set(this.expandedKeys)
+      if (this.expandedKeys.has(key) && item.call_chain_mermaid) {
+        await this.$nextTick()
+        setTimeout(() => this.renderMermaid(), 50)
+      }
+    },
+    async renderMermaid() {
+      const els = this.$el.querySelectorAll('.expand-detail .mermaid:not([data-processed])')
+      if (!els.length) return
+      try {
+        const mermaid = await loadMermaid()
+        for (const el of els) {
+          await mermaid.run({ nodes: [el] })
+        }
+      } catch (_) { /* silently ignore mermaid render errors */ }
+    },
   },
 }
 </script>
@@ -243,9 +292,8 @@ td code { color: #666; word-break: break-all; }
 .method { color: #e94560; font-weight: 700; }
 .clickable { cursor: pointer; }
 .clickable:hover { background: #fff8f9; }
-.api-detail { margin-top: 18px; border: 1px solid #eadde0; border-radius: 8px; padding: 16px; background: #fffafb; }
-.detail-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
-.detail-heading button { border: 0; background: transparent; color: #999; cursor: pointer; }
+.clickable.expanded { background: #fff0f2; }
+.expand-detail td { padding: 0 10px 12px; border-bottom: 2px solid #e94560; background: #fffafb; }
 .contract-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
 .contract-grid > div { min-width: 0; border: 1px solid #eee; border-radius: 6px; padding: 10px; background: #fff; }
 .contract-grid h4, .api-detail > h4 { font-size: 12px; color: #555; margin-bottom: 7px; }
@@ -253,6 +301,8 @@ td code { color: #666; word-break: break-all; }
 .call-chain { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 15px; font-size: 11px; }
 .call-chain span { background: #f1f1f5; padding: 4px 7px; border-radius: 4px; }
 .call-chain b { color: #e94560; margin-left: 5px; }
+.mermaid-wrap { margin-bottom: 15px; min-height: 60px; display: flex; justify-content: center; }
+.mermaid-wrap :deep(svg) { max-width: 100%; height: auto; }
 .frontend-call { border-left: 3px solid #e94560; padding: 5px 9px; margin: 6px 0; font-size: 11px; }
 .muted { color: #aaa; font-size: 11px; }
 .repo-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 8px; background: #fff0f2; color: #c82d48; font-size: 9px; }

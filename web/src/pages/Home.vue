@@ -1,6 +1,6 @@
 <template>
   <div class="home">
-    <UiState v-if="error" kind="error" title="代码仓加载失败" :message="error.message" action-label="重试" @action="loadRepos" />
+    <UiState v-if="error" kind="error" title="代码仓加载失败" :message="error.message" action-label="重试" dismiss-label="关闭" @action="loadRepos" @dismiss="error = null" />
     <UiState v-else-if="loading" kind="loading" title="正在加载代码仓" />
     <div class="page-header">
       <div><h1>代码仓列表</h1><p>查看索引与演进状态，进入仓库继续分析。</p></div>

@@ -17,6 +17,7 @@ class _QuerySource(Protocol):
     def decorated_handlers(self) -> list[dict[str, Any]]: ...
     def handler_for_route(self, file_path: str, route_line: int) -> dict[str, Any] | None: ...
     def api_call_chain(self, node_id: str, limit: int = 30) -> list[dict[str, Any]]: ...
+    def api_call_chain_mermaid(self, node_id: str, limit: int = 30) -> str: ...
     def type_schema(self, type_name: str) -> dict[str, Any] | None: ...
 
 
@@ -99,6 +100,11 @@ class ApiContractExtractor:
             if hasattr(self._source, "api_call_chain")
             else []
         )
+        call_chain_mermaid = (
+            self._source.api_call_chain_mermaid(handler["id"])  # type: ignore[union-attr]
+            if hasattr(self._source, "api_call_chain_mermaid")
+            else ""
+        )
         return ApiEndpoint(
             method=method,
             path=path,
@@ -113,6 +119,7 @@ class ApiContractExtractor:
             request_body=contract["body"],
             response_body=response_body,
             call_chain=call_chain,
+            call_chain_mermaid=call_chain_mermaid,
         )
 
     def _schema_for_type(self, type_name: str | None) -> dict | None:

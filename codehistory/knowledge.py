@@ -115,6 +115,7 @@ class KnowledgeExtractor:
                         "request_body": item.request_body,
                         "response_body": item.response_body,
                         "call_chain": item.call_chain,
+                        "call_chain_mermaid": item.call_chain_mermaid,
                         "frontend_callers": item.frontend_callers,
                     }
                     for item in api.endpoints[:100]

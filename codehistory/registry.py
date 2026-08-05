@@ -125,7 +125,42 @@ def register_repo(name: str, path: str | list[str]) -> dict:
 
     for e in entries:
         if e["name"] == name:
-            raise ValueError(f"Repo name '{name}' already registered")
+            # Append new repos to existing service instead of rejecting
+            existing_paths = {member["path"] for member in repository_members(e)}
+            new_paths = [p for p in abs_paths if p not in existing_paths]
+            if not new_paths:
+                raise ValueError(
+                    f"All repo paths already registered under '{name}': "
+                    + ", ".join(abs_paths)
+                )
+            for abs_path in new_paths:
+                if not Path(abs_path, ".git").exists():
+                    raise ValueError(f"Not a git repository: {abs_path}")
+            members = repository_members(e)
+            for abs_path in new_paths:
+                meta = detect_service(abs_path)
+                members.append({
+                    "name": Path(abs_path).name,
+                    "path": abs_path,
+                    "language": meta.language,
+                    "role": meta.role,
+                    "cg_initialized": meta.cg_initialized,
+                })
+            e["repositories"] = members
+            # Refresh metadata
+            from datetime import datetime, timezone
+            metas = [detect_service(m["path"]) for m in members]
+            roles = {meta.role for meta in metas if meta.role}
+            e["language"] = "+".join(dict.fromkeys(meta.language for meta in metas if meta.language))
+            e["role"] = "fullstack" if "frontend" in roles and len(roles) > 1 else next(iter(roles), "")
+            e["db_types"] = sorted({item for meta in metas for item in meta.db_types})
+            e["mq_types"] = sorted({item for meta in metas for item in meta.mq_types})
+            e["cache_types"] = sorted({item for meta in metas for item in meta.cache_types})
+            e["cg_initialized"] = all(meta.cg_initialized for meta in metas)
+            e["git_remotes"] = sorted({item for meta in metas for item in meta.git_remotes})
+            e["registered_at"] = datetime.now(timezone.utc).isoformat()
+            save_registry(entries)
+            return e
         registered_paths = {member["path"] for member in repository_members(e)}
         duplicate = registered_paths.intersection(abs_paths)
         if duplicate:

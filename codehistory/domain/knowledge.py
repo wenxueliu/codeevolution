@@ -67,6 +67,7 @@ class ApiEndpoint:
     request_body: dict | None = None
     response_body: dict | None = None
     call_chain: list[dict] = field(default_factory=list)
+    call_chain_mermaid: str = ""
     frontend_callers: list[dict] = field(default_factory=list)
 
 
