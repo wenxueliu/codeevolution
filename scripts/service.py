@@ -10,6 +10,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,11 +59,38 @@ def server_command(host: str, port: int) -> list[str]:
     return [executable, "-m", "codehistory.cli", "web", "--host", host, "--port", str(port)]
 
 
+def port_is_available(host: str, port: int) -> bool:
+    """Return false when another process already owns the requested address."""
+    bind_host = host if host not in {"0.0.0.0", "::"} else "127.0.0.1"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((bind_host, port))
+        except OSError:
+            return False
+    return True
+
+
+def api_is_ready(host: str, port: int) -> bool:
+    connect_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    try:
+        with urllib.request.urlopen(f"http://{connect_host}:{port}/api/repos", timeout=0.3) as response:
+            return response.status == 200 and "application/json" in response.headers.get_content_type()
+    except (OSError, urllib.error.URLError):
+        return False
+
+
 def start(host: str, port: int, should_build: bool = True) -> None:
     pid = read_pid()
     if is_running(pid):
         print(f"[codehistory] already running (pid={pid})")
         return
+    PID_FILE.unlink(missing_ok=True)
+    if not port_is_available(host, port):
+        raise RuntimeError(
+            f"port {host}:{port} is already in use; stop the existing service "
+            "or choose another port with --port"
+        )
     if should_build:
         build()
     RUN_DIR.mkdir(exist_ok=True)
@@ -76,13 +105,16 @@ def start(host: str, port: int, should_build: bool = True) -> None:
     for _ in range(50):
         if process.poll() is not None:
             raise RuntimeError(f"service exited early; inspect {LOG_FILE}")
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                print(f"[codehistory] started pid={process.pid} http://{host}:{port}")
-                return
-        except OSError:
-            pass
+        if api_is_ready(host, port):
+            print(f"[codehistory] started pid={process.pid} http://{host}:{port}")
+            return
         time.sleep(0.1)
+    if process.poll() is None:
+        if os.name == "nt":
+            process.terminate()
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+    PID_FILE.unlink(missing_ok=True)
     raise RuntimeError(f"service did not listen on {host}:{port}; inspect {LOG_FILE}")
 
 
@@ -119,17 +151,20 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-build", action="store_true", help="Skip frontend build on start")
     args = parser.parse_args()
-    if args.action == "build":
-        build()
-    elif args.action == "start":
-        start(args.host, args.port, not args.no_build)
-    elif args.action == "stop":
-        stop()
-    elif args.action == "restart":
-        stop()
-        start(args.host, args.port, not args.no_build)
-    else:
-        status()
+    try:
+        if args.action == "build":
+            build()
+        elif args.action == "start":
+            start(args.host, args.port, not args.no_build)
+        elif args.action == "stop":
+            stop()
+        elif args.action == "restart":
+            stop()
+            start(args.host, args.port, not args.no_build)
+        else:
+            status()
+    except RuntimeError as error:
+        raise SystemExit(f"[codehistory] error: {error}") from None
 
 
 if __name__ == "__main__":

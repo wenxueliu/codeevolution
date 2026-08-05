@@ -1,10 +1,10 @@
 <template>
   <div v-if="repoName" class="assistant-shell">
-    <button class="assistant-toggle" @click="open = !open" :aria-expanded="open">{{ open ? '关闭问答' : '代码问答' }}</button>
-    <aside v-if="open" class="assistant-panel" aria-label="代码仓问答助手">
+    <button v-if="!open" class="assistant-toggle" @click="openAssistant" :aria-expanded="open">代码问答</button>
+    <aside v-if="open" class="assistant-panel" role="dialog" aria-modal="true" aria-label="代码仓问答助手">
       <header>
         <div><strong>代码仓问答</strong><small>{{ repoName }} · 只读操作</small></div>
-        <button @click="open = false" aria-label="关闭">×</button>
+        <button ref="closeButton" @click="closeAssistant" aria-label="关闭">×</button>
       </header>
       <div class="tabs">
         <button :class="{ active: tab === 'chat' }" @click="tab = 'chat'">问答</button>
@@ -102,8 +102,12 @@ export default {
       return 'JSON，例如 {"url":"..."}'
     },
   },
-  beforeUnmount() { this.stopCollectTimer() },
+  mounted() { window.addEventListener('keydown', this.onKeydown) },
+  beforeUnmount() { this.stopCollectTimer(); window.removeEventListener('keydown', this.onKeydown) },
   methods: {
+    openAssistant() { this.open = true; this.$nextTick(() => this.$refs.closeButton?.focus()) },
+    closeAssistant() { this.open = false },
+    onKeydown(event) { if (event.key === 'Escape' && this.open) this.closeAssistant() },
     async send() {
       if (!this.question || this.sending) return
       const question = this.question
@@ -234,4 +238,10 @@ header div { display: flex; flex-direction: column; gap: 3px; } header small { c
 .checkpoint-form { display: grid; grid-template-columns: 110px 1fr auto; gap: 6px; margin-bottom: 12px; } .checkpoint-form select, .checkpoint-form input { min-width: 0; padding: 7px; border: 1px solid #ccc; border-radius: 5px; } .checkpoint-form button { border: 0; border-radius: 5px; color: #fff; background: #596579; }
 .recordings-heading { display: flex; justify-content: space-between; margin: 14px 0 6px; } .recordings-heading button { border: 0; background: none; color: #e94560; cursor: pointer; }
 .recording-entry { padding: 11px 0; border-bottom: 1px solid #eee; } .recording-entry > div { display: flex; justify-content: space-between; gap: 8px; } .recording-entry span, .recording-entry small { color: #888; font-size: 11px; } .recording-entry p { margin: 5px 0; font-size: 12px; } .recording-entry pre { max-height: 160px; } .run-result { margin-left: 8px; } .run-result.passed { color: #16834b; } .run-result.failed { color: #a82038; }
+@media (max-width: 600px) {
+  .assistant-toggle { top: auto; bottom: 18px; right: 14px; border-radius: 20px; padding: 10px 14px; writing-mode: horizontal-tb; }
+  .assistant-panel { inset: 0; width: 100vw; z-index: 60; }
+  .checkpoint-form { grid-template-columns: 1fr; }
+  .composer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+}
 </style>

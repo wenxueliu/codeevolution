@@ -1,16 +1,17 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHashHistory } from 'vue-router'
 import App from './App.vue'
-import Home from './pages/Home.vue'
-import Dashboard from './pages/Dashboard.vue'
-import FeatureList from './pages/FeatureList.vue'
-import FeatureDetail from './pages/FeatureDetail.vue'
-import EventList from './pages/EventList.vue'
-import Capabilities from './pages/Capabilities.vue'
-import Knowledge from './pages/Knowledge.vue'
-import Refactoring from './pages/Refactoring.vue'
 import { apiClient } from './api/apiClient.js'
 import { runAsync } from './composables/useAsync.js'
+
+const Home = () => import('./pages/Home.vue')
+const Dashboard = () => import('./pages/Dashboard.vue')
+const FeatureList = () => import('./pages/FeatureList.vue')
+const FeatureDetail = () => import('./pages/FeatureDetail.vue')
+const EventList = () => import('./pages/EventList.vue')
+const Capabilities = () => import('./pages/Capabilities.vue')
+const Knowledge = () => import('./pages/Knowledge.vue')
+const Refactoring = () => import('./pages/Refactoring.vue')
 
 const routes = [
   { path: '/', name: 'home', component: Home },

@@ -76,16 +76,21 @@
 </template>
 
 <script>
-import mermaid from 'mermaid'
+let mermaidPromise
 
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'default',
-  sequence: {
-    useMaxWidth: true,
-    wrap: true,
-  },
-})
+async function loadMermaid() {
+  if (!mermaidPromise) {
+    mermaidPromise = import('mermaid').then(({ default: mermaid }) => {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'default',
+        sequence: { useMaxWidth: true, wrap: true },
+      })
+      return mermaid
+    })
+  }
+  return mermaidPromise
+}
 
 // Extract class and method from qualified name
 // "GraphStore.get_subgraph" → {cls:"GraphStore", method:"get_subgraph"}
@@ -231,6 +236,7 @@ export default {
       if (!this.$refs.mermaidEl) return
       this.diagramError = false
       try {
+        const mermaid = await loadMermaid()
         await mermaid.run({ nodes: [this.$refs.mermaidEl] })
       } catch(e) {
         console.error('Mermaid error:', e)

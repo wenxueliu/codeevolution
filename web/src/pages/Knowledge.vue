@@ -1,12 +1,12 @@
 <template>
   <div class="knowledge">
-    <div v-if="error" class="request-error">{{ error.message }}</div>
-    <div v-if="loading" class="request-loading">正在从 CodeGraph 抽取知识，大型仓库可能需要等待片刻...</div>
+    <UiState v-if="error" kind="error" title="知识提取失败" :message="error.message" action-label="重试" @action="load(false)" />
+    <UiState v-if="loading" kind="loading" title="正在从 CodeGraph 提取结构知识" message="大型仓库可能需要等待片刻，完成前可以继续浏览当前结果。" />
 
     <div class="page-header">
       <div>
         <h1>知识中心</h1>
-        <p>基于当前 CodeGraph 索引实时推导，结果不写入演进数据库。</p>
+        <p>基于当前 CodeGraph 索引实时推导，结果不写入演进数据库。<span v-if="loadedAt"> 最近刷新：{{ loadedAt }} · {{ loadDuration }} ms</span></p>
       </div>
       <div class="actions">
         <button class="secondary" :disabled="loading" @click="load(false)">刷新结构知识</button>
@@ -53,13 +53,23 @@
 
         <template v-if="activeSection === 'api_contract'">
           <div class="metric">{{ activeData.endpoint_count || 0 }} <small>个端点</small></div>
+          <div class="table-tools">
+            <label>筛选端点<input v-model.trim="endpointSearch" type="search" placeholder="路径、处理函数或仓库" @input="endpointPage = 1" /></label>
+            <label>HTTP 方法<select v-model="endpointMethod" @change="endpointPage = 1"><option value="">全部方法</option><option v-for="method in endpointMethods" :key="method">{{ method }}</option></select></label>
+            <span>共 {{ filteredEndpoints.length }} 条</span>
+          </div>
           <div class="table-wrap"><table><thead><tr><th>方法</th><th>路径</th><th>处理函数</th><th>请求/应答</th><th>前端调用</th></tr></thead><tbody>
-            <tr v-for="(item, index) in activeData.endpoints || []" :key="index" class="clickable" @click="selectedEndpoint = item">
+            <tr v-for="(item, index) in visibleEndpoints" :key="`${item.repository || ''}-${item.method}-${item.path}-${index}`" class="clickable" tabindex="0" @click="selectedEndpoint = item" @keydown.enter="selectedEndpoint = item">
               <td><span class="method">{{ item.method }}</span></td><td><code>{{ item.path }}</code></td><td>{{ item.handler || '-' }}</td>
               <td>{{ item.request_body?.type || '无请求体' }} → {{ item.response_body?.type || item.return_type || '未知' }}</td>
               <td>{{ item.frontend_callers?.length || 0 }} 处</td>
             </tr>
           </tbody></table></div>
+          <div class="pagination" v-if="endpointPages > 1">
+            <button :disabled="endpointPage === 1" @click="endpointPage--">上一页</button>
+            <span>第 {{ endpointPage }} / {{ endpointPages }} 页</span>
+            <button :disabled="endpointPage === endpointPages" @click="endpointPage++">下一页</button>
+          </div>
           <div class="api-detail" v-if="selectedEndpoint">
             <div class="detail-heading"><h3>{{ selectedEndpoint.method }} {{ selectedEndpoint.path }}</h3><button @click="selectedEndpoint = null">关闭</button></div>
             <div class="contract-grid">
@@ -114,6 +124,8 @@
 </template>
 
 <script>
+import UiState from '../components/UiState.vue'
+
 const SECTIONS = [
   ['api_contract', 'API 契约', 'Phase 1', '路由、方法、处理函数与参数'],
   ['module_topology', '模块拓扑', 'Phase 1', '模块聚类、依赖关系与耦合度'],
@@ -131,8 +143,9 @@ const SECTIONS = [
 ].map(([key, label, phase, description, llm = false]) => ({ key, label, phase, description, llm }))
 
 export default {
+  components: { UiState },
   props: { repoName: String },
-  data() { return { report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS, selectedEndpoint: null } },
+  data() { return { report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS, selectedEndpoint: null, endpointSearch: '', endpointMethod: '', endpointPage: 1, endpointPageSize: 25, loadedAt: '', loadDuration: 0 } },
   computed: {
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.report?.[this.activeSection] ?? {} },
@@ -145,13 +158,28 @@ export default {
         { key: 'layer_violations', label: '分层违规', value: this.report.layer_violations?.violation_count ?? 0 },
       ]
     },
+    filteredEndpoints() {
+      const query = this.endpointSearch.toLowerCase()
+      return (this.report?.api_contract?.endpoints || []).filter(item => {
+        if (this.endpointMethod && item.method !== this.endpointMethod) return false
+        if (!query) return true
+        return [item.path, item.handler, item.repository].some(value => String(value || '').toLowerCase().includes(query))
+      })
+    },
+    visibleEndpoints() { return this.filteredEndpoints.slice((this.endpointPage - 1) * this.endpointPageSize, this.endpointPage * this.endpointPageSize) },
+    endpointPages() { return Math.max(1, Math.ceil(this.filteredEndpoints.length / this.endpointPageSize)) },
+    endpointMethods() { return [...new Set((this.report?.api_contract?.endpoints || []).map(item => item.method).filter(Boolean))].sort() },
   },
   async created() { await this.load(false) },
   methods: {
     async load(includeLlm) {
+      const started = performance.now()
       await this.$runAsync(async () => {
         this.report = await this.$api.get('/api/knowledge', { repo: this.repoName || '', include_llm: includeLlm })
         this.llmLoaded = includeLlm
+        this.endpointPage = 1
+        this.loadedAt = new Date().toLocaleTimeString()
+        this.loadDuration = Math.round(performance.now() - started)
       })
     },
     async loadLlm() {
@@ -202,6 +230,12 @@ button:disabled { opacity: .55; cursor: wait; }
 .detail-card h3 { font-size: 14px; margin-bottom: 5px; }
 .detail-card p, .detail-card code { color: #888; font-size: 11px; }
 .table-wrap { overflow-x: auto; }
+.table-tools { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.table-tools label { display: grid; gap: 4px; color: #666; font-size: 11px; }
+.table-tools input, .table-tools select { min-width: 150px; border: 1px solid #cfd3da; border-radius: 5px; padding: 7px 8px; background: white; }
+.table-tools > span { margin-left: auto; color: #888; font-size: 12px; }
+.pagination { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding-top: 12px; font-size: 12px; color: #666; }
+.pagination button { border: 1px solid #d7d9df; border-radius: 5px; padding: 6px 10px; background: white; cursor: pointer; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { text-align: left; color: #777; background: #f8f8fa; }
 th, td { border-bottom: 1px solid #eee; padding: 9px 10px; vertical-align: top; }
@@ -231,5 +265,6 @@ td code { color: #666; word-break: break-all; }
   .content { grid-template-columns: 1fr; }
   .section-nav { display: flex; overflow-x: auto; }
   .section-nav button { min-width: 145px; }
+  .table-tools > span { margin-left: 0; width: 100%; }
 }
 </style>

@@ -187,15 +187,27 @@ describe('repository and knowledge pages', () => {
     })
     await flushPromises()
     expect(wrapper.text()).toContain('mall-web')
-    await wrapper.find('.repo-card').trigger('click')
-    expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/repo/mall')
+    expect(wrapper.find('.repo-link').attributes('href')).toBe('/repo/mall')
     await wrapper.find('.remove-button').trigger('click')
     expect(api.delete).not.toHaveBeenCalled()
     await wrapper.find('.remove-button').trigger('click')
     await flushPromises()
     expect(confirm).toHaveBeenCalledTimes(2)
     expect(api.delete).toHaveBeenCalledWith('/api/repos/mall')
-    expect(wrapper.text()).toContain('暂无已注册的代码仓')
+    expect(wrapper.text()).toContain('还没有代码仓')
+  })
+
+  it('registers a repository from the empty-state workflow', async () => {
+    const { wrapper, api } = mountPage(Home, { '/api/repos': { repos: [] } })
+    await flushPromises()
+    await wrapper.find('.empty-state button').trigger('click')
+    await wrapper.findAll('.register-form input')[0].setValue('shop')
+    await wrapper.findAll('.register-form input')[1].setValue('/workspace/shop')
+    await wrapper.find('.register-form').trigger('submit')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/repos/register', {
+      method: 'POST', query: { name: 'shop', path: '/workspace/shop' },
+    })
   })
 
   it('renders contract details, domain entities, sections and explicit LLM loading', async () => {
@@ -239,10 +251,20 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.text()).toContain('现在抽取')
   })
 
+  it('filters and paginates API contracts without rendering the full result set', async () => {
+    const endpoints = Array.from({ length: 60 }, (_, index) => ({ method: index % 2 ? 'POST' : 'GET', path: `/orders/${index}`, handler: `handler${index}`, repository: 'mall' }))
+    const { wrapper } = mountPage(Knowledge, { '/api/knowledge': { api_contract: { endpoint_count: 60, endpoints } } }, { repoName: 'mall' })
+    await flushPromises()
+    expect(wrapper.findAll('tbody tr')).toHaveLength(25)
+    await wrapper.find('.table-tools input').setValue('/orders/59')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.text()).toContain('/orders/59')
+  })
+
   it('renders repository and knowledge empty variants', async () => {
     const { wrapper: home } = mountPage(Home, { '/api/repos': { repos: [{ name: 'empty', path: '/empty', repositories: [{ name: 'empty' }], stats: null }] } })
     await flushPromises()
-    expect(home.text()).toContain('未分析')
+    expect(home.text()).toContain('尚未生成演进数据')
 
     const { wrapper: knowledge } = mountPage(Knowledge, { '/api/knowledge': null }, { repoName: 'empty' })
     await flushPromises()
