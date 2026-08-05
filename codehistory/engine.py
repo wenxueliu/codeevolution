@@ -60,6 +60,10 @@ class EvolutionEngine:
         self._check_codegraph()
         self._hydrate_matcher()
 
+    def _which(self, name: str) -> bool:
+        """Check if a CLI tool is available in PATH."""
+        return shutil.which(name) is not None
+
     def _check_codegraph(self):
         """Verify CodeGraph is initialized on the target repo."""
         cg_dir = Path(self.config.repo_path) / ".codegraph"
