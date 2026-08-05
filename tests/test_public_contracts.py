@@ -91,6 +91,7 @@ def test_cli_help_lists_all_public_commands():
         "init-all",
         "flow",
         "entities",
+        "refactor-plan",
     }
     words = result.stdout.replace("{", " ").replace("}", " ").replace(",", " ").split()
     assert commands <= set(words)
@@ -112,6 +113,9 @@ def test_openapi_path_snapshot():
         "/api/features/{stable_id}/explain",
         "/api/knowledge",
         "/api/llm-status",
+        "/api/refactor-plans",
+        "/api/refactor-techniques",
+        "/api/refactor-techniques/{technique_id}",
         "/api/repos",
         "/api/repos/register",
         "/api/repos/{name}",

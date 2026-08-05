@@ -116,6 +116,12 @@ codehistory backfill -r <repo>              # 全量回溯分析
 codehistory update -r <repo>                # 增量更新
 codehistory status -r <repo>                # 查看演进状态
 
+# 渐进式重构：一次只分析一个时间窗口和一种重构手法
+codehistory refactor-plan -r <repo> -t extract-method --window-days 7
+# 从 7 天扩大到 14 天时，只把第 8～14 天的提交作为新候选入口
+codehistory refactor-plan -r <repo> -t extract-method \
+  --window-days 14 --previous-window-days 7 -o refactor-plan.json
+
 # 其他
 codehistory serve -r <repo>                 # 启动 MCP Server
 codehistory web                             # 启动 Web 控制台 (:8765)
@@ -128,6 +134,21 @@ codehistory web                             # 启动 Web 控制台 (:8765)
 - **前端**: Vue 3 / Vue Router / Mermaid / Vite
 - **MCP**: FastMCP
 - 所有 30+ 语言自动支持，无需配置
+
+## 渐进式重构计划
+
+`refactor-plan` 从近期 Git 提交中寻找仍在频繁变化的函数，以当前 CodeGraph 图谱补全直接调用者和
+依赖，并且每次只检查指定的一种重构手法。命令内置 24 种可独立选择的重构手法；使用
+`codehistory refactor-plan --help` 查看完整列表。
+
+输出是可交给编码 Agent 的结构化 JSON。如果 CodeGraph 没有找到足够的直接测试，测试门禁会阻止
+生产代码修改，改为生成一个只允许添加特征测试的任务；测试安全网充分且影响风险可控时，才会生成
+带文件数、符号数和修改行数预算的重构任务。当前测试充分性判断基于静态调用关系，Agent 仍需检查
+断言、分支和异常覆盖质量。
+
+Web 页面的“新增手法”和“编辑”入口可以维护检查目录。每个代码仓拥有独立配置，用户定义保存在
+目标仓的 `.codehistory/refactoring-techniques.json`；编辑内置手法会保存该仓的覆盖值，不会修改源码中的
+默认目录，也不会影响其他代码仓。CLI 和 Web 计划分析都会根据当前目标仓读取合并后的手法。
 
 ## 模块架构
 
@@ -203,7 +224,15 @@ Phase 2 会通过 CDP 为整页刷新预注册录制器，并用受限的 `windo
 # Python / Web 构建验证
 .venv/bin/python -m build
 cd web && npm run build
+
+# 真实 Chrome 回归（需先启动 CodeHistory Web 和 Kimi WebBridge）
+make test-ui-e2e
 ```
+
+`scripts/e2e_refactoring_webbridge.py` 是渐进重构页面的真实浏览器回归用例，覆盖仓库选择、自定义手法
+新增、编辑、稳定 ID 锁定、计划刷新和跨仓隔离。脚本通过公开 API 自动清理测试手法，最后一条配置
+删除后不会留下空文件。重构页面、手法字段、仓库作用域或相关 API 发生变化时，必须同步更新该脚本及
+`web/tests/pages.integration.spec.js` 中的组件用例。
 
 当前重构基线：39 个测试通过，核心单元覆盖率 63.37%。Registry 和 topology cache 已采用原子写与版本化格式；旧缓存和公开入口继续兼容。
 

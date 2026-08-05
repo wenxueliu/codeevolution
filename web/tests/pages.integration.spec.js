@@ -8,6 +8,7 @@ import FeatureDetail from '../src/pages/FeatureDetail.vue'
 import FeatureList from '../src/pages/FeatureList.vue'
 import Home from '../src/pages/Home.vue'
 import Knowledge from '../src/pages/Knowledge.vue'
+import Refactoring from '../src/pages/Refactoring.vue'
 import RepositoryAssistant from '../src/components/RepositoryAssistant.vue'
 
 const { mermaidRun } = vi.hoisted(() => ({ mermaidRun: vi.fn() }))
@@ -35,6 +36,57 @@ function mountPage(component, responses = {}, props = {}) {
 afterEach(() => vi.restoreAllMocks())
 
 describe('repository and knowledge pages', () => {
+  it('shows refactoring scope, advice and test protection details', async () => {
+    const plan = {
+      repository_member: 'mall',
+      hotspot: { node_id: 'n1', qualified_name: 'OrderService.create', file_path: 'src/order.py', start_line: 10, end_line: 40, score: 18, commit_count: 3, changed_lines: 42 },
+      codegraph_impact: { risk: 'MEDIUM', affected_symbol_count: 4, direct_callers: [{ node_id: 'c1', name: 'submit', file_path: 'src/api.py', line: 7 }], direct_callees: [] },
+      test_gate: { status: 'missing', refactoring_allowed: false, assessment: 'Static coverage', related_tests: [] },
+      agent_task: { title: '建立测试安全网', reason: ['近期反复修改'], instructions: ['只增加测试'], acceptance: ['测试先通过'], test_cases: [{ name: '锁定正常路径', then: '保持返回值' }] },
+    }
+    const { wrapper, api } = mountPage(Refactoring, {
+      '/api/refactor-techniques': { repository_member: 'mall', repository_members: ['mall'], techniques: [{ id: 'extract-method', name: '提取函数', objective: '拆分职责', checks: ['长函数'] }] },
+      '/api/refactor-plans': { plans: [plan] },
+    }, { repoName: 'mall' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('OrderService.create')
+    expect(wrapper.text()).toContain('src/order.py:10-40')
+    expect(wrapper.text()).toContain('缺少关联测试')
+    expect(wrapper.text()).toContain('锁定正常路径')
+    expect(wrapper.text()).toContain('只增加测试')
+    await wrapper.find('.primary').trigger('click')
+    expect(api.get).toHaveBeenCalledWith('/api/refactor-plans', expect.objectContaining({ repo: 'mall', member: 'mall', technique: 'extract-method' }))
+  })
+
+  it('creates and edits refactoring techniques', async () => {
+    const techniques = [{ id: 'extract-method', name: '提取函数', objective: '拆分职责', checks: ['长函数'], source: 'builtin' }]
+    const { wrapper, api } = mountPage(Refactoring, {
+      '/api/refactor-techniques': { repository_member: 'backend', repository_members: ['backend', 'frontend'], techniques },
+      '/api/refactor-plans': { plans: [] },
+    }, { repoName: 'mall' })
+    await flushPromises()
+    await wrapper.find('.header-actions .secondary').trigger('click')
+    await wrapper.find('.technique-form input').setValue('domain-check')
+    await wrapper.findAll('.technique-form input')[1].setValue('领域检查')
+    await wrapper.findAll('.technique-form textarea')[0].setValue('明确领域边界')
+    await wrapper.findAll('.technique-form textarea')[1].setValue('逻辑散落\n跨聚合调用')
+    api.request.mockResolvedValueOnce({ id: 'domain-check' })
+    await wrapper.find('.technique-form').trigger('submit')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/refactor-techniques', expect.objectContaining({ query: { repo: 'mall', member: 'backend' }, method: 'POST' }))
+
+    wrapper.vm.techniques = techniques
+    wrapper.vm.technique = 'extract-method'
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.edit-button').trigger('click')
+    expect(wrapper.find('.technique-form input').attributes('disabled')).toBeDefined()
+    await wrapper.findAll('.technique-form input')[1].setValue('提取小函数')
+    api.request.mockResolvedValueOnce({ id: 'extract-method' })
+    await wrapper.find('.technique-form').trigger('submit')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/refactor-techniques/extract-method', expect.objectContaining({ query: { repo: 'mall', member: 'backend' }, method: 'PUT' }))
+  })
+
   it('opens repository assistant, executes a question and renders audit logs', async () => {
     const { wrapper, api } = mountPage(RepositoryAssistant, {
       '/api/chat': { answer: '查询到调用方', operations: [{ operation: 'codegraph.find_callers', source: 'codegraph', rows: [{ name: 'checkout' }] }] },

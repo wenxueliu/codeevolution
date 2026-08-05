@@ -8,6 +8,7 @@ import FeatureDetail from './pages/FeatureDetail.vue'
 import EventList from './pages/EventList.vue'
 import Capabilities from './pages/Capabilities.vue'
 import Knowledge from './pages/Knowledge.vue'
+import Refactoring from './pages/Refactoring.vue'
 import { apiClient } from './api/apiClient.js'
 import { runAsync } from './composables/useAsync.js'
 
@@ -18,6 +19,7 @@ const routes = [
   { path: '/repo/:repoName/features/:stableId', name: 'feature-detail', component: FeatureDetail, props: true },
   { path: '/repo/:repoName/capabilities', name: 'capabilities', component: Capabilities, props: true },
   { path: '/repo/:repoName/knowledge', name: 'knowledge', component: Knowledge, props: true },
+  { path: '/repo/:repoName/refactoring', name: 'refactoring', component: Refactoring, props: true },
   { path: '/repo/:repoName/events', name: 'events', component: EventList, props: true },
 ]
 

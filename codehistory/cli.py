@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from .application.advanced_topology_service import AdvancedTopologyService
 from .application.evolution_command_service import EvolutionCommandService
 from .application.evolution_service import EvolutionQueryService
 from .application.knowledge_service import KnowledgeService
+from .application.refactoring_service import RefactoringPlanningService
 from .application.topology_service import TopologyService
 from .config import Config
 from .delivery.renderers import AdvancedTopologyRenderer, TopologyRenderer
@@ -351,6 +353,36 @@ def cmd_knowledge(args):
         service.close()
 
 
+def cmd_refactor_plan(args):
+    """Generate Agent-ready, test-gated plans for one refactoring technique."""
+    try:
+        service = RefactoringPlanningService.from_repository(args.repo)
+        plans = service.plan(
+            technique_id=args.technique,
+            window_days=args.window_days,
+            previous_window_days=args.previous_window_days,
+            limit=args.limit,
+            min_tests=args.min_tests,
+        )
+        payload = {
+            "version": "1.0",
+            "plan_count": len(plans),
+            "plans": [plan.to_dict() for plan in plans],
+        }
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            print(f"Refactoring plan written to {args.output}")
+        else:
+            print(rendered)
+    except (ValueError, subprocess.CalledProcessError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        if "service" in locals():
+            service.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="codehistory",
@@ -445,6 +477,25 @@ def main():
     )
     p.add_argument("--llm", action="store_true", help="Enable LLM-powered Phase 3 analysis")
     p.set_defaults(handler=cmd_knowledge)
+
+    # incremental, test-gated refactoring plan
+    p = subparsers.add_parser(
+        "refactor-plan",
+        help="Plan one small, test-gated refactoring over recent hot code",
+    )
+    p.add_argument("--repo", "-r", required=True, help="Git repository with CodeGraph initialized")
+    p.add_argument("--technique", "-t", required=True, help="Built-in or custom technique id")
+    p.add_argument("--window-days", type=int, default=7, help="Outer history window in days")
+    p.add_argument(
+        "--previous-window-days",
+        type=int,
+        default=0,
+        help="Exclude the already processed recent window (for example 7 when expanding to 14)",
+    )
+    p.add_argument("--limit", type=int, default=5, help="Maximum hotspot tasks to emit")
+    p.add_argument("--min-tests", type=int, default=1, help="Required direct tests per hotspot")
+    p.add_argument("--output", "-o", default="", help="Write JSON plan to this path")
+    p.set_defaults(handler=cmd_refactor_plan)
 
     # cross-repo topology
     p = subparsers.add_parser(

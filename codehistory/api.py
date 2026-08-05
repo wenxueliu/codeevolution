@@ -13,8 +13,10 @@ from pydantic import BaseModel, Field
 from .application.chat_service import ChatService
 from .application.evolution_service import EvolutionQueryService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
+from .application.refactoring_service import RefactoringPlanningService
 from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
+from .infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
 from .registry import get_repo, list_repos, register_repo, repository_members, unregister_repo
@@ -59,6 +61,13 @@ class UiCheckpointRequest(BaseModel):
     target: dict = Field(default_factory=dict)
     payload: dict = Field(default_factory=dict)
     page_url: str = ""
+
+
+class RefactoringTechniqueRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=100)
+    objective: str = Field(min_length=1, max_length=500)
+    checks: list[str] = Field(min_length=1, max_length=30)
 
 
 def get_store(repo: str = "") -> EvolutionStore:
@@ -139,6 +148,38 @@ def codehistory_data_dir() -> Path:
     return Path(os.environ.get("CODEHISTORY_DATA_DIR", str(Path.home() / ".codehistory")))
 
 
+def get_refactoring_member(repo: str, member: str = "") -> tuple[str, str]:
+    """Resolve one physical repository inside a registered logical service."""
+    if not repo:
+        repos = list_repos()
+        if not repos:
+            raise HTTPException(400, "No repos registered. Register a repo first.")
+        repo = repos[0]["name"]
+    entry = get_repo(repo)
+    if not entry:
+        raise HTTPException(404, f"Repo '{repo}' not found")
+    members = repository_members(entry)
+    selected = next(
+        (item for item in members if not member or (item.get("name") or Path(item["path"]).name) == member),
+        None,
+    )
+    if selected is None:
+        raise HTTPException(404, f"Repository member '{member}' not found in '{repo}'")
+    return selected.get("name") or Path(selected["path"]).name, selected["path"]
+
+
+def get_refactoring_technique_catalog(
+    repo: str = "", member: str = ""
+) -> RefactoringTechniqueCatalog:
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("refactoring_technique_catalog"):
+        return injected
+    _, repo_path = get_refactoring_member(repo, member)
+    return RefactoringTechniqueCatalog(
+        Path(repo_path) / ".codehistory" / "refactoring-techniques.json"
+    )
+
+
 def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
     """Return a knowledge service and whether the caller owns its lifecycle."""
     dependencies = _request_dependencies.get()
@@ -180,6 +221,41 @@ def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
     if len(services) == 1:
         return services[0][1], True
     return GroupedKnowledgeService(services), True
+
+
+def get_refactoring_services(
+    repo: str = "", member: str = ""
+) -> tuple[list[tuple[str, object]], bool]:
+    """Resolve planning services for every repository in a logical service."""
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("refactoring_planning_service"):
+        return [(repo or "injected", injected)], False
+
+    if not repo:
+        repos = list_repos()
+        if not repos:
+            raise HTTPException(400, "No repos registered. Register a repo first.")
+        repo = repos[0]["name"]
+    entry = get_repo(repo)
+    if not entry:
+        raise HTTPException(404, f"Repo '{repo}' not found")
+
+    services = []
+    try:
+        for member_entry in repository_members(entry):
+            member_name = member_entry.get("name") or Path(member_entry["path"]).name
+            if member and member_name != member:
+                continue
+            services.append(
+                (member_name, RefactoringPlanningService.from_repository(member_entry["path"]))
+            )
+    except ValueError as error:
+        for _, service in services:
+            service.close()
+        raise HTTPException(409, str(error)) from error
+    if member and not services:
+        raise HTTPException(404, f"Repository member '{member}' not found in '{repo}'")
+    return services, True
 
 
 # --- Repo management ---
@@ -332,6 +408,106 @@ def get_knowledge_report(
     finally:
         if owned:
             service.close()
+
+
+@app.get("/api/refactor-techniques")
+def list_refactoring_techniques(repo: str = Query(""), member: str = Query("")):
+    dependencies = _request_dependencies.get()
+    if dependencies.get("refactoring_technique_catalog"):
+        selected_member = member or repo or "injected"
+        members = [selected_member]
+    else:
+        selected_member, _ = get_refactoring_member(repo, member)
+        entry = get_repo(repo) if repo else list_repos()[0]
+        members = [item.get("name") or Path(item["path"]).name for item in repository_members(entry)]
+    return {
+        "repository_member": selected_member,
+        "repository_members": members,
+        "techniques": get_refactoring_technique_catalog(repo, selected_member).list(),
+    }
+
+
+@app.post("/api/refactor-techniques", status_code=201)
+def create_refactoring_technique(
+    request: RefactoringTechniqueRequest,
+    repo: str = Query(""),
+    member: str = Query(""),
+):
+    try:
+        return get_refactoring_technique_catalog(repo, member).create(request.model_dump())
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.put("/api/refactor-techniques/{technique_id}")
+def update_refactoring_technique(
+    technique_id: str,
+    request: RefactoringTechniqueRequest,
+    repo: str = Query(""),
+    member: str = Query(""),
+):
+    try:
+        return get_refactoring_technique_catalog(repo, member).update(
+            technique_id, request.model_dump()
+        )
+    except ValueError as error:
+        status = 404 if "not found" in str(error) else 400
+        raise HTTPException(status, str(error)) from error
+
+
+@app.delete("/api/refactor-techniques/{technique_id}")
+def delete_refactoring_technique(
+    technique_id: str,
+    repo: str = Query(""),
+    member: str = Query(""),
+):
+    """Delete a custom technique, or remove a built-in technique override."""
+    try:
+        return get_refactoring_technique_catalog(repo, member).delete(technique_id)
+    except ValueError as error:
+        raise HTTPException(404, str(error)) from error
+
+
+@app.get("/api/refactor-plans")
+def get_refactoring_plans(
+    repo: str = Query(""),
+    member: str = Query(""),
+    technique: str = Query("extract-method"),
+    window_days: int = Query(7, ge=1, le=3650),
+    previous_window_days: int = Query(0, ge=0, le=3649),
+    limit: int = Query(5, ge=1, le=50),
+    min_tests: int = Query(1, ge=1, le=20),
+):
+    """Return Agent-ready refactoring scopes and their test-safety gates."""
+    services, owned = get_refactoring_services(repo, member)
+    plans = []
+    try:
+        for member_name, service in services:
+            member_plans = service.plan(
+                technique_id=technique,
+                window_days=window_days,
+                previous_window_days=previous_window_days,
+                limit=limit,
+                min_tests=min_tests,
+            )
+            for plan in member_plans:
+                item = plan.to_dict()
+                item["repository_member"] = member_name
+                plans.append(item)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    finally:
+        if owned:
+            for _, service in services:
+                service.close()
+
+    ranked_plans = sorted(plans, key=lambda item: -item["hotspot"]["score"])
+    return {
+        "version": "1.0",
+        "repository": repo,
+        "plan_count": min(len(ranked_plans), limit),
+        "plans": ranked_plans[:limit],
+    }
 
 
 @app.post("/api/chat")

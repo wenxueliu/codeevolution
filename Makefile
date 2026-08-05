@@ -1,4 +1,4 @@
-.PHONY: build start stop restart status test
+.PHONY: build start stop restart status test test-ui-e2e
 
 build:
 	.venv/bin/python scripts/service.py build
@@ -18,3 +18,6 @@ status:
 test:
 	.venv/bin/python -m pytest -q
 	cd web && npm run test:coverage
+
+test-ui-e2e:
+	.venv/bin/python scripts/e2e_refactoring_webbridge.py
