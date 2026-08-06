@@ -147,8 +147,10 @@ class KnowledgeExtractor:
                     "in_degree": item.in_degree,
                     "out_degree": item.out_degree,
                     "layer": item.layer,
+                    "node_id": item.node_id,
                     "field_count": item.field_count,
                     "relationship_count": item.relationship_count,
+                    "start_line": item.start_line,
                     "score": item.score,
                     "annotations": item.annotations,
                 }

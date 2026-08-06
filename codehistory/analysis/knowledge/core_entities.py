@@ -69,6 +69,7 @@ class CoreEntityExtractor:
                     layer=self._classify_layer(item["file_path"]),
                     field_count=field_counts.get(node_id, 0),
                     relationship_count=graph.degree(node_id),
+                    start_line=item.get("start_line", 0),
                     score=round(score, 4),
                     annotations=self.decode_annotations(item.get("decorators")),
                 )

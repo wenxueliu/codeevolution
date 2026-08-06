@@ -102,7 +102,21 @@
 
         <template v-else-if="activeSection === 'core_entities'">
           <div class="table-wrap"><table><thead><tr><th>领域对象</th><th>类型</th><th>字段</th><th>关系</th><th>领域分</th><th>仓库/文件</th></tr></thead><tbody>
-            <tr v-for="item in activeData || []" :key="item.qualified_name"><td><b>{{ item.name }}</b></td><td>{{ item.kind }}</td><td>{{ item.field_count }}</td><td>{{ item.relationship_count }}</td><td>{{ Number(item.score || 0).toFixed(2) }}</td><td><span class="repo-badge">{{ item.repository }}</span><code>{{ item.file_path }}</code></td></tr>
+            <template v-for="item in activeData || []" :key="item.qualified_name">
+              <tr class="clickable" :class="{ expanded: expandedEntityKeys.has(item.node_id || item.qualified_name) }" tabindex="0" @click="toggleEntity(item)" @keydown.enter="toggleEntity(item)">
+                <td><b>{{ item.name }}</b></td><td>{{ item.kind }}</td><td>{{ item.field_count }}</td><td>{{ item.relationship_count }}</td><td>{{ Number(item.score || 0).toFixed(2) }}</td><td><span class="repo-badge">{{ item.repository }}</span><code>{{ item.file_path }}</code></td>
+              </tr>
+              <tr v-if="expandedEntityKeys.has(item.node_id || item.qualified_name)" class="expand-detail">
+                <td colspan="6">
+                  <div class="entity-detail">
+                    <div><strong>限定名:</strong> <code>{{ item.qualified_name }}</code></div>
+                    <div><strong>类型:</strong> {{ item.kind }} &middot; <strong>分层:</strong> {{ item.layer || '未分类' }} &middot; <strong>领域分:</strong> {{ Number(item.score || 0).toFixed(2) }}</div>
+                    <div><strong>文件位置:</strong> <code>{{ item.file_path }}{{ item.start_line ? ':' + item.start_line : '' }}</code></div>
+                    <div v-if="item.annotations?.length"><strong>标注:</strong> {{ item.annotations.join(', ') }}</div>
+                  </div>
+                </td>
+              </tr>
+            </template>
           </tbody></table></div>
         </template>
 
@@ -168,7 +182,7 @@ function loadMermaid() {
 export default {
   components: { UiState },
   props: { repoName: String },
-  data() { return { report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS, expandedKeys: new Set(), endpointSearch: '', endpointMethod: '', endpointPage: 1, endpointPageSize: 25, loadedAt: '', loadDuration: 0 } },
+  data() { return { report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS, expandedKeys: new Set(), expandedEntityKeys: new Set(), endpointSearch: '', endpointMethod: '', endpointPage: 1, endpointPageSize: 25, loadedAt: '', loadDuration: 0 } },
   computed: {
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.report?.[this.activeSection] ?? {} },
@@ -202,6 +216,7 @@ export default {
         this.llmLoaded = includeLlm
         this.endpointPage = 1
         this.expandedKeys = new Set()
+        this.expandedEntityKeys = new Set()
         this.loadedAt = new Date().toLocaleTimeString()
         this.loadDuration = Math.round(performance.now() - started)
       })
@@ -213,6 +228,15 @@ export default {
     isDisabled(value) { return Boolean(value && !Array.isArray(value) && value.note) },
     formatJson(value) { return JSON.stringify(value, null, 2) },
     endpointKey(item, index) { return `${item.method || ''}-${item.path || ''}-${index}` },
+    toggleEntity(item) {
+      const key = item.node_id || item.qualified_name
+      if (this.expandedEntityKeys.has(key)) {
+        this.expandedEntityKeys.delete(key)
+      } else {
+        this.expandedEntityKeys.add(key)
+      }
+      this.expandedEntityKeys = new Set(this.expandedEntityKeys)
+    },
     async toggleEndpoint(item, index) {
       const key = this.endpointKey(item, index)
       if (this.expandedKeys.has(key)) {
@@ -294,6 +318,9 @@ td code { color: #666; word-break: break-all; }
 .clickable:hover { background: #fff8f9; }
 .clickable.expanded { background: #fff0f2; }
 .expand-detail td { padding: 0 10px 12px; border-bottom: 2px solid #e94560; background: #fffafb; }
+.entity-detail { display: grid; gap: 6px; font-size: 12px; color: #444; }
+.entity-detail strong { color: #333; }
+.entity-detail code { color: #666; }
 .contract-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
 .contract-grid > div { min-width: 0; border: 1px solid #eee; border-radius: 6px; padding: 10px; background: #fff; }
 .contract-grid h4, .api-detail > h4 { font-size: 12px; color: #555; margin-bottom: 7px; }

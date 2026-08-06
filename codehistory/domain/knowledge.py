@@ -97,6 +97,7 @@ class CoreEntity:
     layer: str = ""
     field_count: int = 0
     relationship_count: int = 0
+    start_line: int = 0
     score: float = 0.0
     annotations: list[str] = field(default_factory=list)
 
