@@ -202,8 +202,15 @@ export default {
 
       const isBusy = task.status === 'pending' || task.status === 'running'
       const steps = task.progress || []
-      const total = steps.length || task.total || 1
-      const done = steps.filter(s => s.status === 'completed').length
+      const total = task.total || 1
+      // Count completed *repos* (a repo is done when all its steps are completed)
+      const memberSteps = {}
+      for (const s of steps) {
+        if (!memberSteps[s.member]) memberSteps[s.member] = []
+        memberSteps[s.member].push(s)
+      }
+      const doneRepos = Object.values(memberSteps).filter(ss => ss.every(s => s.status === 'completed')).length
+      const done = doneRepos
       const pct = Math.round((done / Math.max(total, 1)) * 100)
 
       let label = '一键初始化'
