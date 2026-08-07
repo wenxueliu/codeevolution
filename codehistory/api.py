@@ -25,7 +25,7 @@ from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
-from .registry import get_repo, list_repos, register_repo, repository_members, unregister_repo
+from .registry import get_repo, list_repos, register_repo, repository_members, unregister_member, unregister_repo
 from .store import EvolutionStore
 
 app = FastAPI(title="CodeHistory API")
@@ -353,6 +353,49 @@ def api_unregister_repo(name: str):
         store.close()
     unregister_repo(name)
     return {"ok": True, "name": name, "deleted_data": False}
+
+
+@app.get("/api/repos/{name}/members")
+def api_list_members(name: str):
+    """List all physical repo members under a logical service."""
+    entry = get_repo(name)
+    if not entry:
+        raise HTTPException(404, f"Repo '{name}' not found")
+    return {"members": repository_members(entry)}
+
+
+class AddMemberRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/api/repos/{name}/members")
+def api_add_member(name: str, request: AddMemberRequest):
+    """Add a physical repo to an existing logical service."""
+    entry = get_repo(name)
+    if not entry:
+        raise HTTPException(404, f"Repo '{name}' not found")
+    try:
+        updated = register_repo(name, request.path)
+        return {"ok": True, "repo": updated}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/repos/{name}/members")
+def api_remove_member(name: str, path: str = Query(..., min_length=1)):
+    """Remove a physical repo from a logical service."""
+    if not get_repo(name):
+        raise HTTPException(404, f"Repo '{name}' not found")
+    try:
+        result = unregister_member(name, path)
+        if result is None:
+            # Last member removed → service deleted
+            if store := _stores.pop(name, None):
+                store.close()
+            return {"ok": True, "name": name, "deleted_service": True}
+        return {"ok": True, "repo": result}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/repos/{name}/init")

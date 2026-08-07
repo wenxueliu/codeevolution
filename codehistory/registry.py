@@ -246,6 +246,38 @@ def unregister_repo(name: str):
     save_registry(entries)
 
 
+def unregister_member(name: str, member_path: str) -> dict | None:
+    """Remove one physical repo from a logical service.
+
+    If only one member remains, the service reverts to legacy single-repo mode
+    (``repositories`` list is removed). Returns the updated entry or None.
+    """
+    entries = load_registry()
+    abs_path = str(Path(member_path).resolve())
+    for e in entries:
+        if e["name"] != name:
+            continue
+        members = repository_members(e)
+        remaining = [m for m in members if m["path"] != abs_path]
+        if len(remaining) == len(members):
+            raise ValueError(f"Repo '{abs_path}' not found under service '{name}'")
+        if not remaining:
+            # Removing the last member → delete the entire service
+            entries = [entry for entry in entries if entry["name"] != name]
+            save_registry(entries)
+            return None
+        if len(remaining) == 1:
+            # Revert to legacy single-repo mode
+            e["path"] = remaining[0]["path"]
+            if "repositories" in e:
+                del e["repositories"]
+            # Re-scan metadata
+            return refresh_meta(name)
+        e["repositories"] = remaining
+        return refresh_meta(name)
+    raise ValueError(f"Service '{name}' not found")
+
+
 def get_repo(name: str) -> dict | None:
     for e in load_registry():
         if e["name"] == name:

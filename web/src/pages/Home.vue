@@ -11,7 +11,7 @@
       <label>服务名称<input v-model.trim="newRepo.name" required placeholder="例如：mall" /></label>
       <label>代码仓绝对路径<input v-model.trim="newRepo.path" required placeholder="例如：/workspace/mall" /></label>
       <button class="primary" :disabled="registering">{{ registering ? '正在注册...' : '注册代码仓' }}</button>
-      <p>注册只保存路径，不会修改代码仓。多仓逻辑服务可继续使用 CLI 添加成员。</p>
+      <p>注册只保存路径，不会修改代码仓。注册后可在卡片中继续添加同服务的其他代码仓。</p>
     </form>
 
     <div class="repo-grid" v-if="repos.length">
@@ -21,8 +21,18 @@
           <div class="repo-path">{{ r.path }}</div>
           <div class="repo-members">
             <span v-for="member in r.repositories || []" :key="member.path" :class="{ unhealthy: !member.cg_initialized }">
-              {{ member.name }} · {{ member.cg_initialized ? '索引就绪' : '未初始化索引' }}
+              <code class="member-path">{{ member.path }}</code>
+              {{ member.cg_initialized ? '索引就绪' : '未初始化索引' }}
+              <button class="member-remove" type="button" title="移除此代码仓" @click.prevent.stop="removeMember(r, member.path)">x</button>
             </span>
+            <span v-if="!(r.repositories && r.repositories.length)" class="single-repo">
+              <code class="member-path">{{ r.path }}</code> · 单仓服务
+            </span>
+          </div>
+          <div class="member-add" v-if="addMemberForm[r.name] !== undefined">
+            <input v-model.trim="addMemberPath[r.name]" placeholder="代码仓绝对路径" @keyup.enter="addMember(r)" />
+            <button class="primary sm" :disabled="addingMember[r.name]" @click.stop="addMember(r)">{{ addingMember[r.name] ? '添加中...' : '确认' }}</button>
+            <button class="secondary sm" @click.stop="toggleAddMember(r)">取消</button>
           </div>
           <div class="repo-stats" v-if="hasAnalysis(r)">
             <div class="stat"><b>{{ r.stats.total_commits }}</b> 已分析提交</div>
@@ -36,6 +46,7 @@
           </div>
         </router-link>
         <div class="repo-actions">
+          <button class="add-member-button" type="button" title="添加代码仓" @click.stop="toggleAddMember(r)">+ 代码仓</button>
           <button
             class="init-button"
             type="button"
@@ -86,6 +97,9 @@ export default {
       registering: false,
       newRepo: { name: '', path: '' },
       initTasks: {},
+      addMemberForm: {},
+      addMemberPath: {},
+      addingMember: {},
       _pollTimer: null,
     }
   },
@@ -124,6 +138,49 @@ export default {
       this.registering = false
     },
     hasAnalysis(repo) { return Boolean(repo.stats && repo.stats.total_commits > 0) },
+
+    // ── member management ──
+
+    toggleAddMember(repo) {
+      if (this.addMemberForm[repo.name] !== undefined) {
+        delete this.addMemberForm[repo.name]
+        delete this.addMemberPath[repo.name]
+      } else {
+        this.addMemberForm[repo.name] = true
+        this.addMemberPath[repo.name] = ''
+      }
+    },
+
+    async addMember(repo) {
+      const p = (this.addMemberPath[repo.name] || '').trim()
+      if (!p) return
+      this.addingMember[repo.name] = true
+      try {
+        await this.$api.request(`/api/repos/${encodeURIComponent(repo.name)}/members`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: p }),
+        })
+        delete this.addMemberForm[repo.name]
+        delete this.addMemberPath[repo.name]
+        await this.loadRepos()
+      } catch (err) {
+        this.error = err
+      } finally {
+        delete this.addingMember[repo.name]
+      }
+    },
+
+    async removeMember(repo, memberPath) {
+      const confirmed = window.confirm(`确定从"${repo.name}"中移除此代码仓吗？\n\n${memberPath}\n\n仅删除注册记录，不会删除实际代码仓数据。`)
+      if (!confirmed) return
+      try {
+        await this.$api.delete(`/api/repos/${encodeURIComponent(repo.name)}/members?path=${encodeURIComponent(memberPath)}`)
+        await this.loadRepos()
+      } catch (err) {
+        this.error = err
+      }
+    },
 
     // ── one-click init ──
 
@@ -235,9 +292,17 @@ export default {
 .progress-steps .step-failed { background: #ffeaea; color: #b8324a; }
 .progress-error { margin-top: 6px; font-size: 11px; color: #b8324a; }
 .repo-path { font-size: 12px; color: #999; font-family: monospace; margin-bottom: 12px; word-break: break-all; }
-.repo-members { display: flex; flex-wrap: wrap; gap: 5px; margin: -4px 0 12px; }
-.repo-members span { padding: 2px 7px; border-radius: 10px; background: #eaf8f0; color: #23764a; font-size: 10px; }
+.repo-members { display: flex; flex-direction: column; gap: 2px; margin: -4px 0 12px; }
+.repo-members span { display: flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 10px; background: #eaf8f0; color: #23764a; font-size: 10px; }
 .repo-members span.unhealthy { background: #fff3db; color: #8a6418; }
+.repo-members span.single-repo { background: #f0f0f5; color: #666; }
+.member-path { font-size: 9px; color: #555; background: rgba(0,0,0,.05); padding: 1px 4px; border-radius: 3px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-remove { border: 0; background: none; color: #c8324d; cursor: pointer; font-size: 10px; font-weight: 700; padding: 0 2px; line-height: 1; margin-left: auto; opacity: 0.5; }
+.member-remove:hover { opacity: 1; }
+.member-add { display: flex; gap: 6px; padding: 0 20px 12px; }
+.member-add input { flex: 1; border: 1px solid #cfd3da; border-radius: 5px; padding: 5px 8px; font-size: 11px; min-width: 0; }
+.add-member-button { border: 1px solid #c5d8c5; background: #fff; color: #3a7d44; border-radius: 5px; padding: 4px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.add-member-button:hover { color: #fff; background: #3a7d44; border-color: #3a7d44; }
 .repo-stats { display: flex; gap: 20px; font-size: 13px; color: #666; }
 .repo-stats b { color: #333; }
 .repo-empty { display: grid; gap: 5px; font-size: 12px; color: #73622d; background: #fff9e8; padding: 10px; border-radius: 6px; }
