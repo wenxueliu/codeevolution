@@ -113,6 +113,12 @@
                     <div><strong>类型:</strong> {{ item.kind }} &middot; <strong>分层:</strong> {{ item.layer || '未分类' }} &middot; <strong>领域分:</strong> {{ Number(item.score || 0).toFixed(2) }}</div>
                     <div><strong>文件位置:</strong> <code>{{ item.file_path }}{{ item.start_line ? ':' + item.start_line : '' }}</code></div>
                     <div v-if="item.annotations?.length"><strong>标注:</strong> {{ item.annotations.join(', ') }}</div>
+                    <div v-if="item.fields?.length" class="field-list">
+                      <strong>字段 ({{ item.fields.length }}):</strong>
+                      <table class="field-table"><thead><tr><th>名称</th><th>类型</th><th>行</th></tr></thead><tbody>
+                        <tr v-for="f in item.fields" :key="f.name"><td><code>{{ f.name }}</code></td><td>{{ f.signature || f.kind || '-' }}</td><td>{{ f.start_line || '-' }}</td></tr>
+                      </tbody></table>
+                    </div>
                   </div>
                 </td>
               </tr>
@@ -321,6 +327,10 @@ td code { color: #666; word-break: break-all; }
 .entity-detail { display: grid; gap: 6px; font-size: 12px; color: #444; }
 .entity-detail strong { color: #333; }
 .entity-detail code { color: #666; }
+.field-list { margin-top: 4px; }
+.field-table { margin-top: 4px; width: 100%; font-size: 11px; }
+.field-table th { background: #f0f0f3; font-size: 10px; }
+.field-table td { padding: 4px 8px; }
 .contract-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
 .contract-grid > div { min-width: 0; border: 1px solid #eee; border-radius: 6px; padding: 10px; background: #fff; }
 .contract-grid h4, .api-detail > h4 { font-size: 12px; color: #555; margin-bottom: 7px; }

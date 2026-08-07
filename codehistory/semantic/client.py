@@ -1,4 +1,4 @@
-"""LLM transport port and LiteLLM adapter."""
+"""LLM transport port and OpenAI adapter."""
 
 import json
 from typing import Protocol
@@ -10,21 +10,23 @@ class LLMClient(Protocol):
     ) -> str | None: ...
 
 
-class LiteLLMClient:
+class OpenAILLMClient:
     def __init__(self, config: dict):
         self.config = config
 
     def complete(self, prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str | None:
         try:
-            import litellm
+            from openai import OpenAI
         except ImportError:
             return None
         try:
-            response = litellm.completion(
+            client = OpenAI(
+                api_key=self.config["api_key"],
+                base_url=self.config["api_base"] or None,
+            )
+            response = client.chat.completions.create(
                 model=self.config["model"],
                 messages=[{"role": "user", "content": prompt}],
-                api_key=self.config["api_key"],
-                api_base=self.config["api_base"] or None,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )

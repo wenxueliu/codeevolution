@@ -17,7 +17,7 @@ CodeHistory 三大子系统：
 
 ## 技术栈
 
-- Python 3.10+ / SQLite (WAL) / FastMCP / networkx / litellm (可选)
+- Python 3.10+ / SQLite (WAL) / FastMCP / networkx / openai (可选)
 - **代码解析完全委托给 CodeGraph** (`@colbymchenry/codegraph` v0.9.x)
 - 通过直接读取 `.codegraph/codegraph.db` (SQLite) 获取图谱，无需 CodeGraph 服务进程
 - 使用前需在目标仓库运行 `codegraph init`
@@ -40,7 +40,7 @@ codehistory/
   knowledge.py           # 单仓知识提取（三阶段 13 维）
   cross_repo.py          # P0 多仓拓扑：HTTP 调用拼接 + 统一拓扑 + 影响分析
   p2_advanced.py         # P2 高级分析：全通道流程追踪 + 跨服务实体对齐
-  llm.py                 # LLM 调用层（litellm，支持 OpenAI / Anthropic）
+  llm.py                 # LLM 调用层（openai，支持 OpenAI 兼容 API）
 
   registry.py            # 多仓注册中心 + 自动检测 + 服务发现 + 健康检查 + 拓扑缓存
   api.py                 # FastAPI 后端（多仓 Web Dashboard）

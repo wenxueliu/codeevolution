@@ -35,7 +35,30 @@
             <code>codehistory backfill -r {{ r.path }}</code>
           </div>
         </router-link>
-        <button class="remove-button" type="button" title="移除注册" @click="removeRepo(r)">删除</button>
+        <div class="repo-actions">
+          <button
+            class="init-button"
+            type="button"
+            :disabled="initState(r).busy"
+            :title="initState(r).title"
+            @click="initRepo(r)"
+          >
+            <span v-if="initState(r).busy" class="spinner"></span>
+            {{ initState(r).label }}
+          </button>
+          <button class="remove-button" type="button" title="移除注册" @click="removeRepo(r)">删除</button>
+        </div>
+        <div class="init-progress" v-if="initState(r).detail">
+          <div class="progress-steps">
+            <span
+              v-for="(step, si) in initState(r).steps"
+              :key="si"
+              :class="'step-' + step.status"
+            >{{ step.member }}: {{ step.step === 'codegraph_init' ? '索引' : '回溯' }}
+              {{ step.status === 'completed' ? '✓' : step.status === 'running' ? '...' : '✗' }}</span>
+          </div>
+          <div class="progress-error" v-if="initState(r).error">{{ initState(r).error }}</div>
+        </div>
       </article>
     </div>
 
@@ -48,10 +71,27 @@
 <script>
 import UiState from '../components/UiState.vue'
 
+const INIT_POLL_MS = 2000
+
 export default {
   components: { UiState },
-  data() { return { repos: [], showRegister: false, registering: false, newRepo: { name: '', path: '' } } },
-  async created() { await this.loadRepos() },
+  data() {
+    return {
+      repos: [],
+      showRegister: false,
+      registering: false,
+      newRepo: { name: '', path: '' },
+      initTasks: {},
+      _pollTimer: null,
+    }
+  },
+  async created() {
+    await this.loadRepos()
+    this._pollTimer = setInterval(() => this._pollInitTasks(), INIT_POLL_MS)
+  },
+  beforeUnmount() {
+    if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null }
+  },
   methods: {
     async loadRepos() {
       await this.$runAsync(async () => {
@@ -61,7 +101,7 @@ export default {
     },
     async removeRepo(repo) {
       const confirmed = window.confirm(
-        `确定从 CodeHistory 移除“${repo.name}”吗？\n\n仅删除注册记录，不会删除代码仓、CodeGraph 或演进数据库。`,
+        `确定从 CodeHistory 移除”${repo.name}”吗？\n\n仅删除注册记录，不会删除代码仓、CodeGraph 或演进数据库。`,
       )
       if (!confirmed) return
       await this.$runAsync(async () => {
@@ -80,6 +120,68 @@ export default {
       this.registering = false
     },
     hasAnalysis(repo) { return Boolean(repo.stats && repo.stats.total_commits > 0) },
+
+    // ── one-click init ──
+
+    async initRepo(repo) {
+      const task = this.initTasks[repo.name]
+      if (task && (task.status === 'pending' || task.status === 'running')) return
+      this.$set(this.initTasks, repo.name, { status: 'pending', progress: [], service: repo.name })
+      try {
+        await this.$api.request(`/api/repos/${encodeURIComponent(repo.name)}/init`, { method: 'POST' })
+        await this._fetchInitStatus(repo.name)
+      } catch (err) {
+        this.$set(this.initTasks, repo.name, { ...this.initTasks[repo.name], status: 'failed', error: (err.body && (err.body.detail || err.body.message)) || err.message || '请求失败' })
+      }
+    },
+
+    initState(repo) {
+      const task = this.initTasks[repo.name]
+      if (!task) return { busy: false, label: '一键初始化', title: '初始化索引并回溯全量历史', detail: false, steps: [], error: '' }
+
+      const isBusy = task.status === 'pending' || task.status === 'running'
+      const steps = task.progress || []
+
+      let label = '一键初始化'
+      let title = '初始化索引并回溯全量历史'
+      if (isBusy) {
+        const done = steps.filter(s => s.status === 'completed').length
+        label = `初始化中 ${done}/${steps.length || task.total || '?'}`
+        title = '正在初始化...'
+      } else if (task.status === 'completed') {
+        label = '初始化完成 ✓'
+        title = '所有成员初始化成功'
+      } else if (task.status === 'partial') {
+        label = '部分完成 ⚠'
+        title = '部分成员初始化失败'
+      } else if (task.status === 'failed') {
+        label = '初始化失败 ✗'
+        title = task.error || '初始化失败'
+      }
+
+      return { busy: isBusy, label, title, detail: !!task.status, steps, error: task.error || '' }
+    },
+
+    async _fetchInitStatus(name) {
+      try {
+        const task = await this.$api.get(`/api/repos/${encodeURIComponent(name)}/init/status`)
+        this.$set(this.initTasks, name, task)
+        if (task.status === 'completed' || task.status === 'partial') {
+          await this.loadRepos()
+        }
+      } catch {
+        // task not found — ignore
+      }
+    },
+
+    async _pollInitTasks() {
+      const running = Object.entries(this.initTasks).filter(
+        ([, t]) => t.status === 'pending' || t.status === 'running',
+      )
+      for (const [name] of running) {
+        await this._fetchInitStatus(name)
+      }
+    },
   },
 }
 </script>
@@ -103,9 +205,22 @@ export default {
 .repo-link { display: block; padding: 20px; color: inherit; text-decoration: none; }
 .repo-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .repo-card h2 { font-size: 18px; color: #e94560; margin-bottom: 4px; }
-.remove-button { position: absolute; right: 16px; top: 16px; border: 1px solid #e4b8bf; background: #fff; color: #b8324a; border-radius: 5px; padding: 4px 9px; font-size: 11px; cursor: pointer; }
-.repo-header > span { margin-right: 56px; color: #a6acb6; }
+.repo-actions { display: flex; gap: 6px; position: absolute; right: 16px; top: 16px; }
+.init-button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #a6c8e4; background: #fff; color: #2a6496; border-radius: 5px; padding: 4px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.init-button:hover:not(:disabled) { color: #fff; background: #2a6496; border-color: #2a6496; }
+.init-button:disabled { opacity: 0.7; cursor: not-allowed; }
+.remove-button { border: 1px solid #e4b8bf; background: #fff; color: #b8324a; border-radius: 5px; padding: 4px 9px; font-size: 11px; cursor: pointer; }
+.repo-header > span { margin-right: 120px; color: #a6acb6; }
 .remove-button:hover { color: #fff; background: #c8324d; border-color: #c8324d; }
+.spinner { width: 10px; height: 10px; border: 2px solid #cfd3da; border-top-color: #2a6496; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.init-progress { padding: 0 20px 14px; }
+.progress-steps { display: flex; flex-wrap: wrap; gap: 4px; }
+.progress-steps span { padding: 1px 6px; border-radius: 8px; font-size: 10px; }
+.progress-steps .step-running { background: #e3f0fc; color: #2a6496; }
+.progress-steps .step-completed { background: #eaf8f0; color: #23764a; }
+.progress-steps .step-failed { background: #ffeaea; color: #b8324a; }
+.progress-error { margin-top: 6px; font-size: 11px; color: #b8324a; }
 .repo-path { font-size: 12px; color: #999; font-family: monospace; margin-bottom: 12px; word-break: break-all; }
 .repo-members { display: flex; flex-wrap: wrap; gap: 5px; margin: -4px 0 12px; }
 .repo-members span { padding: 2px 7px; border-radius: 10px; background: #eaf8f0; color: #23764a; font-size: 10px; }

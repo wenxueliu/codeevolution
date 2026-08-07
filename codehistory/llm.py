@@ -1,4 +1,4 @@
-"""LLM-powered knowledge extraction via litellm.
+"""LLM-powered knowledge extraction via OpenAI.
 
 Phase 3 — requires LLM for semantic understanding:
 
@@ -8,14 +8,14 @@ Phase 3 — requires LLM for semantic understanding:
   4. State machine         — detect state enums and their transition graph
   5. Architecture decisions — extract design rationale from comments/docs
 
-All models are accessed through litellm (OpenAI, Anthropic, etc.).
-Set OPENAI_API_KEY or ANTHROPIC_API_KEY in the environment.
+All models are accessed through OpenAI-compatible API.
+Set OPENAI_API_KEY in the environment.
 Model can be overridden via CODEHISTORY_LLM_MODEL.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 
-from .semantic.client import LiteLLMClient
+from .semantic.client import OpenAILLMClient
 from .semantic.config import get_llm_config
 from .semantic.json_parser import parse_json
 from .semantic.models import BusinessDescription, BusinessRule, ErrorScenario, StateMachineDef
@@ -40,12 +40,12 @@ def _call_llm(
     max_tokens: int = 800,
     temperature: float = 0.2,
 ) -> str | None:
-    """Call LLM via litellm. Returns response text or None."""
+    """Call LLM via OpenAI. Returns response text or None."""
     config = _get_llm_config()
     if not config:
         return None
 
-    return LiteLLMClient(config).complete(prompt, max_tokens, temperature)
+    return OpenAILLMClient(config).complete(prompt, max_tokens, temperature)
 
 
 def _parse_json(content: str | None) -> dict | None:

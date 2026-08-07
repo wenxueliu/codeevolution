@@ -28,7 +28,7 @@ codehistory = "codehistory.cli:main"
 
 [project.optional-dependencies]
 llm = [
-    "litellm>=1.0,<2",
+    "openai>=1.0,<3",
 ]
 dev = [
     "build>=1.2,<2",

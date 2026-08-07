@@ -703,6 +703,17 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
                  AND e.kind IN ('references','type_of','extends','implements')"""
         )
 
+    def domain_type_fields(self, node_id: str) -> list[dict[str, Any]]:
+        """Return the fields/properties of a domain type (class/interface/struct)."""
+        return self.query(
+            """SELECT n.name, n.kind, n.signature, n.start_line
+               FROM edges e JOIN nodes n ON n.id = e.target
+               WHERE e.source = ? AND e.kind = 'contains'
+                 AND n.kind IN ('field','property','variable','enum_member')
+               ORDER BY n.start_line""",
+            [node_id],
+        )
+
     def domain_type_field_counts(self) -> list[dict[str, Any]]:
         return self.query(
             """SELECT e.source AS id, COUNT(*) AS field_count

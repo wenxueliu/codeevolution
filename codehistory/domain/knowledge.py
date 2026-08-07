@@ -100,6 +100,7 @@ class CoreEntity:
     start_line: int = 0
     score: float = 0.0
     annotations: list[str] = field(default_factory=list)
+    fields: list[dict] = field(default_factory=list)
 
 
 @dataclass

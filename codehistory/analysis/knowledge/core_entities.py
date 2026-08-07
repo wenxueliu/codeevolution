@@ -14,6 +14,7 @@ class _Source(Protocol):
     def domain_type_nodes(self) -> list[dict[str, Any]]: ...
     def domain_type_relationships(self) -> list[dict[str, Any]]: ...
     def domain_type_field_counts(self) -> list[dict[str, Any]]: ...
+    def domain_type_fields(self, node_id: str) -> list[dict[str, Any]]: ...
 
 
 class CoreEntityExtractor:
@@ -70,6 +71,7 @@ class CoreEntityExtractor:
                     field_count=field_counts.get(node_id, 0),
                     relationship_count=graph.degree(node_id),
                     start_line=item.get("start_line", 0),
+                    fields=self._source.domain_type_fields(node_id) if hasattr(self._source, "domain_type_fields") else [],
                     score=round(score, 4),
                     annotations=self.decode_annotations(item.get("decorators")),
                 )
