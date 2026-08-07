@@ -378,12 +378,12 @@ JSON:`
 
     brStartEdit(item) {
       const key = this.brKey(item)
-      this.$set(this.brEditing, key, this.brState(item).editPrompt)
+      this.brEditing[key] = this.brState(item).editPrompt
     },
 
     brCancelEdit(item) {
       const key = this.brKey(item)
-      this.$delete(this.brEditing, key)
+      delete this.brEditing[key]
     },
 
     async brGenerate(item) {
@@ -403,22 +403,22 @@ JSON:`
             custom_prompt: prompt || '',
           }),
         })
-        this.$set(this.businessRules, key, {
+        this.businessRules[key] = {
           id: resp.id, result: resp.result, status: 'completed',
           repo_name: this.repoName, handler: item.handler, method: item.method, path: item.path,
           custom_prompt: prompt,
-        })
-        this.$delete(this.brEditing, key)
+        }
+        delete this.brEditing[key]
       } catch (err) {
         const detail = (err.body && (err.body.detail || err.body.message)) || err.message || 'Unknown error'
-        this.$set(this.businessRules, key, {
+        this.businessRules[key] = {
           ...this.businessRules[key],
           status: 'failed', error: detail,
           repo_name: this.repoName, handler: item.handler, method: item.method, path: item.path,
           custom_prompt: prompt,
-        })
+        }
         alert('生成失败: ' + detail)
-        this.$delete(this.brEditing, key)
+        delete this.brEditing[key]
       } finally {
         this.brLoading = new Set([...this.brLoading].filter(k => k !== key))
       }

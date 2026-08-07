@@ -49,6 +49,10 @@
           <button class="remove-button" type="button" title="移除注册" @click="removeRepo(r)">删除</button>
         </div>
         <div class="init-progress" v-if="initState(r).detail">
+          <div class="progress-bar-wrap" v-if="initState(r).total > 0">
+            <div class="progress-bar-fill" :style="{ width: initState(r).pct + '%' }" :class="'bar-' + initState(r).taskStatus"></div>
+            <span class="progress-bar-text">{{ initState(r).done }}/{{ initState(r).total }} ({{ initState(r).pct }}%)</span>
+          </div>
           <div class="progress-steps">
             <span
               v-for="(step, si) in initState(r).steps"
@@ -126,27 +130,29 @@ export default {
     async initRepo(repo) {
       const task = this.initTasks[repo.name]
       if (task && (task.status === 'pending' || task.status === 'running')) return
-      this.$set(this.initTasks, repo.name, { status: 'pending', progress: [], service: repo.name })
+      this.initTasks[repo.name] = { status: 'pending', progress: [], service: repo.name }
       try {
         await this.$api.request(`/api/repos/${encodeURIComponent(repo.name)}/init`, { method: 'POST' })
         await this._fetchInitStatus(repo.name)
       } catch (err) {
-        this.$set(this.initTasks, repo.name, { ...this.initTasks[repo.name], status: 'failed', error: (err.body && (err.body.detail || err.body.message)) || err.message || '请求失败' })
+        this.initTasks[repo.name] = { ...this.initTasks[repo.name], status: 'failed', error: (err.body && (err.body.detail || err.body.message)) || err.message || '请求失败' }
       }
     },
 
     initState(repo) {
       const task = this.initTasks[repo.name]
-      if (!task) return { busy: false, label: '一键初始化', title: '初始化索引并回溯全量历史', detail: false, steps: [], error: '' }
+      if (!task) return { busy: false, label: '一键初始化', title: '初始化索引并回溯全量历史', detail: false, steps: [], error: '', total: 0, done: 0, pct: 0, taskStatus: '' }
 
       const isBusy = task.status === 'pending' || task.status === 'running'
       const steps = task.progress || []
+      const total = steps.length || task.total || 1
+      const done = steps.filter(s => s.status === 'completed').length
+      const pct = Math.round((done / Math.max(total, 1)) * 100)
 
       let label = '一键初始化'
       let title = '初始化索引并回溯全量历史'
       if (isBusy) {
-        const done = steps.filter(s => s.status === 'completed').length
-        label = `初始化中 ${done}/${steps.length || task.total || '?'}`
+        label = `初始化中 ${done}/${total}`
         title = '正在初始化...'
       } else if (task.status === 'completed') {
         label = '初始化完成 ✓'
@@ -159,13 +165,13 @@ export default {
         title = task.error || '初始化失败'
       }
 
-      return { busy: isBusy, label, title, detail: !!task.status, steps, error: task.error || '' }
+      return { busy: isBusy, label, title, detail: !!task.status, steps, error: task.error || '', total, done, pct, taskStatus: task.status || '' }
     },
 
     async _fetchInitStatus(name) {
       try {
         const task = await this.$api.get(`/api/repos/${encodeURIComponent(name)}/init/status`)
-        this.$set(this.initTasks, name, task)
+        this.initTasks[name] = task
         if (task.status === 'completed' || task.status === 'partial') {
           await this.loadRepos()
         }
@@ -215,6 +221,13 @@ export default {
 .spinner { width: 10px; height: 10px; border: 2px solid #cfd3da; border-top-color: #2a6496; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .init-progress { padding: 0 20px 14px; }
+.progress-bar-wrap { position: relative; height: 22px; background: #ececf2; border-radius: 11px; overflow: hidden; margin-bottom: 10px; }
+.progress-bar-fill { height: 100%; border-radius: 11px; transition: width 0.5s ease; min-width: 2px; }
+.bar-running, .bar-pending { background: linear-gradient(90deg, #4a90d9, #6cb3f5); }
+.bar-completed { background: linear-gradient(90deg, #3cba7a, #5dd99a); }
+.bar-partial { background: linear-gradient(90deg, #f0a030, #f5c060); }
+.bar-failed { background: linear-gradient(90deg, #d94a4a, #e87070); }
+.progress-bar-text { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 10px; font-weight: 600; color: #333; white-space: nowrap; }
 .progress-steps { display: flex; flex-wrap: wrap; gap: 4px; }
 .progress-steps span { padding: 1px 6px; border-radius: 8px; font-size: 10px; }
 .progress-steps .step-running { background: #e3f0fc; color: #2a6496; }
