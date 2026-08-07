@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -768,7 +769,7 @@ def cmd_init_all(args):
             print(f"  [{name}/{member_name}] codegraph init {path} ...")
             try:
                 result = sp.run(
-                    ["codegraph", "init", path],
+                    ["codegraph.cmd" if os.name == "nt" else "codegraph", "init", path],
                     capture_output=True,
                     text=True,
                     timeout=120,

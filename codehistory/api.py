@@ -444,7 +444,7 @@ def api_init_repo(name: str):
                 if not cg_db.exists():
                     try:
                         result = subprocess.run(
-                            ["codegraph", "init", member_path],
+                            ["codegraph.cmd" if os.name == "nt" else "codegraph", "init", member_path],
                             capture_output=True, text=True, timeout=300,
                         )
                         if result.returncode != 0:

@@ -9,6 +9,7 @@ only reads results from CodeGraph's SQLite.
 """
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -64,6 +65,10 @@ class EvolutionEngine:
         """Check if a CLI tool is available in PATH."""
         return shutil.which(name) is not None
 
+    @property
+    def _codegraph_cmd(self) -> str:
+        return "codegraph.cmd" if os.name == "nt" else "codegraph"
+
     def _check_codegraph(self):
         """Verify CodeGraph is initialized on the target repo."""
         cg_dir = Path(self.config.repo_path) / ".codegraph"
@@ -73,7 +78,7 @@ class EvolutionEngine:
                 f"CodeGraph not initialized in {self.config.repo_path}. "
                 f"Run: cd {self.config.repo_path} && codegraph init"
             )
-        if not self._which("codegraph"):
+        if not self._which(self._codegraph_cmd) and not self._which("codegraph"):
             raise RuntimeError(
                 "codegraph CLI not found in PATH. Install: npm i -g @colbymchenry/codegraph"
             )
@@ -136,7 +141,7 @@ class EvolutionEngine:
             self._analysis_repo_path = worktree_path
 
             result = subprocess.run(
-                ["codegraph", "init"],
+                [self._codegraph_cmd, "init"],
                 cwd=worktree_path,
                 capture_output=True,
                 text=True,
@@ -175,7 +180,7 @@ class EvolutionEngine:
         """Run `codegraph sync` to update the index. Returns True on success."""
         try:
             result = subprocess.run(
-                ["codegraph", "sync"],
+                [self._codegraph_cmd, "sync"],
                 cwd=self._analysis_repo_path,
                 capture_output=True,
                 text=True,
