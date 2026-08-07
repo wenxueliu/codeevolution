@@ -642,21 +642,28 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
         return [by_id[node] for node in node_ids if node in by_id]
 
     def api_call_chain_mermaid(self, node_id: str, limit: int = 30) -> str:
-        """Generate Mermaid flowchart DSL for the API call chain."""
+        """Generate Mermaid sequence diagram DSL for the API call chain."""
         edges = self.get_call_chain(node_id, max_depth=8)[:limit]
         if not edges:
-            return "graph TD\n    N0[\"No downstream calls\"]"
+            return "sequenceDiagram\n    participant N0\n    Note over N0: No downstream calls"
 
         alias_map: dict[str, str] = {}
-        lines = ["graph TD"]
+        lines = ["sequenceDiagram"]
 
+        # Register unique participants
         for edge in edges:
             for name in (edge["from"], edge["to"]):
                 if name not in alias_map:
                     alias_map[name] = f"N{len(alias_map)}"
                     safe = name.replace('"', "'").replace("\n", " ")
-                    lines.append(f"    {alias_map[name]}[\"{safe}\"]")
-            lines.append(f"    {alias_map[edge['from']]} --> {alias_map[edge['to']]}")
+                    lines.append(f"    participant {alias_map[name]} as {safe}")
+
+        # Draw call messages
+        for edge in edges:
+            from_alias = alias_map[edge["from"]]
+            to_alias = alias_map[edge["to"]]
+            lines.append(f"    {from_alias}->>+{to_alias}: calls")
+            lines.append(f"    {to_alias}-->>-{from_alias}: returns")
 
         return "\n".join(lines)
 

@@ -84,6 +84,39 @@
                     <div v-for="site in call.call_sites" :key="site.file + site.line"><code>{{ site.file }}:{{ site.line }}</code></div>
                   </div>
                   <p class="muted" v-if="!item.frontend_callers?.length">未匹配到前端调用。</p>
+                  <div class="business-rule-section">
+                    <h4>业务规则 <span v-if="brState(item).status" class="br-status" :class="'br-' + brState(item).status">{{ brState(item).statusText }}</span></h4>
+                    <div v-if="brState(item).editing" class="br-prompt-edit">
+                      <textarea v-model="brState(item).editPrompt" rows="5" class="br-textarea"></textarea>
+                      <div class="br-prompt-actions">
+                        <button class="primary sm" :disabled="brState(item).loading" @click.stop="brGenerate(item)">{{ brState(item).loading ? '生成中...' : '生成' }}</button>
+                        <button class="secondary sm" @click.stop="brCancelEdit(item)">取消</button>
+                      </div>
+                    </div>
+                    <div v-else-if="brState(item).result" class="br-result">
+                      <div v-if="brParsed(item)" class="br-parsed">
+                        <p class="br-purpose">{{ brParsed(item).business_purpose_zh || brParsed(item).business_purpose_en }}</p>
+                        <details v-if="brParsed(item).business_flow_zh?.length || brParsed(item).business_flow_en?.length" class="br-detail">
+                          <summary>业务步骤</summary>
+                          <ol><li v-for="(s, si) in (brParsed(item).business_flow_zh || brParsed(item).business_flow_en || [])" :key="si">{{ s }}</li></ol>
+                        </details>
+                        <details v-if="brParsed(item).business_rules?.length" class="br-detail">
+                          <summary>业务规则 ({{ brParsed(item).business_rules.length }})</summary>
+                          <ul><li v-for="(r, ri) in brParsed(item).business_rules" :key="ri">{{ r }}</li></ul>
+                        </details>
+                        <details v-if="brParsed(item).side_effects?.length" class="br-detail">
+                          <summary>副作用</summary>
+                          <ul><li v-for="(e, ei) in brParsed(item).side_effects" :key="ei">{{ e }}</li></ul>
+                        </details>
+                      </div>
+                      <pre v-else class="br-raw">{{ brState(item).result }}</pre>
+                      <div class="br-actions">
+                        <button class="secondary sm" @click.stop="brStartEdit(item)">编辑提示词</button>
+                        <button class="secondary sm" :disabled="brState(item).loading" @click.stop="brRetry(item)">{{ brState(item).loading ? '重试中...' : '重试' }}</button>
+                      </div>
+                    </div>
+                    <button v-else class="secondary sm" :disabled="brState(item).loading" @click.stop="brStartEdit(item)">{{ brState(item).loading ? '生成中...' : '生成业务规则' }}</button>
+                  </div>
                 </td>
               </tr>
             </template>
@@ -188,7 +221,15 @@ function loadMermaid() {
 export default {
   components: { UiState },
   props: { repoName: String },
-  data() { return { report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS, expandedKeys: new Set(), expandedEntityKeys: new Set(), endpointSearch: '', endpointMethod: '', endpointPage: 1, endpointPageSize: 25, loadedAt: '', loadDuration: 0 } },
+  data() {
+    return {
+      report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS,
+      expandedKeys: new Set(), expandedEntityKeys: new Set(),
+      endpointSearch: '', endpointMethod: '', endpointPage: 1, endpointPageSize: 25,
+      loadedAt: '', loadDuration: 0,
+      businessRules: {}, brLoading: new Set(), brEditing: {},
+    }
+  },
   computed: {
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.report?.[this.activeSection] ?? {} },
@@ -213,7 +254,10 @@ export default {
     endpointPages() { return Math.max(1, Math.ceil(this.filteredEndpoints.length / this.endpointPageSize)) },
     endpointMethods() { return [...new Set((this.report?.api_contract?.endpoints || []).map(item => item.method).filter(Boolean))].sort() },
   },
-  async created() { await this.load(false) },
+  async created() {
+    await this.load(false)
+    await this.loadBusinessRules()
+  },
   methods: {
     async load(includeLlm) {
       const started = performance.now()
@@ -257,6 +301,133 @@ export default {
         setTimeout(() => this.renderMermaid(), 50)
       }
     },
+    // ── business rules ──
+
+    brKey(item) { return [this.repoName, item.handler, item.method, item.path].join('||') },
+
+    async loadBusinessRules() {
+      try {
+        const data = await this.$api.get('/api/business-rules', { repo: this.repoName || '' })
+        const map = {}
+        for (const r of data.rules || []) {
+          map[[r.repo_name, r.handler, r.method, r.path].join('||')] = r
+        }
+        this.businessRules = map
+      } catch { /* ignore */ }
+    },
+
+    brState(item) {
+      const key = this.brKey(item)
+      const rule = this.businessRules[key]
+      const loading = this.brLoading.has(key)
+      const edit = this.brEditing[key]
+      let status = ''; let statusText = ''
+      if (loading) { status = 'loading'; statusText = '生成中...' }
+      else if (rule?.status === 'completed') { status = 'completed'; statusText = '已生成' }
+      else if (rule?.status === 'failed') { status = 'failed'; statusText = '失败' }
+      return {
+        rule, loading, status, statusText,
+        result: rule?.result || '',
+        editing: !!edit,
+        editPrompt: edit || rule?.custom_prompt || this._defaultPrompt(item),
+      }
+    },
+
+    brParsed(item) {
+      const result = this.brState(item).result
+      if (!result) return null
+      try {
+        const parsed = JSON.parse(result)
+        if (parsed && typeof parsed === 'object' && !parsed.error && (parsed.business_purpose_en || parsed.business_purpose_zh)) {
+          return parsed
+        }
+      } catch { return null }
+      return null
+    },
+
+    _defaultPrompt(item) {
+      return `You are a senior software architect explaining API business logic to product managers and developers.
+
+Below is the call chain sequence diagram (Mermaid sequenceDiagram) for an API endpoint. Analyze it and explain:
+
+1. **Business purpose**: What business function does this API serve? (1-2 sentences in English + Chinese)
+2. **Business flow**: Walk through the call chain step by step in business terms.
+3. **Key business rules**: What business constraints or decisions are embedded?
+4. **Side effects**: What external systems or services are affected?
+
+Sequence diagram:
+\`\`\`
+${item.call_chain_mermaid || `sequenceDiagram\n    participant N0 as ${item.handler}\n    Note over N0: No downstream calls`}
+\`\`\`
+
+API endpoint: ${item.method} ${item.path}
+Handler: ${item.handler}
+
+Output JSON:
+{
+  "business_purpose_en": "...",
+  "business_purpose_zh": "...",
+  "business_flow_en": ["Step 1: ...", ...],
+  "business_flow_zh": ["步骤1: ...", ...],
+  "business_rules": ["Rule 1: ...", ...],
+  "side_effects": ["Effect 1: ...", ...]
+}
+
+JSON:`
+    },
+
+    brStartEdit(item) {
+      const key = this.brKey(item)
+      this.$set(this.brEditing, key, this.brState(item).editPrompt)
+    },
+
+    brCancelEdit(item) {
+      const key = this.brKey(item)
+      this.$delete(this.brEditing, key)
+    },
+
+    async brGenerate(item) {
+      const key = this.brKey(item)
+      const prompt = this.brEditing[key] || this.brState(item).editPrompt
+      this.brLoading.add(key)
+      try {
+        const resp = await this.$api.request('/api/business-rules/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repo: this.repoName || '',
+            handler: item.handler || '',
+            method: item.method || '',
+            path: item.path || '',
+            call_chain_mermaid: item.call_chain_mermaid || '',
+            custom_prompt: prompt || '',
+          }),
+        })
+        this.$set(this.businessRules, key, {
+          id: resp.id, result: resp.result, status: 'completed',
+          repo_name: this.repoName, handler: item.handler, method: item.method, path: item.path,
+          custom_prompt: prompt,
+        })
+        this.$delete(this.brEditing, key)
+      } catch (err) {
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || 'Unknown error'
+        this.$set(this.businessRules, key, {
+          ...this.businessRules[key],
+          status: 'failed', error: detail,
+          repo_name: this.repoName, handler: item.handler, method: item.method, path: item.path,
+          custom_prompt: prompt,
+        })
+        alert('生成失败: ' + detail)
+        this.$delete(this.brEditing, key)
+      } finally {
+        this.brLoading = new Set([...this.brLoading].filter(k => k !== key))
+      }
+    },
+
+    async brRetry(item) {
+      await this.brGenerate(item)
+    },
+
     async renderMermaid() {
       const els = this.$el.querySelectorAll('.expand-detail .mermaid:not([data-processed])')
       if (!els.length) return
@@ -343,6 +514,25 @@ td code { color: #666; word-break: break-all; }
 .frontend-call { border-left: 3px solid #e94560; padding: 5px 9px; margin: 6px 0; font-size: 11px; }
 .muted { color: #aaa; font-size: 11px; }
 .repo-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 8px; background: #fff0f2; color: #c82d48; font-size: 9px; }
+.business-rule-section { margin-top: 16px; border-top: 1px solid #eee; padding-top: 12px; }
+.business-rule-section h4 { font-size: 13px; color: #444; margin-bottom: 8px; }
+.br-status { font-size: 10px; padding: 2px 6px; border-radius: 8px; margin-left: 6px; font-weight: 400; }
+.br-loading { background: #e3f0fc; color: #2a6496; }
+.br-completed { background: #eaf8f0; color: #23764a; }
+.br-failed { background: #ffeaea; color: #b8324a; }
+.br-prompt-edit { display: grid; gap: 8px; }
+.br-textarea { width: 100%; border: 1px solid #cfd3da; border-radius: 5px; padding: 8px; font: 11px/1.5 monospace; resize: vertical; }
+.br-prompt-actions { display: flex; gap: 6px; }
+.br-result { font-size: 12px; }
+.br-parsed { display: grid; gap: 6px; }
+.br-purpose { color: #333; line-height: 1.5; }
+.br-detail { font-size: 11px; }
+.br-detail summary { color: #555; cursor: pointer; padding: 3px 0; }
+.br-detail ol, .br-detail ul { margin: 4px 0 4px 18px; }
+.br-detail li { padding: 2px 0; color: #444; line-height: 1.4; }
+.br-raw { max-height: 200px; overflow: auto; font-size: 10px; padding: 8px; background: #f5f5f8; border-radius: 4px; white-space: pre-wrap; }
+.br-actions { display: flex; gap: 6px; margin-top: 8px; }
+.sm { padding: 5px 10px; font-size: 11px; }
 .json-view { max-height: 650px; overflow: auto; margin: 0; padding: 16px; border-radius: 6px; background: #171725; color: #d8d8e5; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .empty-semantic, .empty-state { text-align: center; padding: 60px 20px; color: #888; }
 .empty-semantic p { margin-bottom: 14px; }

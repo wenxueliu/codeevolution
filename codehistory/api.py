@@ -20,6 +20,7 @@ from .application.knowledge_service import GroupedKnowledgeService, KnowledgeSer
 from .application.refactoring_service import RefactoringPlanningService
 from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
+from .infrastructure.business_rule_store import BusinessRuleStore
 from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
 from .infrastructure.ui_test_store import UiTestStore
@@ -39,6 +40,7 @@ app.add_middleware(
 _stores: dict[str, EvolutionStore] = {}
 _audit_store: AuditStore | None = None
 _ui_test_store: UiTestStore | None = None
+_business_rule_store: BusinessRuleStore | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codehistory_dependencies", default={})
 _init_tasks: dict[str, dict] = {}
 _init_lock = threading.Lock()
@@ -81,6 +83,19 @@ class LLMConfigRequest(BaseModel):
     model: str = Field(min_length=1, max_length=200)
     api_base: str = Field(default="", max_length=1000)
     api_key: str | None = Field(default=None, max_length=4000)
+
+
+class BusinessRuleGenerateRequest(BaseModel):
+    repo: str = Field(min_length=1, max_length=200)
+    handler: str = Field(min_length=1, max_length=500)
+    method: str = Field(min_length=1, max_length=10)
+    path: str = Field(min_length=1, max_length=1000)
+    call_chain_mermaid: str = Field(default="", max_length=10000)
+    custom_prompt: str = Field(default="", max_length=5000)
+
+
+class BusinessRulePromptRequest(BaseModel):
+    custom_prompt: str = Field(min_length=1, max_length=5000)
 
 
 def get_store(repo: str = "") -> EvolutionStore:
@@ -166,6 +181,18 @@ def get_llm_config_store() -> LLMConfigStore:
     return dependencies.get("llm_config_store") or LLMConfigStore(
         codehistory_data_dir() / "llm-config.json"
     )
+
+
+def get_business_rule_store() -> BusinessRuleStore:
+    global _business_rule_store
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("business_rule_store"):
+        return injected
+    if _business_rule_store is None:
+        _business_rule_store = BusinessRuleStore(
+            str(codehistory_data_dir() / "business-rules.db")
+        )
+    return _business_rule_store
 
 
 def get_refactoring_member(repo: str, member: str = "") -> tuple[str, str]:
@@ -607,6 +634,116 @@ def get_knowledge_report(
             service.close()
 
 
+# ── Business Rules (LLM-generated API business explanations) ──
+
+DEFAULT_BUSINESS_RULE_PROMPT = """You are a senior software architect explaining API business logic to product managers and developers.
+
+Below is the call chain sequence diagram (Mermaid sequenceDiagram) for an API endpoint. Analyze it and explain:
+
+1. **Business purpose**: What business function does this API serve? (1-2 sentences in English)
+2. **Business flow**: Walk through the call chain step by step, explaining what each step does in business terms (not code).
+3. **Key business rules**: What business constraints, validations, or decisions are embedded in this flow?
+4. **Side effects**: What external systems, databases, or services are affected?
+
+Flowchart:
+```
+{flowchart}
+```
+
+API endpoint: {method} {path}
+Handler: {handler}
+
+Output JSON:
+{{
+  "business_purpose_en": "English business purpose",
+  "business_purpose_zh": "Chinese business purpose",
+  "business_flow_en": ["Step 1: ...", "Step 2: ...", ...],
+  "business_flow_zh": ["步骤1: ...", "步骤2: ...", ...],
+  "business_rules": ["Rule 1: ...", "Rule 2: ...", ...],
+  "side_effects": ["Effect 1: ...", "Effect 2: ...", ...]
+}}
+
+JSON:"""
+
+
+@app.get("/api/business-rules")
+def list_business_rules(repo: str = Query("")):
+    """List all saved business rules, optionally filtered by repo."""
+    store = get_business_rule_store()
+    if repo:
+        return {"rules": store.list_by_repo(repo)}
+    repos = list_repos()
+    all_rules: list[dict] = []
+    for r in repos:
+        all_rules.extend(store.list_by_repo(r["name"]))
+    return {"rules": all_rules}
+
+
+@app.post("/api/business-rules/generate")
+def generate_business_rule(request: BusinessRuleGenerateRequest):
+    """Generate or regenerate a business rule for an API endpoint via LLM."""
+    from .semantic.client import OpenAILLMClient
+    from .semantic.config import get_llm_config
+
+    config = get_llm_config()
+    if not config:
+        raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
+
+    store = get_business_rule_store()
+    prompt = request.custom_prompt or DEFAULT_BUSINESS_RULE_PROMPT.format(
+        flowchart=request.call_chain_mermaid or f"sequenceDiagram\n    participant N0 as {request.handler}\n    Note over N0: No downstream calls",
+        method=request.method,
+        path=request.path,
+        handler=request.handler,
+    )
+
+    # Mark as running
+    rule_id = store.upsert(
+        repo_name=request.repo,
+        handler=request.handler,
+        method=request.method,
+        path=request.path,
+        custom_prompt=request.custom_prompt,
+        status="running",
+    )
+
+    try:
+        client = OpenAILLMClient(config)
+        content = client.complete(prompt, max_tokens=1200, temperature=0.3)
+        if not content:
+            raise RuntimeError("LLM returned empty response")
+
+        parsed = None
+        if content:
+            try:
+                parsed = json.loads(content)
+            except (TypeError, ValueError):
+                pass
+
+        if isinstance(parsed, dict) and parsed.get("error"):
+            raise RuntimeError(parsed["error"])
+
+        result = content if (parsed is None or not isinstance(parsed, dict) or "business_purpose_en" not in parsed) else json.dumps(parsed, ensure_ascii=False)
+        store.update_status(rule_id, status="completed", result=result)
+        return {
+            "id": rule_id,
+            "status": "completed",
+            "result": result,
+            "prompt": prompt,
+        }
+    except Exception as exc:
+        store.update_status(rule_id, status="failed", error=str(exc)[:1000])
+        raise HTTPException(502, f"LLM 生成失败：{exc}")
+
+
+@app.put("/api/business-rules/{rule_id}/prompt")
+def update_business_rule_prompt(rule_id: int, request: BusinessRulePromptRequest):
+    """Update the custom prompt for a business rule without regenerating."""
+    store = get_business_rule_store()
+    store.update_prompt(rule_id, request.custom_prompt)
+    return {"ok": True, "id": rule_id}
+
+
 @app.get("/api/refactor-techniques")
 def list_refactoring_techniques(repo: str = Query(""), member: str = Query("")):
     dependencies = _request_dependencies.get()
@@ -793,7 +930,7 @@ _route_app = app
 
 @asynccontextmanager
 async def _lifespan(application):
-    global _audit_store, _ui_test_store
+    global _audit_store, _ui_test_store, _business_rule_store
     yield
     for store in list(_stores.values()):
         store.close()
@@ -804,6 +941,9 @@ async def _lifespan(application):
     if _ui_test_store is not None:
         _ui_test_store.close()
         _ui_test_store = None
+    if _business_rule_store is not None:
+        _business_rule_store.close()
+        _business_rule_store = None
 
 
 def create_app(dependencies: dict | None = None) -> FastAPI:
