@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+> @AGENTS.md
+
 > **CodeHistory** — 代码仓功能演进分析 + 业务知识逆向系统。
 
 ## 工作原则
