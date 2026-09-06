@@ -1,11 +1,11 @@
 from types import SimpleNamespace
 
-from codehistory.application.advanced_topology_service import AdvancedTopologyService
-from codehistory.application.evolution_command_service import EvolutionCommandService
-from codehistory.application.evolution_service import EvolutionQueryService
-from codehistory.application.knowledge_service import KnowledgeService
-from codehistory.application.repository_service import RepositoryService
-from codehistory.application.topology_service import TopologyService
+from codeevolution.application.advanced_topology_service import AdvancedTopologyService
+from codeevolution.application.evolution_command_service import EvolutionCommandService
+from codeevolution.application.evolution_service import EvolutionQueryService
+from codeevolution.application.knowledge_service import KnowledgeService
+from codeevolution.application.repository_service import RepositoryService
+from codeevolution.application.topology_service import TopologyService
 
 
 class FakeCache:
@@ -112,7 +112,8 @@ def test_evolution_command_service_owns_engine_lifecycle():
         update=lambda: calls.append("update"),
     )
     service = EvolutionCommandService(engine)
-    callback = lambda *_args: None
+    def callback(*_args):
+        return None
 
     assert service.backfill(callback) == {"total_commits": 3}
     assert service.update() == {"total_commits": 3}

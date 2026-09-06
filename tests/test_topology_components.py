@@ -1,12 +1,12 @@
 from types import SimpleNamespace
 
-from codehistory.analysis.topology.advanced_impl import AdvancedTopologyImplementation
-from codehistory.analysis.topology.builder import TopologyBuilder
-from codehistory.analysis.topology.flow import FlowTracer
-from codehistory.analysis.topology.impact import ImpactAnalyzer
-from codehistory.analysis.topology.matching import EntitySimilarity, PathMatcher, TopicMatcher
-from codehistory.cross_repo import CrossRepoAnalyzer
-from codehistory.delivery.renderers import TopologyRenderer
+from codeevolution.analysis.topology.advanced_impl import AdvancedTopologyImplementation
+from codeevolution.analysis.topology.builder import TopologyBuilder
+from codeevolution.analysis.topology.flow import FlowTracer
+from codeevolution.analysis.topology.impact import ImpactAnalyzer
+from codeevolution.analysis.topology.matching import EntitySimilarity, PathMatcher, TopicMatcher
+from codeevolution.cross_repo import CrossRepoAnalyzer
+from codeevolution.delivery.renderers import TopologyRenderer
 
 
 def test_path_matcher_and_legacy_facade_agree():

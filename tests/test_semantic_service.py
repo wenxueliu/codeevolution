@@ -1,9 +1,9 @@
 from types import SimpleNamespace
 
-from codehistory import llm
-from codehistory.semantic.json_parser import complete_json, parse_json
-from codehistory.semantic.models import BusinessDescription
-from codehistory.semantic.service import SemanticService
+from codeevolution import llm
+from codeevolution.semantic.json_parser import complete_json, parse_json
+from codeevolution.semantic.models import BusinessDescription
+from codeevolution.semantic.service import SemanticService
 
 
 class FakeClient:

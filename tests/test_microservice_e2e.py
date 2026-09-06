@@ -4,10 +4,10 @@ import os
 import sqlite3
 from pathlib import Path
 
-from codehistory.analysis.topology.rules import TopologyRuleSet
-from codehistory.application.advanced_topology_service import AdvancedTopologyService
-from codehistory.application.topology_service import TopologyService
-from codehistory.cross_repo import CrossRepoAnalyzer
+from codeevolution.analysis.topology.rules import TopologyRuleSet
+from codeevolution.application.advanced_topology_service import AdvancedTopologyService
+from codeevolution.application.topology_service import TopologyService
+from codeevolution.cross_repo import CrossRepoAnalyzer
 
 SCHEMA = """
 CREATE TABLE nodes (

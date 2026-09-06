@@ -6,8 +6,8 @@ import json
 import subprocess
 import sys
 
-from codehistory import codegraph_reader, cross_repo, knowledge, mcp_server, p2_advanced
-from codehistory.api import app
+from codeevolution import codegraph_reader, cross_repo, knowledge, mcp_server, p2_advanced
+from codeevolution.api import app
 
 
 def test_legacy_dto_contracts_are_stable():
@@ -70,7 +70,7 @@ def test_legacy_dto_contracts_are_stable():
 
 def test_cli_help_lists_all_public_commands():
     result = subprocess.run(
-        [sys.executable, "-m", "codehistory.cli", "--help"],
+        [sys.executable, "-m", "codeevolution.cli", "--help"],
         check=True,
         capture_output=True,
         text=True,
@@ -101,9 +101,12 @@ def test_cli_help_lists_all_public_commands():
 
 def test_openapi_path_snapshot():
     schema = app.openapi()
-    assert schema["info"]["title"] == "CodeHistory API"
+    assert schema["info"]["title"] == "CodeEvolution API"
     assert sorted(schema["paths"]) == [
         "/api/audit-logs",
+        "/api/business-rules",
+        "/api/business-rules/generate",
+        "/api/business-rules/{rule_id}/prompt",
         "/api/capabilities",
         "/api/chat",
         "/api/commits",
@@ -122,6 +125,9 @@ def test_openapi_path_snapshot():
         "/api/repos",
         "/api/repos/register",
         "/api/repos/{name}",
+        "/api/repos/{name}/init",
+        "/api/repos/{name}/init/status",
+        "/api/repos/{name}/members",
         "/api/stats",
         "/api/ui-recordings",
         "/api/ui-recordings/start",

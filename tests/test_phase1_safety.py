@@ -7,11 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from codehistory.analyzer import EvolutionAnalyzer
-from codehistory.engine import EvolutionEngine
-from codehistory.matcher import FeatureMatcher
-from codehistory.store import EvolutionStore
-from codehistory.walker import CommitInfo
+from codeevolution.analyzer import EvolutionAnalyzer
+from codeevolution.engine import EvolutionEngine
+from codeevolution.matcher import FeatureMatcher
+from codeevolution.store import EvolutionStore
+from codeevolution.walker import CommitInfo
 
 
 def _commit(store: EvolutionStore, hash_: str) -> int:
@@ -263,9 +263,9 @@ def test_isolated_worktree_preserves_source_checkout(tmp_path, monkeypatch):
         capture_output=True,
         text=True,
     ).stdout
-    assert "codehistory-worktree-" not in worktrees
+    assert "codeevolution-worktree-" not in worktrees
 
 
 def test_llm_module_parses_as_python_310():
-    source = Path("codehistory/llm.py").read_text()
-    ast.parse(source, filename="codehistory/llm.py", feature_version=(3, 10))
+    source = Path("codeevolution/llm.py").read_text()
+    ast.parse(source, filename="codeevolution/llm.py", feature_version=(3, 10))

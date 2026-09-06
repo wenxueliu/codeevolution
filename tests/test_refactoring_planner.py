@@ -2,10 +2,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from codehistory.analysis.refactoring import TECHNIQUE_BY_ID, TECHNIQUES
-from codehistory.application.refactoring_service import RefactoringPlanningService
-from codehistory.domain.knowledge import CallTarget, FunctionDef
-from codehistory.infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
+from codeevolution.analysis.refactoring import TECHNIQUE_BY_ID, TECHNIQUES
+from codeevolution.application.refactoring_service import RefactoringPlanningService
+from codeevolution.domain.knowledge import CallTarget, FunctionDef
+from codeevolution.infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
 
 
 def function(node_id, name, path, is_test=False, line=1):
@@ -123,8 +123,8 @@ def test_planner_uses_a_custom_technique_catalog(monkeypatch, tmp_path):
 
 
 def test_each_repository_has_an_independent_technique_catalog(tmp_path):
-    first = RefactoringTechniqueCatalog(tmp_path / "repo-a" / ".codehistory" / "refactoring-techniques.json")
-    second = RefactoringTechniqueCatalog(tmp_path / "repo-b" / ".codehistory" / "refactoring-techniques.json")
+    first = RefactoringTechniqueCatalog(tmp_path / "repo-a" / ".codeevolution" / "refactoring-techniques.json")
+    second = RefactoringTechniqueCatalog(tmp_path / "repo-b" / ".codeevolution" / "refactoring-techniques.json")
     first.update("extract-method", {"id": "extract-method", "name": "仓库 A 提取", "objective": "A 目标", "checks": ["A 检查"]})
     second.update("extract-method", {"id": "extract-method", "name": "仓库 B 提取", "objective": "B 目标", "checks": ["B 检查"]})
 

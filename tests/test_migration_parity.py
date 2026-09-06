@@ -1,11 +1,11 @@
 """Behavior parity gates between compatibility facades and application boundaries."""
 
-from codehistory.analysis.topology.advanced_impl import AdvancedTopologyImplementation
-from codehistory.analysis.topology.cross_repo_impl import CrossRepoImplementation
-from codehistory.application.advanced_topology_service import AdvancedTopologyService
-from codehistory.application.topology_service import TopologyService
-from codehistory.cross_repo import CrossRepoAnalyzer
-from codehistory.p2_advanced import P2Analyzer
+from codeevolution.analysis.topology.advanced_impl import AdvancedTopologyImplementation
+from codeevolution.analysis.topology.cross_repo_impl import CrossRepoImplementation
+from codeevolution.application.advanced_topology_service import AdvancedTopologyService
+from codeevolution.application.topology_service import TopologyService
+from codeevolution.cross_repo import CrossRepoAnalyzer
+from codeevolution.p2_advanced import P2Analyzer
 
 
 def test_cross_repo_facade_service_and_implementation_deep_match():

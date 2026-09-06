@@ -5,15 +5,15 @@ import stat
 
 import pytest
 
-from codehistory.api import (
+from codeevolution.api import (
     LLMConfigRequest,
     _request_dependencies,
     delete_llm_settings,
     get_llm_settings,
     save_llm_settings,
 )
-from codehistory.infrastructure.llm_config_store import LLMConfigStore
-from codehistory.semantic.config import get_llm_config
+from codeevolution.infrastructure.llm_config_store import LLMConfigStore
+from codeevolution.semantic.config import get_llm_config
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +21,8 @@ def no_environment_llm(monkeypatch):
     for name in (
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
+        "CODEEVOLUTION_LLM_MODEL",
+        "CODEEVOLUTION_LLM_BASE",
         "CODEHISTORY_LLM_MODEL",
         "CODEHISTORY_LLM_BASE",
     ):
@@ -40,12 +42,24 @@ def test_store_round_trip_is_private_and_atomic(tmp_path):
 
 
 def test_environment_configuration_overrides_page_config(monkeypatch, tmp_path):
-    monkeypatch.setenv("CODEHISTORY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CODEEVOLUTION_DATA_DIR", str(tmp_path))
     LLMConfigStore().save({"api_key": "page", "model": "page-model", "api_base": ""})
     monkeypatch.setenv("OPENAI_API_KEY", "environment")
-    monkeypatch.setenv("CODEHISTORY_LLM_MODEL", "environment-model")
+    monkeypatch.setenv("CODEEVOLUTION_LLM_MODEL", "environment-model")
     assert get_llm_config()["api_key"] == "environment"
     assert get_llm_config()["model"] == "environment-model"
+
+
+def test_legacy_environment_configuration_remains_supported(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "environment")
+    monkeypatch.setenv("CODEHISTORY_LLM_MODEL", "legacy-model")
+    monkeypatch.setenv("CODEHISTORY_LLM_BASE", "https://legacy.test/v1")
+
+    assert get_llm_config() == {
+        "api_key": "environment",
+        "model": "legacy-model",
+        "api_base": "https://legacy.test/v1",
+    }
 
 
 def test_api_never_returns_key_and_blank_update_retains_it(tmp_path):

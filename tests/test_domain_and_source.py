@@ -1,9 +1,9 @@
 from dataclasses import fields
 
-from codehistory.codegraph_reader import FunctionDef as LegacyFunctionDef
-from codehistory.domain.knowledge import ApiEndpoint, FunctionDef
-from codehistory.infrastructure.source_filesystem import FileSystemSourceProvider
-from codehistory.knowledge import ApiEndpoint as LegacyApiEndpoint
+from codeevolution.codegraph_reader import FunctionDef as LegacyFunctionDef
+from codeevolution.domain.knowledge import ApiEndpoint, FunctionDef
+from codeevolution.infrastructure.source_filesystem import FileSystemSourceProvider
+from codeevolution.knowledge import ApiEndpoint as LegacyApiEndpoint
 
 
 def test_legacy_domain_imports_are_reexports():

@@ -2,8 +2,8 @@ import sys
 
 import pytest
 
-from codehistory import api, cli
-from codehistory.api import (
+from codeevolution import api, cli
+from codeevolution.api import (
     ChatRequest,
     RefactoringTechniqueRequest,
     _request_dependencies,
@@ -177,14 +177,14 @@ def test_unregister_route_removes_registration_and_closes_cached_store(monkeypat
 def test_cli_dispatches_through_parser_handler(monkeypatch):
     called = []
     monkeypatch.setattr(cli, "cmd_repos", lambda args: called.append(args.command))
-    monkeypatch.setattr(sys, "argv", ["codehistory", "repos"])
+    monkeypatch.setattr(sys, "argv", ["codeevolution", "repos"])
     cli.main()
     assert called == ["repos"]
 
 
 def test_cli_without_command_keeps_exit_contract(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["codehistory"])
+    monkeypatch.setattr(sys, "argv", ["codeevolution"])
     with pytest.raises(SystemExit) as raised:
         cli.main()
     assert raised.value.code == 1
-    assert "usage: codehistory" in capsys.readouterr().out
+    assert "usage: codeevolution" in capsys.readouterr().out

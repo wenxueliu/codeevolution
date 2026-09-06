@@ -1,14 +1,14 @@
-from codehistory.analysis.knowledge.api_contract import ApiContractExtractor
-from codehistory.analysis.knowledge.authorization import AuthorizationExtractor
-from codehistory.analysis.knowledge.config_usage import ConfigUsageExtractor
-from codehistory.analysis.knowledge.core_entities import CoreEntityExtractor
-from codehistory.analysis.knowledge.dependencies import DependencyExtractor
-from codehistory.analysis.knowledge.heatmap import HeatmapExtractor
-from codehistory.analysis.knowledge.layer_rules import LayerRuleExtractor
-from codehistory.analysis.knowledge.module_topology import ModuleTopologyExtractor
-from codehistory.analysis.knowledge.report_builder import KnowledgeReportBuilder
-from codehistory.analysis.knowledge.semantic import SemanticExtractor
-from codehistory.analysis.knowledge.test_gaps import TestGapExtractor as GapExtractor
+from codeevolution.analysis.knowledge.api_contract import ApiContractExtractor
+from codeevolution.analysis.knowledge.authorization import AuthorizationExtractor
+from codeevolution.analysis.knowledge.config_usage import ConfigUsageExtractor
+from codeevolution.analysis.knowledge.core_entities import CoreEntityExtractor
+from codeevolution.analysis.knowledge.dependencies import DependencyExtractor
+from codeevolution.analysis.knowledge.heatmap import HeatmapExtractor
+from codeevolution.analysis.knowledge.layer_rules import LayerRuleExtractor
+from codeevolution.analysis.knowledge.module_topology import ModuleTopologyExtractor
+from codeevolution.analysis.knowledge.report_builder import KnowledgeReportBuilder
+from codeevolution.analysis.knowledge.semantic import SemanticExtractor
+from codeevolution.analysis.knowledge.test_gaps import TestGapExtractor as GapExtractor
 
 
 class QueryStub:

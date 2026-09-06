@@ -1,10 +1,10 @@
-from codehistory.application.ui_recording_service import (
+from codeevolution.application.ui_recording_service import (
     UiRecordingService,
     find_reference,
     normalize_actions,
     origin,
 )
-from codehistory.infrastructure.ui_test_store import UiTestStore
+from codeevolution.infrastructure.ui_test_store import UiTestStore
 
 
 class BridgeStub:
@@ -15,7 +15,7 @@ class BridgeStub:
 
     def command(self, session, action, args=None):
         self.calls.append((session, action, args or {}))
-        if action == "evaluate" and "window.__codehistoryRecorder.export()" in (args or {}).get("code", ""):
+        if action == "evaluate" and "window.__codeevolutionRecorder.export()" in (args or {}).get("code", ""):
             result, self.actions = self.actions, []
             return {"type": "object", "value": result}
         if action == "evaluate" and "querySelectorAll('select')" in (args or {}).get("code", ""):
@@ -98,7 +98,7 @@ def test_phase_two_checkpoints_fixtures_uploads_and_drags(tmp_path, monkeypatch)
     upload = tmp_path / "uploads"
     upload.mkdir()
     (upload / "sample.txt").write_text("sample")
-    monkeypatch.setenv("CODEHISTORY_UI_UPLOAD_ROOT", str(upload))
+    monkeypatch.setenv("CODEEVOLUTION_UI_UPLOAD_ROOT", str(upload))
     store = UiTestStore(str(tmp_path / "ui.db"))
     bridge = BridgeStub()
     service = UiRecordingService(store, bridge, locator_attempts=1)

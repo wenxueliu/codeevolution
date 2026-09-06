@@ -2,8 +2,8 @@ import sqlite3
 
 import pytest
 
-from codehistory.application.chat_service import ChatService
-from codehistory.infrastructure.audit_store import AuditStore
+from codeevolution.application.chat_service import ChatService
+from codeevolution.infrastructure.audit_store import AuditStore
 
 
 class StoreStub:

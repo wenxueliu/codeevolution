@@ -1,11 +1,11 @@
 from types import SimpleNamespace
 
-from codehistory.analysis.topology.cross_repo_impl import CrossServiceEdge, UnifiedTopology
-from codehistory.application.evolution_service import EvolutionQueryService
-from codehistory.application.runtime_telemetry_service import RuntimeTelemetryService
-from codehistory.application.topology_service import TopologyService
-from codehistory.infrastructure.otlp_json import OTLPJSONCollector
-from codehistory.store import EvolutionStore
+from codeevolution.analysis.topology.cross_repo_impl import CrossServiceEdge, UnifiedTopology
+from codeevolution.application.evolution_service import EvolutionQueryService
+from codeevolution.application.runtime_telemetry_service import RuntimeTelemetryService
+from codeevolution.application.topology_service import TopologyService
+from codeevolution.infrastructure.otlp_json import OTLPJSONCollector
+from codeevolution.store import EvolutionStore
 
 
 def _edge(source, target, path):
@@ -126,7 +126,7 @@ def test_otlp_explicit_feature_attribute_and_runtime_validation(tmp_path):
             {"key": "peer.service", "value": {"stringValue": "orders"}},
             {"key": "http.request.method", "value": {"stringValue": "GET"}},
             {"key": "url.path", "value": {"stringValue": "/orders"}},
-            {"key": "codehistory.feature.stable_id", "value": {"stringValue": "worker::run"}},
+            {"key": "codeevolution.feature.stable_id", "value": {"stringValue": "worker::run"}},
         ],
     }]}]}]}
 
@@ -134,3 +134,17 @@ def test_otlp_explicit_feature_attribute_and_runtime_validation(tmp_path):
 
     assert result["observations"][0]["feature_id"] == feature_id
     assert result["topology_validation"]["summary"]["confirmed"] == 1
+
+
+def test_otlp_legacy_feature_attribute_remains_supported(tmp_path):
+    store = EvolutionStore(str(tmp_path / "evolution.db"))
+    commit_id = store.insert_commit("abc", None, 1, "tester", "fixture")
+    feature_id = store.insert_feature("worker::run", "Worker", "event", "orders", commit_id)
+    observation = {
+        "kind": "span",
+        "attributes": {"codehistory.feature.stable_id": "worker::run"},
+    }
+
+    result = RuntimeTelemetryService(SimpleNamespace(), store)._persist([observation])
+
+    assert result["observations"][0]["feature_id"] == feature_id

@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from codehistory import registry
-from codehistory.infrastructure.registry_json import RegistryRepository
-from codehistory.infrastructure.topology_cache_json import CACHE_SCHEMA_VERSION, TopologyCache
+from codeevolution import registry
+from codeevolution.infrastructure.registry_json import RegistryRepository
+from codeevolution.infrastructure.topology_cache_json import CACHE_SCHEMA_VERSION, TopologyCache
 
 
 def test_registry_round_trip_and_corrupt_json(tmp_path):
@@ -37,7 +37,7 @@ def test_failed_atomic_replace_preserves_previous_cache(tmp_path, monkeypatch):
     def fail_replace(source, destination):
         raise OSError("disk failure")
 
-    monkeypatch.setattr("codehistory.infrastructure.registry_json.os.replace", fail_replace)
+    monkeypatch.setattr("codeevolution.infrastructure.registry_json.os.replace", fail_replace)
     with pytest.raises(OSError, match="disk failure"):
         cache.save({"services": ["invalid"]})
     assert json.loads(path.read_text(encoding="utf-8"))["services"] == ["valid"]

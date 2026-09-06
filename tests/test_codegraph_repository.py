@@ -1,9 +1,10 @@
 import sqlite3
+from pathlib import Path
 
 import pytest
 
-from codehistory.codegraph_reader import CodeGraphReader
-from codehistory.infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository, read_rows
+from codeevolution.codegraph_reader import CodeGraphReader
+from codeevolution.infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository, read_rows
 
 
 def _empty_codegraph(path):
@@ -37,6 +38,7 @@ def test_repository_typed_queries_and_legacy_facade_match(tmp_path):
         assert repository.inbound_endpoints() == []
         assert repository.route_nodes() == []
         assert repository.decorated_handlers() == []
+        assert repository.http_handler_endpoints() == []
         assert repository.module_import_edges() == []
         assert repository.cross_file_call_edges() == []
         assert repository.call_edges() == []
@@ -159,3 +161,86 @@ def test_metadata_contract_tolerates_older_schema_and_missing_tables(tmp_path):
     sqlite3.connect(empty_database).close()
     with SQLiteCodeGraphRepository(str(empty_database)) as repository:
         assert repository.inspect_metadata()["nodes"] == 0
+
+
+def _seed_handler_repo(root: Path) -> str:
+    """Write a stdlib http.server handler repo + a matching codegraph DB.
+
+    db_path lives at ``root/.codegraph/codegraph.db`` so the repository resolves
+    ``Path(db_path).parent.parent`` back to ``root`` (the CodeGraph repo root).
+    """
+    (root / ".codegraph").mkdir(parents=True, exist_ok=True)
+    (root / "webapi.py").write_text(
+        """\
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse
+
+class Api(BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = urlparse(self.path).path.rstrip("/")
+        if path == "/api/workflows":
+            return self._list_workflows()
+
+    def do_POST(self):
+        path = urlparse(self.path).path.rstrip("/")
+        if path.startswith("/api/workflow/") and path.endswith("/control"):
+            req_id = path.split("/")[-2]
+            return self._control(req_id, body)
+""",
+        encoding="utf-8",
+    )
+    # a test-file handler that imports http.server — must be excluded
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    (root / "tests" / "stub.py").write_text(
+        "from http.server import BaseHTTPRequestHandler\n"
+        "class Stub(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        if self.path == '/api/test':\n"
+        "            return self._x()\n",
+        encoding="utf-8",
+    )
+
+    db = root / ".codegraph" / "codegraph.db"
+    _empty_codegraph(db)
+    connection = sqlite3.connect(db)
+    connection.executemany(
+        """INSERT INTO nodes(
+               id, kind, name, qualified_name, file_path, language,
+               start_line, end_line, signature
+           ) VALUES (?, ?, ?, ?, ?, 'python', 1, 2, ?)""",
+        [
+            # production handler
+            ("c1", "class", "Api", "Api", "webapi.py", None),
+            ("m1", "method", "do_GET", "Api::do_GET", "webapi.py", None),
+            ("m2", "method", "do_POST", "Api::do_POST", "webapi.py", None),
+            ("i1", "import", "http.server", "http.server", "webapi.py",
+             "from http.server import BaseHTTPRequestHandler"),
+            # test-file handler (must be ignored)
+            ("c2", "class", "Stub", "Stub", "tests/stub.py", None),
+            ("m3", "method", "do_GET", "Stub::do_GET", "tests/stub.py", None),
+            ("i2", "import", "http.server", "http.server", "tests/stub.py",
+             "from http.server import BaseHTTPRequestHandler"),
+        ],
+    )
+    connection.executemany(
+        "INSERT INTO edges(id, source, target, kind) VALUES (?, ?, ?, 'contains')",
+        [("e1", "c1", "m1"), ("e2", "c1", "m2"), ("e3", "c2", "m3")],
+    )
+    connection.commit()
+    connection.close()
+    return str(db)
+
+
+def test_http_handler_endpoints_reconstruct_from_seeded_repo(tmp_path):
+    db = _seed_handler_repo(tmp_path)
+    with SQLiteCodeGraphRepository(db) as repository:
+        endpoints = repository.http_handler_endpoints()
+
+    assert [(e["method"], e["path"], e["handler_name"], e["params"]) for e in endpoints] == [
+        ("GET", "/api/workflows", "_list_workflows", []),
+        ("POST", "/api/workflow/{req_id}/control", "_control", ["req_id"]),
+    ]
+    # provenance marker names the source class
+    assert all(e["decorators"] == ["http.server(源自 Api)"] for e in endpoints)
+    # test-file handlers are never surfaced
+    assert all(e["file_path"] == "webapi.py" for e in endpoints)
