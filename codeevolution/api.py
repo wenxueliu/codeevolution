@@ -654,7 +654,10 @@ def test_llm_settings():
     config = get_llm_config()
     if not config:
         raise HTTPException(409, "请先保存 LLM 配置")
-    content = OpenAILLMClient(config).complete("Reply with exactly: OK", 8, 0)
+    # Reasoning models spend tokens on reasoning_content before emitting
+    # content; an 8-token budget is consumed entirely by reasoning, yielding
+    # an empty content. 128 tokens gives the probe headroom to actually answer.
+    content = OpenAILLMClient(config).complete("Reply with exactly: OK", 128, 0)
     if not content:
         raise HTTPException(502, "LLM 未返回内容，请检查模型与服务地址")
     try:

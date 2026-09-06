@@ -18,7 +18,11 @@ class OpenAILLMClient:
         try:
             from openai import OpenAI
         except ImportError:
-            return None
+            # Not "no content": surface the real cause so callers don't
+            # misreport it as a silent empty reply.
+            return json.dumps(
+                {"error": "openai 包未安装：请先执行 pip install 'openai>=1.0,<3'"}
+            )
         try:
             client = OpenAI(
                 api_key=self.config["api_key"],
