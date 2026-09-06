@@ -15,6 +15,15 @@
         <label>模型名称<input v-model.trim="form.model" required autocomplete="off" placeholder="例如：gpt-4o-mini、anthropic/claude-3-5-sonnet" /></label>
         <label>API Base <span>可选</span><input v-model.trim="form.api_base" type="url" autocomplete="url" placeholder="例如：https://api.openai.com/v1" /></label>
         <label>API Key <span>{{ settings.api_key_configured ? '留空则保留现有密钥' : '必填' }}</span><input v-model="form.api_key" :required="!settings.api_key_configured" type="password" autocomplete="new-password" placeholder="不会在页面中回显" /></label>
+        <div class="budget-row">
+          <label>上下文窗口 Tokens <span>可选，留空自动</span><input v-model.number="form.context_window" type="number" min="1" placeholder="如 32768" /></label>
+          <label>单次输出上限 Tokens <span>可选，留空用各功能默认</span><input v-model.number="form.max_output_tokens" type="number" min="1" placeholder="如 4096" /></label>
+        </div>
+        <label class="toggle-row">
+          <span>关闭思考 / 推理<small>推理模型会先把 token 预算几乎全部花在"思考"上，导致最终结果为空；开启后让模型直接输出。适用于结构化抽取（业务规则等）。</small></span>
+          <input v-model="form.disable_thinking" type="checkbox" :disabled="settings.environment_override" />
+        </label>
+        <p v-if="settings.environment_override" class="toggle-note">当前由环境变量提供配置，此开关不生效；如需调整请在环境侧设置。</p>
         <p class="security-note">密钥保存在 CodeEvolution 数据目录，文件权限为仅当前用户可读写。</p>
         <div class="status-row">
           <span :class="['status-dot', settings.available ? 'ready' : '']"></span>
@@ -40,7 +49,7 @@ export default {
   components: { UiState },
   emits: ['close', 'saved'],
   props: { open: { type: Boolean, default: false } },
-  data: () => ({ loading: false, saving: false, testing: false, error: '', success: '', settings: {}, form: { model: 'gpt-4o-mini', api_base: '', api_key: '' } }),
+  data: () => ({ loading: false, saving: false, testing: false, error: '', success: '', settings: {}, form: { model: 'gpt-4o-mini', api_base: '', api_key: '', disable_thinking: true, context_window: null, max_output_tokens: null } }),
   computed: {
     busy() { return this.saving || this.testing },
     sourceLabel() { return this.settings.source === 'environment' ? '环境变量' : '页面配置' },
@@ -56,14 +65,27 @@ export default {
       this.loading = true; this.error = ''; this.success = ''
       try {
         this.settings = await this.$api.get('/api/llm-config')
-        this.form = { model: this.settings.model || 'gpt-4o-mini', api_base: this.settings.api_base || '', api_key: '' }
+        const toNum = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null
+        this.form = {
+          model: this.settings.model || 'gpt-4o-mini',
+          api_base: this.settings.api_base || '',
+          api_key: '',
+          disable_thinking: this.settings.disable_thinking !== false,
+          context_window: toNum(this.settings.context_window),
+          max_output_tokens: toNum(this.settings.max_output_tokens),
+        }
       } catch (error) { this.error = error.message || '读取配置失败' }
       finally { this.loading = false }
     },
     async save() {
       this.saving = true; this.error = ''; this.success = ''
       try {
-        await this.$api.request('/api/llm-config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.form) })
+        const payload = {
+          ...this.form,
+          context_window: this.form.context_window || null,
+          max_output_tokens: this.form.max_output_tokens || null,
+        }
+        await this.$api.request('/api/llm-config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
         this.success = '配置已安全保存'
         await this.load()
         this.success = '配置已安全保存'
@@ -101,6 +123,13 @@ header h2 { font-size: 20px; margin-bottom: 4px; } header p { color: #777; font-
 form { display: grid; gap: 15px; padding: 20px 22px; }
 label { display: grid; gap: 5px; color: #353b47; font-size: 13px; font-weight: 600; } label span { color: #9298a3; font-size: 11px; font-weight: 400; }
 input { border: 1px solid #cdd2db; border-radius: 6px; padding: 9px 10px; font: inherit; }
+.budget-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 560px) { .budget-row { grid-template-columns: 1fr; } }
+.toggle-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #e3e6ec; border-radius: 6px; background: #fafbfc; }
+.toggle-row span { display: grid; gap: 3px; color: #353b47; font-weight: 600; } .toggle-row small { color: #9298a3; font-size: 11px; font-weight: 400; line-height: 1.5; }
+.toggle-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: #e94560; cursor: pointer; }
+.toggle-note { margin: -5px 0 0; color: #a0761f; font-size: 11px; }
+.toggle-row input:disabled { cursor: not-allowed; opacity: .55; }
 .environment-notice { padding: 10px 12px; border: 1px solid #f1d58d; border-radius: 6px; background: #fff9e8; color: #715917; font-size: 12px; line-height: 1.5; }
 .security-note { color: #777; font-size: 11px; margin: -5px 0 0; }
 .status-row { display: flex; align-items: center; gap: 7px; color: #666; font-size: 12px; }

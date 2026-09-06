@@ -91,6 +91,9 @@ class LLMConfigRequest(BaseModel):
     model: str = Field(min_length=1, max_length=200)
     api_base: str = Field(default="", max_length=1000)
     api_key: str | None = Field(default=None, max_length=4000)
+    disable_thinking: bool | None = Field(default=None)
+    context_window: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 class BusinessRuleGenerateRequest(BaseModel):
@@ -621,6 +624,9 @@ def get_llm_settings():
         "source": "environment" if environment else ("page" if stored else "none"),
         "model": effective.get("model", "") if effective else "",
         "api_base": effective.get("api_base", "") if effective else "",
+        "disable_thinking": bool(effective and effective.get("disable_thinking", True)),
+        "context_window": (effective or {}).get("context_window"),
+        "max_output_tokens": (effective or {}).get("max_output_tokens"),
         "api_key_configured": bool(effective and effective.get("api_key")),
         "stored_configured": stored is not None,
         "environment_override": environment is not None,
@@ -632,9 +638,29 @@ def save_llm_settings(request: LLMConfigRequest):
     store = get_llm_config_store()
     current = store.load() or {}
     api_key = (request.api_key or "").strip() or current.get("api_key", "")
+
+    # 字段省略 => 保留现值；显式传 null => 清除（context_window / max_output_tokens）。
+    provided = request.model_fields_set
+
+    def keep_or_take(field: str, fallback):
+        return getattr(request, field) if field in provided else fallback
+
     try:
         store.save(
-            {"model": request.model, "api_base": request.api_base, "api_key": api_key}
+            {
+                "model": request.model,
+                "api_base": request.api_base,
+                "api_key": api_key,
+                "disable_thinking": keep_or_take(
+                    "disable_thinking", current.get("disable_thinking", True)
+                ),
+                "context_window": keep_or_take(
+                    "context_window", current.get("context_window")
+                ),
+                "max_output_tokens": keep_or_take(
+                    "max_output_tokens", current.get("max_output_tokens")
+                ),
+            }
         )
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
@@ -738,6 +764,7 @@ def generate_business_rule(request: BusinessRuleGenerateRequest):
     """Generate or regenerate a business rule for an API endpoint via LLM."""
     from .semantic.client import OpenAILLMClient
     from .semantic.config import get_llm_config
+    from .semantic.json_parser import parse_json
 
     config = get_llm_config()
     if not config:
@@ -767,17 +794,16 @@ def generate_business_rule(request: BusinessRuleGenerateRequest):
         if not content:
             raise RuntimeError("LLM returned empty response")
 
-        parsed = None
-        if content:
-            try:
-                parsed = json.loads(content)
-            except (TypeError, ValueError):
-                pass
-
-        if isinstance(parsed, dict) and parsed.get("error"):
+        # parse_json 兼容 LLM 用 ```json 围栏包裹的返回；仅当解析出完整对象时才落结构化 JSON。
+        parsed = parse_json(content)
+        if parsed is not None and parsed.get("error"):
             raise RuntimeError(parsed["error"])
 
-        result = content if (parsed is None or not isinstance(parsed, dict) or "business_purpose_en" not in parsed) else json.dumps(parsed, ensure_ascii=False)
+        result = (
+            json.dumps(parsed, ensure_ascii=False)
+            if isinstance(parsed, dict) and "business_purpose_en" in parsed
+            else content
+        )
         store.update_status(rule_id, status="completed", result=result)
         return {
             "id": rule_id,

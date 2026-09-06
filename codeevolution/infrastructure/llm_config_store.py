@@ -10,6 +10,17 @@ from pathlib import Path
 from ..paths import data_dir
 
 
+def _optional_int(value) -> int | None:
+    """Coerce a config value to a positive int, or None when blank/invalid."""
+    if value in (None, ""):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 class LLMConfigStore:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else data_dir() / "llm-config.json"
@@ -27,6 +38,12 @@ class LLMConfigStore:
             "api_key": api_key,
             "model": model,
             "api_base": str(data.get("api_base") or "").strip(),
+            # 推理模型会把 max_tokens 预算几乎全部花在 reasoning 上，
+            # 导致 content 为空。默认关闭 thinking，保证结构化抽取能产出结果。
+            "disable_thinking": bool(data.get("disable_thinking", True)),
+            # 可选：模型上下文窗口 / 单次最大输出（token）。留空 = 不约束。
+            "context_window": _optional_int(data.get("context_window")),
+            "max_output_tokens": _optional_int(data.get("max_output_tokens")),
         }
 
     def save(self, config: dict) -> dict:
@@ -40,6 +57,9 @@ class LLMConfigStore:
             "api_key": api_key,
             "model": model,
             "api_base": str(config.get("api_base") or "").strip(),
+            "disable_thinking": bool(config.get("disable_thinking", True)),
+            "context_window": _optional_int(config.get("context_window")),
+            "max_output_tokens": _optional_int(config.get("max_output_tokens")),
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
