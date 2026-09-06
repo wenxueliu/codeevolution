@@ -12,3 +12,5 @@ web/coverage/
 .codegraph/
 .run/
 data/
+web/src/auto-imports.d.ts
+web/src/components.d.ts

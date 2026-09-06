@@ -74,10 +74,21 @@
                     <div><h4>应答体</h4><pre>{{ formatJson(item.response_body) }}</pre></div>
                   </div>
                   <h4>后端调用链</h4>
-                  <div v-if="item.call_chain_mermaid" class="mermaid-wrap">
-                    <pre class="mermaid">{{ item.call_chain_mermaid }}</pre>
-                  </div>
-                  <div v-else class="call-chain"><span v-for="(node, idx) in item.call_chain || []" :key="node.id">{{ node.name }}<b v-if="idx < item.call_chain.length - 1">→</b></span></div>
+                  <CallChainTree
+                    v-if="item.handler && item.file && item.line"
+                    :repo="repoName"
+                    :member="item.repository"
+                    :file="item.file"
+                    :line="item.line"
+                    :label="{ method: item.method, path: item.path, handler: item.handler }"
+                    :mermaid="item.call_chain_mermaid"
+                  />
+                  <p class="muted" v-else>未解析到处理函数（file/line 缺失），无法展示调用链树。</p>
+                  <details v-if="item.call_chain_mermaid" class="seq-details" @toggle="seqToggle($event, item)">
+                    <summary>展开时序图</summary>
+                    <div class="mermaid-wrap"><pre class="mermaid">{{ item.call_chain_mermaid }}</pre></div>
+                  </details>
+                  <div v-if="!item.call_chain_mermaid && item.call_chain?.length" class="call-chain"><span v-for="(node, idx) in item.call_chain || []" :key="node.id || node.name">{{ node.name }}<b v-if="idx < item.call_chain.length - 1">→</b></span></div>
                   <h4>前端调用位置</h4>
                   <div class="frontend-call" v-for="call in item.frontend_callers || []" :key="call.definition_file + call.function">
                     <b>{{ call.function }}</b> · <code>{{ call.definition_file }}:{{ call.definition_line }}</code>
@@ -184,6 +195,7 @@
 
 <script>
 import UiState from '../components/UiState.vue'
+import CallChainTree from '../components/CallChainTree.vue'
 
 const SECTIONS = [
   ['api_contract', 'API 契约', 'Phase 1', '路由、方法、处理函数与参数'],
@@ -219,7 +231,7 @@ function loadMermaid() {
 }
 
 export default {
-  components: { UiState },
+  components: { UiState, CallChainTree },
   props: { repoName: String },
   data() {
     return {
@@ -287,7 +299,7 @@ export default {
       }
       this.expandedEntityKeys = new Set(this.expandedEntityKeys)
     },
-    async toggleEndpoint(item, index) {
+    toggleEndpoint(item, index) {
       const key = this.endpointKey(item, index)
       if (this.expandedKeys.has(key)) {
         this.expandedKeys.delete(key)
@@ -296,9 +308,11 @@ export default {
       }
       // trigger reactivity for Set
       this.expandedKeys = new Set(this.expandedKeys)
-      if (this.expandedKeys.has(key) && item.call_chain_mermaid) {
-        await this.$nextTick()
-        setTimeout(() => this.renderMermaid(), 50)
+    },
+    // Render the sequence diagram only once its <details> is actually open.
+    seqToggle(event) {
+      if (event.target && event.target.open) {
+        this.$nextTick(() => this.renderMermaid())
       }
     },
     // ── business rules ──
@@ -511,6 +525,9 @@ td code { color: #666; word-break: break-all; }
 .call-chain b { color: #e94560; margin-left: 5px; }
 .mermaid-wrap { margin-bottom: 15px; min-height: 60px; display: flex; justify-content: center; }
 .mermaid-wrap :deep(svg) { max-width: 100%; height: auto; }
+.seq-details { margin: 0 0 15px; }
+.seq-details summary { cursor: pointer; color: #2a6496; font-size: 12px; padding: 2px 0; user-select: none; }
+.seq-details summary:hover { text-decoration: underline; }
 .frontend-call { border-left: 3px solid #e94560; padding: 5px 9px; margin: 6px 0; font-size: 11px; }
 .muted { color: #aaa; font-size: 11px; }
 .repo-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 8px; background: #fff0f2; color: #c82d48; font-size: 9px; }

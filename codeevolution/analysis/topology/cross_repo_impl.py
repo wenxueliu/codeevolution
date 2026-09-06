@@ -103,6 +103,135 @@ HTTP_CLIENT_CALLERS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+# ── URL extraction helpers (module-level, reusable by the call-chain tree) ─
+
+
+def extract_outbound_url(db_path: str, caller_qname: str, call_line: int | None) -> str | None:
+    """Extract URL from near an HTTP call site by reading source code.
+
+    Reusable per-call heuristic shared by whole-service topology scans and the
+    per-endpoint call-chain tree. Strategy (in order):
+      1. Read source lines around the call line, find URL patterns in the
+         actual call expression (f-strings, template literals, concatenation)
+      2. Look for variable assignments on preceding lines that look like URLs
+      3. Fall back to variable/constant node name matching
+    """
+    if call_line is None:
+        return None
+
+    # Find the caller context
+    with SQLiteCodeGraphRepository(db_path) as repository:
+        caller_row = repository.function_location(caller_qname)
+    if not caller_row:
+        return None
+
+    c = caller_row[0]
+    file_path = c["file_path"]
+
+    # Strategy 1: read source around the call line
+    source_url = _url_from_source_lines(file_path, call_line, db_path)
+    if source_url:
+        return source_url
+
+    # Strategy 2: look for variable assignments on preceding lines
+    func_start = c["start_line"]
+    func_end = c["end_line"]
+    with SQLiteCodeGraphRepository(db_path) as repository:
+        candidates = repository.url_candidate_nodes(file_path, func_start, func_end)
+
+    for cand in candidates:
+        name = cand["name"]
+        url_match = re.search(r'(?:https?://[^\s\'",;]+|/[a-z]+/[^\s\'",;]+)', name)
+        if url_match:
+            return url_match.group(0)
+
+    return None
+
+
+def _url_from_source_lines(file_path: str, call_line: int, db_path: str) -> str | None:
+    """Read source code around the call line and extract URL from arguments.
+
+    Handles:
+      - f-strings: f"http://{host}/api/users/{id}"
+      - template literals: `http://${host}/api/users/${id}`
+      - string concatenation: "http://" + host + "/api/users/" + id
+      - plain strings: "http://user-service/api/users/123"
+      - variable references where the variable is a URL
+    """
+    # Read ~10 lines around the call
+    # Actually, we need the actual repo path. Let's derive from db_path.
+    repo_root = str(Path(db_path).parent.parent)
+    source_path = str(Path(repo_root) / file_path)
+    try:
+        with open(source_path, encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+    except (OSError, FileNotFoundError):
+        return None
+
+    if call_line < 1 or call_line > len(lines):
+        return None
+
+    # Collect context: ~5 lines before through 3 lines after the call
+    start = max(0, call_line - 6)
+    end = min(len(lines), call_line + 3)
+    context = "".join(lines[start:end])
+
+    # The call line itself
+    call_text = lines[call_line - 1].strip()
+
+    # Pattern 1: f-string / template literal with URL
+    # f"http://{host}/api/users/{id}" or f'http://{host}/api/users/{id}'
+    for pat in [
+        r"""f["'](https?://[^"'{]+)""",
+        r"""f['"](https?://[^'"}{]+)""",
+    ]:
+        m = re.search(pat, context)
+        if m:
+            return m.group(1).rstrip("/")
+
+    # Pattern 2: JS template literal `http://${host}/...`
+    m = re.search(r"`(https?://[^`]+)`", context)
+    if m:
+        return m.group(1).rstrip("/")
+
+    # Pattern 3: plain quoted URL string
+    for pat in [
+        r"""['\"](https?://[a-zA-Z0-9._:-]+(?:/[^\s"'*,;)]*)?)['\"]""",
+        r"""['"](https?://[a-zA-Z0-9._-]+(?:/[^\s"'*,;)]*)?)['"]""",
+    ]:
+        m = re.search(pat, context)
+        if m:
+            return m.group(1).rstrip("/")
+
+    # Pattern 4: string concatenation — "http://" + host + "/api/users/" + id
+    m = re.search(
+        r"""["'](https?://)["']\s*\+\s*([^+]+?)\s*\+\s*["']((?:/[^"']*)?)["']""", context
+    )
+    if m:
+        # Return f-string style: keep the concat as readable URL
+        return m.group(1) + "..." + (m.group(3) or "")
+
+    # Pattern 5: URL constructed from a constant variable
+    # Look for variable names like USER_SERVICE_URL, API_BASE, etc.
+    m = re.search(
+        r"(?:requests\.\w+|fetch|axios\.\w+|httpx\.\w+)\((?:"
+        r'f["\']?(https?://[^"\'{]+)|'
+        r'["\']?(https?://[^"\'{]+)|'
+        r"(\w+(?:_URL|_HOST|_ENDPOINT|_BASE))"
+        r")",
+        call_text,
+    )
+    if m:
+        return m.group(1) or m.group(2) or m.group(3) or ""
+
+    # Pattern 6: URL path-only pattern (relative URL)
+    m = re.search(r"""["'](/api/[^\s"'*,;)]+)["']""", context)
+    if m:
+        return m.group(1)
+
+    return None
+
+
 # ── Output types ───────────────────────────────────────────────────────
 
 
@@ -418,127 +547,12 @@ class CrossRepoImplementation:
     def _extract_url_from_context(
         self, db_path: str, caller_qname: str, call_line: int | None
     ) -> str | None:
-        """Extract URL from near the HTTP call site by reading source code.
-
-        Strategy (in order):
-          1. Read source lines around the call line, find URL patterns in the
-             actual call expression (f-strings, template literals, concatenation)
-          2. Look for variable assignments on preceding lines that look like URLs
-          3. Fall back to variable/constant node name matching
-        """
-        if call_line is None:
-            return None
-
-        # Find the caller context
-        with SQLiteCodeGraphRepository(db_path) as repository:
-            caller_row = repository.function_location(caller_qname)
-        if not caller_row:
-            return None
-
-        c = caller_row[0]
-        file_path = c["file_path"]
-
-        # Strategy 1: read source around the call line
-        source_url = self._extract_url_from_source(file_path, call_line, db_path)
-        if source_url:
-            return source_url
-
-        # Strategy 2: look for variable assignments on preceding lines
-        func_start = c["start_line"]
-        func_end = c["end_line"]
-        with SQLiteCodeGraphRepository(db_path) as repository:
-            candidates = repository.url_candidate_nodes(file_path, func_start, func_end)
-
-        for cand in candidates:
-            name = cand["name"]
-            url_match = re.search(r'(?:https?://[^\s\'",;]+|/[a-z]+/[^\s\'",;]+)', name)
-            if url_match:
-                return url_match.group(0)
-
-        return None
+        """Extract URL from near the HTTP call site (delegates to module helper)."""
+        return extract_outbound_url(db_path, caller_qname, call_line)
 
     def _extract_url_from_source(self, file_path: str, call_line: int, db_path: str) -> str | None:
-        """Read source code around the call line and extract URL from arguments.
-
-        Handles:
-          - f-strings: f"http://{host}/api/users/{id}"
-          - template literals: `http://${host}/api/users/${id}`
-          - string concatenation: "http://" + host + "/api/users/" + id
-          - plain strings: "http://user-service/api/users/123"
-          - variable references where the variable is a URL
-        """
-        # Read ~10 lines around the call
-        # Actually, we need the actual repo path. Let's derive from db_path.
-        repo_root = str(Path(db_path).parent.parent)
-        source_path = str(Path(repo_root) / file_path)
-        try:
-            with open(source_path, encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-        except (OSError, FileNotFoundError):
-            return None
-
-        if call_line < 1 or call_line > len(lines):
-            return None
-
-        # Collect context: ~5 lines before through 3 lines after the call
-        start = max(0, call_line - 6)
-        end = min(len(lines), call_line + 3)
-        context = "".join(lines[start:end])
-
-        # The call line itself
-        call_text = lines[call_line - 1].strip()
-
-        # Pattern 1: f-string / template literal with URL
-        # f"http://{host}/api/users/{id}" or f'http://{host}/api/users/{id}'
-        for pat in [
-            r"""f["'](https?://[^"'{]+)""",
-            r"""f['"](https?://[^'"}{]+)""",
-        ]:
-            m = re.search(pat, context)
-            if m:
-                return m.group(1).rstrip("/")
-
-        # Pattern 2: JS template literal `http://${host}/...`
-        m = re.search(r"`(https?://[^`]+)`", context)
-        if m:
-            return m.group(1).rstrip("/")
-
-        # Pattern 3: plain quoted URL string
-        for pat in [
-            r"""['\"](https?://[a-zA-Z0-9._:-]+(?:/[^\s"'*,;)]*)?)['\"]""",
-            r"""['"](https?://[a-zA-Z0-9._-]+(?:/[^\s"'*,;)]*)?)['"]""",
-        ]:
-            m = re.search(pat, context)
-            if m:
-                return m.group(1).rstrip("/")
-
-        # Pattern 4: string concatenation — "http://" + host + "/api/users/" + id
-        m = re.search(
-            r"""["'](https?://)["']\s*\+\s*([^+]+?)\s*\+\s*["']((?:/[^"']*)?)["']""", context
-        )
-        if m:
-            # Return f-string style: keep the concat as readable URL
-            return m.group(1) + "..." + (m.group(3) or "")
-
-        # Pattern 5: URL constructed from a constant variable
-        # Look for variable names like USER_SERVICE_URL, API_BASE, etc.
-        m = re.search(
-            r"(?:requests\.\w+|fetch|axios\.\w+|httpx\.\w+)\((?:"
-            r'f["\']?(https?://[^"\'{]+)|'
-            r'["\']?(https?://[^"\'{]+)|'
-            r"(\w+(?:_URL|_HOST|_ENDPOINT|_BASE))"
-            r")",
-            call_text,
-        )
-        if m:
-            return m.group(1) or m.group(2) or m.group(3) or ""
-
-        # Pattern 6: URL path-only pattern (relative URL)
-        m = re.search(r"""["'](/api/[^\s"'*,;)]+)["']""", context)
-        if m:
-            return m.group(1)
-
-        return None
+        """Read URL from source near the call line (delegates to module helper)."""
+        return _url_from_source_lines(file_path, call_line, db_path)
 
     # ── Cross-service edge matching ─────────────────────────────────────
 

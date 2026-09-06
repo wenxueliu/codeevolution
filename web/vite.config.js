@@ -1,8 +1,27 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import AutoImport from 'unplugin-auto-import/vite'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
+
+// Element Plus on-demand styles. Vitest loads element-plus from node_modules
+// with Node's ESM loader (bypassing Vite's CSS pipeline), so importing .css
+// there throws "Unknown file extension". Skip style imports under Vitest; the
+// auto-imported styles are only needed for dev and the production build.
+const elementResolver = () => ElementPlusResolver({ importStyle: process.env.VITEST ? false : 'css' })
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    AutoImport({
+      resolvers: [elementResolver()],
+      dts: 'src/auto-imports.d.ts',
+    }),
+    Components({
+      resolvers: [elementResolver()],
+      dts: 'src/components.d.ts',
+    }),
+  ],
   server: {
     port: 5173,
     proxy: {

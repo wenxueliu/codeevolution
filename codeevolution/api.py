@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .analysis.knowledge.call_tree import CallTreeService
+from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService
 from .application.evolution_service import EvolutionQueryService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
@@ -22,6 +24,7 @@ from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
 from .infrastructure.business_rule_store import BusinessRuleStore
 from .infrastructure.llm_config_store import LLMConfigStore
+from .infrastructure.node_rule_store import NodeRuleStore
 from .infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
@@ -49,6 +52,7 @@ _stores: dict[str, EvolutionStore] = {}
 _audit_store: AuditStore | None = None
 _ui_test_store: UiTestStore | None = None
 _business_rule_store: BusinessRuleStore | None = None
+_node_rule_store: NodeRuleStore | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies", default={})
 _init_tasks: dict[str, dict] = {}
 _init_lock = threading.Lock()
@@ -107,6 +111,15 @@ class BusinessRuleGenerateRequest(BaseModel):
 
 class BusinessRulePromptRequest(BaseModel):
     custom_prompt: str = Field(min_length=1, max_length=5000)
+
+
+class NodeRuleGenerateRequest(BaseModel):
+    repo: str = Field(min_length=1, max_length=200)
+    member: str = Field(default="", max_length=200)
+    node_type: str = Field(default="func", pattern="^(func|cross)$")
+    node_id: str = Field(default="", max_length=200)
+    handler: str = Field(default="", max_length=500)
+    custom_prompt: str = Field(default="", max_length=5000)
 
 
 def get_store(repo: str = "") -> EvolutionStore:
@@ -204,6 +217,18 @@ def get_business_rule_store() -> BusinessRuleStore:
             str(codeevolution_data_dir() / "business-rules.db")
         )
     return _business_rule_store
+
+
+def get_node_rule_store() -> NodeRuleStore:
+    global _node_rule_store
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("node_rule_store"):
+        return injected
+    if _node_rule_store is None:
+        _node_rule_store = NodeRuleStore(
+            str(codeevolution_data_dir() / "node-rules.db")
+        )
+    return _node_rule_store
 
 
 def get_refactoring_member(repo: str, member: str = "") -> tuple[str, str]:
@@ -714,6 +739,49 @@ def get_knowledge_report(
             service.close()
 
 
+# ── Call-chain tree (lazy per-node expansion) ──
+
+
+@app.get("/api/call-tree/children")
+def call_tree_children(
+    repo: str = Query(""),
+    member: str | None = Query(None),
+    file: str | None = Query(None),
+    line: int | None = Query(None),
+    node_id: str | None = Query(None),
+    handler: str | None = Query(None),
+):
+    """Return the direct children of one call-chain-tree node.
+
+    Exactly one node descriptor must be supplied:
+      * ``file``+``line`` — endpoint handler root (resolved by location)
+      * ``node_id``       — intra-repo function node
+      * ``handler``       — cross-service expansion by downstream handler qname
+    ``repo`` is the logical service to expand within; empty selects the first
+    registered service. ``member`` pins a physical member (optional when the
+    service has a single member).
+    """
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("call_tree_service"):
+        return injected.expand(
+            repo, member, file=file, line=line, node_id=node_id, handler=handler
+        )
+
+    if not repo:
+        repos = list_repos()
+        if not repos:
+            raise HTTPException(400, "No repos registered. Register a repo first.")
+        repo = repos[0]["name"]
+    entry = get_repo(repo)
+    if not entry:
+        raise HTTPException(404, f"Repo '{repo}' not found")
+    if not (file or node_id or handler):
+        raise HTTPException(400, "Pass one of file+line, node_id, or handler")
+
+    svc = CallTreeService()
+    return svc.expand(repo, member, file=file, line=line, node_id=node_id, handler=handler)
+
+
 # ── Business Rules (LLM-generated API business explanations) ──
 
 DEFAULT_BUSINESS_RULE_PROMPT = """You are a senior software architect explaining API business logic to product managers and developers.
@@ -822,6 +890,117 @@ def update_business_rule_prompt(rule_id: int, request: BusinessRulePromptRequest
     store = get_business_rule_store()
     store.update_prompt(rule_id, request.custom_prompt)
     return {"ok": True, "id": rule_id}
+
+
+# ── Per-node business rules (call-chain tree right rail) ──
+
+
+def _default_repo(repo: str) -> str:
+    """Resolve an empty repo to the first registered logical service."""
+    if repo:
+        return repo
+    repos = list_repos()
+    if not repos:
+        raise HTTPException(400, "No repos registered. Register a repo first.")
+    return repos[0]["name"]
+
+
+def _node_rule_http_error(message: str) -> HTTPException:
+    """Map a NodeRuleService resolution message to an HTTP status."""
+    if "CodeGraph" in message or "缺少" in message:
+        return HTTPException(409, message)
+    return HTTPException(404, message)
+
+
+def _resolve_node_rule(repo: str, member: str, node_type: str, node_id: str, handler: str) -> dict:
+    """Resolve a node context + stored rule, raising on bad input."""
+    repo = _default_repo(repo)
+    if node_type == "func" and not node_id:
+        raise HTTPException(400, "函数节点需要 node_id 参数")
+    if node_type == "cross" and not handler:
+        raise HTTPException(400, "跨服务节点需要 handler 参数")
+    ctx, error = NodeRuleService().resolve(
+        repo, member or None, node_type=node_type, node_id=node_id or None, handler=handler or None
+    )
+    if ctx is None:
+        raise _node_rule_http_error(error or "节点不可解析")
+    return ctx
+
+
+@app.get("/api/call-tree/rule")
+def call_tree_node_rule(
+    repo: str = Query(""),
+    member: str = Query(""),
+    node_type: str = Query("func"),
+    node_id: str = Query(""),
+    handler: str = Query(""),
+):
+    """Describe one call-chain node: its stored business rule (if any) and the
+    default LLM prompt built from its source snippet."""
+    ctx = _resolve_node_rule(repo, member, node_type, node_id, handler)
+    svc = NodeRuleService()
+    store = get_node_rule_store()
+    rule = store.get(ctx["service"], ctx["member"], ctx["node_type"], ctx["node_key"])
+    return {
+        "node": {
+            "type": ctx["node_type"],
+            "service": ctx["service"],
+            "member": ctx["member"],
+            "qualified_name": ctx["qualified_name"],
+            "name": ctx["name"],
+            "file": ctx["file"],
+            "line": ctx["line"],
+        },
+        "default_prompt": svc.default_prompt(ctx),
+        "rule": rule,
+    }
+
+
+@app.post("/api/call-tree/rule/generate")
+def generate_call_tree_node_rule(request: NodeRuleGenerateRequest):
+    """Generate or regenerate the business-rule explanation for one call-chain node."""
+    from .semantic.client import OpenAILLMClient
+    from .semantic.config import get_llm_config
+    from .semantic.json_parser import parse_json
+
+    config = get_llm_config()
+    if not config:
+        raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
+
+    ctx = _resolve_node_rule(request.repo, request.member, request.node_type, request.node_id, request.handler)
+    svc = NodeRuleService()
+    prompt = request.custom_prompt or svc.default_prompt(ctx)
+    store = get_node_rule_store()
+
+    rule_id = store.upsert(
+        repo_name=ctx["service"],
+        member=ctx["member"],
+        node_type=ctx["node_type"],
+        node_key=ctx["node_key"],
+        custom_prompt=request.custom_prompt,
+        status="running",
+    )
+
+    try:
+        client = OpenAILLMClient(config)
+        content = client.complete(prompt, max_tokens=1200, temperature=0.3)
+        if not content:
+            raise RuntimeError("LLM returned empty response")
+
+        parsed = parse_json(content)
+        if parsed is not None and parsed.get("error"):
+            raise RuntimeError(parsed["error"])
+
+        result = (
+            json.dumps(parsed, ensure_ascii=False)
+            if isinstance(parsed, dict) and "business_purpose_en" in parsed
+            else content
+        )
+        store.update_status(rule_id, status="completed", result=result)
+        return {"id": rule_id, "status": "completed", "result": result, "prompt": prompt}
+    except Exception as exc:
+        store.update_status(rule_id, status="failed", error=str(exc)[:1000])
+        raise HTTPException(502, f"LLM 生成失败：{exc}")
 
 
 @app.get("/api/refactor-techniques")
@@ -1010,7 +1189,7 @@ _route_app = app
 
 @asynccontextmanager
 async def _lifespan(application):
-    global _audit_store, _ui_test_store, _business_rule_store
+    global _audit_store, _ui_test_store, _business_rule_store, _node_rule_store
     yield
     for store in list(_stores.values()):
         store.close()
@@ -1024,6 +1203,9 @@ async def _lifespan(application):
     if _business_rule_store is not None:
         _business_rule_store.close()
         _business_rule_store = None
+    if _node_rule_store is not None:
+        _node_rule_store.close()
+        _node_rule_store = None
 
 
 def create_app(dependencies: dict | None = None) -> FastAPI:

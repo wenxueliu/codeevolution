@@ -235,6 +235,36 @@ class _SQLiteCodeGraphQueries:
         ).fetchall()
         return [CallTarget(**dict(r)) for r in rows]
 
+    def get_callee_rows(self, node_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Direct outgoing call targets (1 hop) with node detail for the call tree.
+
+        Returns one row per calls-edge in stable order. Each row carries the
+        callee's identity plus the source call line (edge line), e.g.:
+        {id, name, qualified_name, kind, file_path, start_line, signature, call_line}.
+        """
+        rows = self.conn.execute(
+            """SELECT n.id, n.name, n.qualified_name, n.kind,
+                      n.file_path, n.start_line, n.signature,
+                      e.line AS call_line
+               FROM edges e JOIN nodes n ON n.id = e.target
+               WHERE e.source = ? AND e.kind = 'calls'
+               ORDER BY n.file_path, n.start_line, e.line
+               LIMIT ?""",
+            (node_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def function_node(self, qualified_name: str) -> dict[str, Any] | None:
+        """Locate a function/method node by its exact qualified name."""
+        rows = self.query(
+            """SELECT id, name, qualified_name, kind, file_path, start_line, end_line, signature
+               FROM nodes
+               WHERE qualified_name = ? AND kind IN ('function', 'method')
+               ORDER BY start_line LIMIT 1""",
+            [qualified_name],
+        )
+        return rows[0] if rows else None
+
     def get_call_tree(self, node_id: str, max_depth: int = 10) -> list[str]:
         """BFS traversal from entry point — returns node_ids in visit order."""
         visited: set[str] = set()
