@@ -15,7 +15,7 @@
         <label>模型名称<input v-model.trim="form.model" required autocomplete="off" placeholder="例如：gpt-4o-mini、anthropic/claude-3-5-sonnet" /></label>
         <label>API Base <span>可选</span><input v-model.trim="form.api_base" type="url" autocomplete="url" placeholder="例如：https://api.openai.com/v1" /></label>
         <label>API Key <span>{{ settings.api_key_configured ? '留空则保留现有密钥' : '必填' }}</span><input v-model="form.api_key" :required="!settings.api_key_configured" type="password" autocomplete="new-password" placeholder="不会在页面中回显" /></label>
-        <p class="security-note">密钥保存在 CodeHistory 数据目录，文件权限为仅当前用户可读写。</p>
+        <p class="security-note">密钥保存在 CodeEvolution 数据目录，文件权限为仅当前用户可读写。</p>
         <div class="status-row">
           <span :class="['status-dot', settings.available ? 'ready' : '']"></span>
           {{ settings.available ? `已配置 · ${sourceLabel}` : '尚未配置' }}

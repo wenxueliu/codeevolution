@@ -42,7 +42,7 @@
           <div class="repo-empty" v-else>
             <strong>尚未生成演进数据</strong>
             <span>运行首次回溯后即可查看功能和事件。</span>
-            <code>codehistory backfill -r {{ r.path }}</code>
+            <code>codeevolution backfill -r {{ r.path }}</code>
           </div>
         </router-link>
         <div class="repo-actions">
@@ -119,7 +119,7 @@ export default {
     },
     async removeRepo(repo) {
       const confirmed = window.confirm(
-        `确定从 CodeHistory 移除”${repo.name}”吗？\n\n仅删除注册记录，不会删除代码仓、CodeGraph 或演进数据库。`,
+        `确定从 CodeEvolution 移除”${repo.name}”吗？\n\n仅删除注册记录，不会删除代码仓、CodeGraph 或演进数据库。`,
       )
       if (!confirmed) return
       await this.$runAsync(async () => {

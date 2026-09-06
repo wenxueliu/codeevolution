@@ -2,7 +2,7 @@
   <div class="app">
     <nav class="nav">
       <div class="nav-brand">
-        <router-link to="/">CodeHistory</router-link>
+        <router-link to="/">CodeEvolution</router-link>
         <span class="nav-subtitle">代码仓功能演进分析</span>
       </div>
       <button v-if="repoName" class="nav-menu-button" type="button" :aria-expanded="menuOpen" aria-controls="primary-navigation" @click="menuOpen = !menuOpen">
