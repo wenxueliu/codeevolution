@@ -7,11 +7,11 @@ import time
 import tracemalloc
 from pathlib import Path
 
-from codehistory.store import EvolutionStore
+from codeevolution.store import EvolutionStore
 
 
 def run_benchmark(feature_count: int) -> dict:
-    with tempfile.TemporaryDirectory(prefix="codehistory-benchmark-") as directory:
+    with tempfile.TemporaryDirectory(prefix="codeevolution-benchmark-") as directory:
         store = EvolutionStore(str(Path(directory) / "evolution.db"))
         with store.transaction():
             commit_id = store.insert_commit(

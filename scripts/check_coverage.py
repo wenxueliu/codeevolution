@@ -39,7 +39,7 @@ def main() -> int:
     parser.add_argument("pytest_args", nargs="*", default=["-q"])
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    source_root = root / "codehistory"
+    source_root = root / "codeevolution"
 
     tracer = trace.Trace(count=True, trace=False)
     result = tracer.runfunc(pytest.main, args.pytest_args or ["-q"])

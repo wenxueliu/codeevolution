@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-platform build and lifecycle helper for the CodeHistory Web service."""
+"""Cross-platform build and lifecycle helper for the CodeEvolution Web service."""
 
 from __future__ import annotations
 
@@ -17,12 +17,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
 RUN_DIR = ROOT / ".run"
-PID_FILE = RUN_DIR / "codehistory.pid"
-LOG_FILE = RUN_DIR / "codehistory.log"
+PID_FILE = RUN_DIR / "codeevolution.pid"
+LOG_FILE = RUN_DIR / "codeevolution.log"
+LEGACY_PID_FILE = RUN_DIR / "codehistory.pid"
 
 
 def run(command: list[str], cwd: Path = ROOT) -> None:
-    print(f"[codehistory] {' '.join(command)}")
+    print(f"[codeevolution] {' '.join(command)}")
     subprocess.run(command, cwd=cwd, check=True)
 
 
@@ -34,10 +35,17 @@ def build() -> None:
 
 
 def read_pid() -> int | None:
-    try:
-        return int(PID_FILE.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
+    for path in (PID_FILE, LEGACY_PID_FILE):
+        try:
+            return int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def clear_pid_files() -> None:
+    PID_FILE.unlink(missing_ok=True)
+    LEGACY_PID_FILE.unlink(missing_ok=True)
 
 
 def is_running(pid: int | None = None) -> bool:
@@ -55,8 +63,8 @@ def server_command(host: str, port: int) -> list[str]:
     python = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     executable = str(python) if python.exists() else sys.executable
     # Run the source tree as a module. A console script in an old virtualenv may
-    # still point at a previously installed CodeHistory build.
-    return [executable, "-m", "codehistory.cli", "web", "--host", host, "--port", str(port)]
+    # still point at a previously installed CodeEvolution build.
+    return [executable, "-m", "codeevolution.cli", "web", "--host", host, "--port", str(port)]
 
 
 def port_is_available(host: str, port: int) -> bool:
@@ -83,9 +91,9 @@ def api_is_ready(host: str, port: int) -> bool:
 def start(host: str, port: int, should_build: bool = True) -> None:
     pid = read_pid()
     if is_running(pid):
-        print(f"[codehistory] already running (pid={pid})")
+        print(f"[codeevolution] already running (pid={pid})")
         return
-    PID_FILE.unlink(missing_ok=True)
+    clear_pid_files()
     if not port_is_available(host, port):
         raise RuntimeError(
             f"port {host}:{port} is already in use; stop the existing service "
@@ -106,7 +114,7 @@ def start(host: str, port: int, should_build: bool = True) -> None:
         if process.poll() is not None:
             raise RuntimeError(f"service exited early; inspect {LOG_FILE}")
         if api_is_ready(host, port):
-            print(f"[codehistory] started pid={process.pid} http://{host}:{port}")
+            print(f"[codeevolution] started pid={process.pid} http://{host}:{port}")
             return
         time.sleep(0.1)
     if process.poll() is None:
@@ -114,15 +122,15 @@ def start(host: str, port: int, should_build: bool = True) -> None:
             process.terminate()
         else:
             os.killpg(process.pid, signal.SIGTERM)
-    PID_FILE.unlink(missing_ok=True)
+    clear_pid_files()
     raise RuntimeError(f"service did not listen on {host}:{port}; inspect {LOG_FILE}")
 
 
 def stop() -> None:
     pid = read_pid()
     if not is_running(pid):
-        PID_FILE.unlink(missing_ok=True)
-        print("[codehistory] not running")
+        clear_pid_files()
+        print("[codeevolution] not running")
         return
     assert pid is not None
     if os.name == "nt":
@@ -131,8 +139,8 @@ def stop() -> None:
         os.killpg(pid, signal.SIGTERM)
     for _ in range(50):
         if not is_running(pid):
-            PID_FILE.unlink(missing_ok=True)
-            print(f"[codehistory] stopped pid={pid}")
+            clear_pid_files()
+            print(f"[codeevolution] stopped pid={pid}")
             return
         time.sleep(0.1)
     raise RuntimeError(f"service pid={pid} did not stop within 5 seconds")
@@ -141,7 +149,7 @@ def stop() -> None:
 def status() -> None:
     pid = read_pid()
     state = f"running (pid={pid})" if is_running(pid) else "stopped"
-    print(f"[codehistory] {state}; log={LOG_FILE}")
+    print(f"[codeevolution] {state}; log={LOG_FILE}")
 
 
 def main() -> None:
@@ -164,7 +172,7 @@ def main() -> None:
         else:
             status()
     except RuntimeError as error:
-        raise SystemExit(f"[codehistory] error: {error}") from None
+        raise SystemExit(f"[codeevolution] error: {error}") from None
 
 
 if __name__ == "__main__":

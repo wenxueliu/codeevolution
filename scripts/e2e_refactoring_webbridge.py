@@ -2,7 +2,7 @@
 """Real-browser regression for repository-scoped refactoring techniques.
 
 Prerequisites:
-  1. CodeHistory Web is running (default: http://127.0.0.1:8765).
+  1. CodeEvolution Web is running (default: http://127.0.0.1:8765).
   2. Kimi WebBridge daemon and Chrome extension are connected.
   3. At least one logical repository with one CodeGraph-initialized member is registered.
 
@@ -96,7 +96,7 @@ def main() -> None:
     parser.add_argument("--repo", default="", help="Logical repository name; default is first")
     parser.add_argument("--member", default="", help="Physical member name; default is first")
     parser.add_argument("--webbridge", default="http://127.0.0.1:10086/command")
-    parser.add_argument("--session", default="codehistory-refactoring-e2e")
+    parser.add_argument("--session", default="codeevolution-refactoring-e2e")
     args = parser.parse_args()
     base_url = args.base_url.rstrip("/")
 
@@ -127,7 +127,7 @@ def main() -> None:
             "navigate",
             url=page_url,
             newTab=True,
-            group_title="CodeHistory 重构回归",
+            group_title="CodeEvolution 重构回归",
         )
         bridge.wait_for(
             "document.querySelectorAll('.filters select')[0]?.options.length > 0",

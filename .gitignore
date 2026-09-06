@@ -3,7 +3,9 @@ __pycache__/
 *.pyc
 *.egg-info/
 dist/
+.codeevolution/
 .codehistory/
+.remember/
 web/node_modules/
 web/dist/
 web/coverage/
