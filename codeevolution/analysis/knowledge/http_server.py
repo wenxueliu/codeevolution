@@ -44,6 +44,9 @@ class EndpointSpec:
     class_name: str = ""
     #: hints about the inference (e.g. coarse fallback).
     note: str = ""
+    #: request-payload kind read by the do_* method for this endpoint:
+    #: "" (none), "json" (parsed JSON object) or "bytes" (raw payload bytes).
+    request_body_kind: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -296,6 +299,67 @@ def _binding_end_offset(value: ast.AST) -> int | None:
 # --------------------------------------------------------------------------- #
 
 
+def _detect_body_kind(value: ast.AST | None) -> str | None:
+    """Classify an expression as reading a JSON payload or raw request bytes."""
+    if value is None:
+        return None
+    if isinstance(value, ast.IfExp):
+        return _detect_body_kind(value.body) or _detect_body_kind(value.orelse)
+    if isinstance(value, ast.NamedExpr):
+        return _detect_body_kind(value.value)
+    if isinstance(value, ast.Call):
+        func = value.func
+        if isinstance(func, ast.Attribute):
+            if func.attr == "loads" and isinstance(func.value, ast.Name) and func.value.id == "json":
+                return "json"
+            if func.attr == "read":  # self.rfile.read(length)
+                return "bytes"
+    return None
+
+
+def _collect_body_kinds(do_method: ast.AST) -> dict[str, str]:
+    """Map local names whose assignment reads an HTTP request body -> kind.
+
+    Handles the two idioms seen in http.server handlers: ``body = json.loads(
+    raw) if raw else {}`` (parsed JSON) and ``body = self.rfile.read(length) if
+    length else b""`` (raw bytes). The body read usually sits at the top of the
+    ``do_<VERB>`` method, sometimes wrapped in a ``try``.
+    """
+    kinds: dict[str, str] = {}
+
+    def scan(body: list[ast.stmt]) -> None:
+        for stmt in body:
+            if isinstance(stmt, (ast.Try, ast.If)):
+                scan(stmt.body)
+                if isinstance(stmt, ast.Try):
+                    for handler in stmt.handlers:
+                        scan(handler.body)
+                scan(stmt.orelse)
+                if isinstance(stmt, ast.Try):
+                    scan(stmt.finalbody)
+            elif isinstance(stmt, ast.Assign):
+                kind = _detect_body_kind(stmt.value)
+                if kind:
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name):
+                            kinds.setdefault(target.id, kind)
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                kind = _detect_body_kind(stmt.value)
+                if kind:
+                    kinds.setdefault(stmt.target.id, kind)
+
+    scan(do_method.body)
+    return kinds
+
+
+def _endpoint_body_kind(args: list[ast.AST], body_kinds: dict[str, str]) -> str:
+    """Kind of the request body this endpoint's helper consumes, if any."""
+    for arg in args:
+        if isinstance(arg, ast.Name) and arg.id in body_kinds:
+            return body_kinds[arg.id]
+    return ""
+
+
 def synthesize_class_endpoints(source_code: str, class_name: str) -> list[EndpointSpec]:
     """Reconstruct endpoints for one handler class from its source text."""
     try:
@@ -322,6 +386,7 @@ def synthesize_class_endpoints(source_code: str, class_name: str) -> list[Endpoi
 def _synthesize_do_method(cls: ast.ClassDef, do_method: ast.AST, verb: str, out: list[EndpointSpec]):
     leaves: list[tuple[list[ast.AST], ast.stmt]] = []
     _collect_leaves(do_method.body, [], leaves)
+    body_kinds = _collect_body_kinds(do_method)
 
     for guards, leaf in leaves:
         helper, args = _leaf_helper(leaf)
@@ -348,6 +413,7 @@ def _synthesize_do_method(cls: ast.ClassDef, do_method: ast.AST, verb: str, out:
                 params=params,
                 class_name=cls.name,
                 note=note,
+                request_body_kind=_endpoint_body_kind(args, body_kinds),
             )
         )
 

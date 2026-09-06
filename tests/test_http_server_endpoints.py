@@ -166,3 +166,83 @@ class Api(BaseHTTPRequestHandler):
     assert [(s.path, s.params, s.note) for s in specs] == [
         ("/api/workflow/{req_id}", ["req_id"], "segments")
     ]
+
+
+def _kinds(source: str, class_name: str) -> list[str]:
+    return [s.request_body_kind for s in _specs(source, class_name)]
+
+
+def test_json_body_prologue_tags_post_endpoint():
+    source = '''\
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse
+import json
+
+class Api(BaseHTTPRequestHandler):
+    def do_POST(self):
+        u = urlparse(self.path)
+        path = u.path.rstrip("/")
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b""
+        body = json.loads(raw) if raw else {}
+        if path.startswith("/api/workflow/") and path.endswith("/control"):
+            req_id = path.split("/")[-2]
+            return self._control(req_id, body)
+
+    def _control(self, req_id, body):
+        return None
+'''
+    specs = _specs(source, "Api")
+    assert [(s.method, s.path, s.request_body_kind) for s in specs] == [
+        ("POST", "/api/workflow/{req_id}/control", "json")
+    ]
+
+
+def test_bytes_body_prologue_tags_put_endpoint():
+    source = '''\
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse
+
+class Store(BaseHTTPRequestHandler):
+    def do_PUT(self):
+        u = urlparse(self.path)
+        path = u.path.rstrip("/")
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length) if length else b""
+        if path.startswith("/v1/kv/"):
+            key = path[len("/v1/kv/"):]
+            return self._handle_kv_put(key, body)
+
+    def _handle_kv_put(self, key, body):
+        return None
+'''
+    specs = _specs(source, "Store")
+    assert [(s.method, s.path, s.request_body_kind) for s in specs] == [
+        ("PUT", "/v1/kv/{key}", "bytes")
+    ]
+
+
+def test_handlers_without_payload_leave_body_kind_empty():
+    # do_GET reads no body; a do_PUT branch that ignores the payload is empty.
+    source = '''\
+from http.server import BaseHTTPRequestHandler
+
+class Api(BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = self.path.rstrip("/")
+        if path == "/api/workflows":
+            return self._list_workflows()
+
+    def do_DELETE(self):
+        path = self.path.rstrip("/")
+        if path.startswith("/v1/kv/"):
+            key = path.split("/")[-1]
+            return self._delete_kv(key)
+
+    def _list_workflows(self):
+        return None
+
+    def _delete_kv(self, key):
+        return None
+'''
+    assert _kinds(source, "Api") == ["", ""]

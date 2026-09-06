@@ -772,6 +772,10 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
 
         provider = FileSystemSourceProvider(Path(self.db_path).parent.parent)
         source_cache: dict[str, str] = {}
+        body_types = {
+            "json": {"type": "JSON 对象", "format": "application/json"},
+            "bytes": {"type": "原始字节", "format": "application/octet-stream"},
+        }
         endpoints: list[dict[str, Any]] = []
         for row in rows:
             file_path, class_name = row["file_path"], row["class_name"]
@@ -792,6 +796,9 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
                         "params": spec.params,
                         "class_name": spec.class_name or class_name,
                         "note": spec.note,
+                        # request body the handler consumes (only for do_* methods
+                        # that read an HTTP payload: json-loaded object or raw bytes)
+                        "request_body": body_types.get(spec.request_body_kind),
                         # provenance marker: this endpoint was inferred from source
                         "decorators": [f"http.server(源自 {spec.class_name or class_name})"],
                     }

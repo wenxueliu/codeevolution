@@ -82,6 +82,7 @@ class ApiContractExtractor:
                         file_path=row.get("file_path") or "",
                         line=row.get("line") or 0,
                         params=row.get("params") or [],
+                        request_body=row.get("request_body"),
                         decorators=row.get("decorators") or [],
                     )
                 )

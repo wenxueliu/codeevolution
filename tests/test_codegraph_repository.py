@@ -183,6 +183,9 @@ class Api(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/")
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b""
+        body = json.loads(raw) if raw else {}
         if path.startswith("/api/workflow/") and path.endswith("/control"):
             req_id = path.split("/")[-2]
             return self._control(req_id, body)
@@ -244,3 +247,11 @@ def test_http_handler_endpoints_reconstruct_from_seeded_repo(tmp_path):
     assert all(e["decorators"] == ["http.server(源自 Api)"] for e in endpoints)
     # test-file handlers are never surfaced
     assert all(e["file_path"] == "webapi.py" for e in endpoints)
+    # the POST handler reads a JSON body (do_POST prologue) → tagged as JSON;
+    # the GET handler reads no payload → stays bodyless
+    by_path = {e["path"]: e for e in endpoints}
+    assert by_path["/api/workflow/{req_id}/control"]["request_body"] == {
+        "type": "JSON 对象",
+        "format": "application/json",
+    }
+    assert by_path["/api/workflows"]["request_body"] is None
