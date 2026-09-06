@@ -45,8 +45,10 @@ class RuntimeTelemetryService:
 
     def _feature_id(self, observation, features, trace_features) -> int | None:
         attributes = observation.get("attributes") or {}
-        stable_id = attributes.get("codehistory.feature.stable_id") or attributes.get(
-            "feature.stable_id"
+        stable_id = (
+            attributes.get("codeevolution.feature.stable_id")
+            or attributes.get("codehistory.feature.stable_id")
+            or attributes.get("feature.stable_id")
         )
         if stable_id:
             feature = self.store.get_feature(str(stable_id))

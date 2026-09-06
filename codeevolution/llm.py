@@ -10,7 +10,7 @@ Phase 3 — requires LLM for semantic understanding:
 
 All models are accessed through OpenAI-compatible API.
 Set OPENAI_API_KEY in the environment.
-Model can be overridden via CODEHISTORY_LLM_MODEL.
+Model can be overridden via CODEEVOLUTION_LLM_MODEL.
 """
 
 from concurrent.futures import ThreadPoolExecutor

@@ -7,13 +7,12 @@ import os
 import tempfile
 from pathlib import Path
 
+from ..paths import data_dir
+
 
 class LLMConfigStore:
     def __init__(self, path: str | Path | None = None):
-        data_dir = Path(
-            os.environ.get("CODEHISTORY_DATA_DIR", str(Path.home() / ".codehistory"))
-        )
-        self.path = Path(path) if path else data_dir / "llm-config.json"
+        self.path = Path(path) if path else data_dir() / "llm-config.json"
 
     def load(self) -> dict | None:
         try:

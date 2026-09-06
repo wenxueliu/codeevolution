@@ -16,8 +16,9 @@ from pathlib import Path
 from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 from .infrastructure.registry_json import RegistryRepository
 from .infrastructure.topology_cache_json import TopologyCache
+from .paths import data_dir
 
-REGISTRY_DIR = Path.home() / ".codehistory"
+REGISTRY_DIR = data_dir()
 REGISTRY_FILE = REGISTRY_DIR / "registry.json"
 TOPOLOGY_CACHE_FILE = REGISTRY_DIR / "topology_cache.json"
 
@@ -390,7 +391,7 @@ def _detect_from_filesystem(meta: ServiceMeta, repo_path: str):
         "target",
         ".next",
         ".codegraph",
-        ".codehistory",
+        ".codeevolution",
     }
     try:
         for root, dirs, files in os.walk(repo_path):

@@ -12,6 +12,7 @@ from ..domain.knowledge import FunctionDef
 from ..domain.refactoring import Hotspot, RefactoringPlan
 from ..infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 from ..infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
+from ..paths import repo_data_file
 
 
 class RefactoringPlanningService:
@@ -28,7 +29,7 @@ class RefactoringPlanningService:
         db_path = repo / ".codegraph" / "codegraph.db"
         if not db_path.exists():
             raise ValueError(f"CodeGraph database not found: {db_path}")
-        catalog = RefactoringTechniqueCatalog(repo / ".codehistory" / "refactoring-techniques.json")
+        catalog = RefactoringTechniqueCatalog(repo_data_file(repo, "refactoring-techniques.json"))
         return cls(str(repo), SQLiteCodeGraphRepository(str(db_path)), catalog)
 
     def close(self) -> None:

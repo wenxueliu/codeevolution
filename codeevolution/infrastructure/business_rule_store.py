@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 import time
 from pathlib import Path
-
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS api_business_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,14 +1,16 @@
-"""Configuration management for CodeHistory."""
+"""Configuration management for CodeEvolution."""
 
 from dataclasses import dataclass
 from pathlib import Path
 
+from .paths import repo_data_file
+
 
 @dataclass
 class Config:
-    """CodeHistory configuration.
+    """CodeEvolution configuration.
 
-    CodeHistory uses CodeGraph for parsing and call resolution.
+    CodeEvolution uses CodeGraph for parsing and call resolution.
     Run ``codegraph init`` on the target repo before running backfill.
 
     All paths are resolved relative to repo_path.
@@ -38,9 +40,9 @@ class Config:
         self.repo_path = str(repo)
 
         if not self.db_path:
-            data_dir = repo / ".codehistory"
-            data_dir.mkdir(exist_ok=True)
-            self.db_path = str(data_dir / "evolution.db")
+            database = repo_data_file(repo, "evolution.db")
+            database.parent.mkdir(exist_ok=True)
+            self.db_path = str(database)
 
     @property
     def codegraph_db_path(self) -> str:

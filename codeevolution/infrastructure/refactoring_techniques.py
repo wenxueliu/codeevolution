@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
 from ..analysis.refactoring import TECHNIQUES
 from ..domain.refactoring import RefactoringTechnique
+from ..paths import data_dir
 from .registry_json import RegistryRepository
 
 TECHNIQUE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
@@ -18,10 +18,7 @@ class RefactoringTechniqueCatalog:
 
     def __init__(self, path: str | Path | None = None):
         if path is None:
-            data_dir = Path(
-                os.environ.get("CODEHISTORY_DATA_DIR", str(Path.home() / ".codehistory"))
-            )
-            path = data_dir / "refactoring-techniques.json"
+            path = data_dir() / "refactoring-techniques.json"
         self.repository = RegistryRepository(path)
 
     def list(self) -> list[dict]:

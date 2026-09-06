@@ -1,4 +1,4 @@
-"""CLI entry point for CodeHistory."""
+"""CLI entry point for CodeEvolution."""
 
 import argparse
 import json
@@ -48,7 +48,7 @@ def cmd_backfill(args):
     """Run a full backfill analysis from git history."""
     config = Config(repo_path=args.repo, db_path=args.db)
     service = EvolutionCommandService.from_config(config)
-    logger = logging.getLogger("codehistory")
+    logger = logging.getLogger("codeevolution")
 
     def progress(current, total, msg):
         if current % 100 == 0 or current == total:
@@ -93,7 +93,7 @@ def cmd_web(args):
     """Start the web dashboard (multi-repo)."""
     from .api import serve
 
-    print(f"Starting CodeHistory web server at http://{args.host}:{args.port}")
+    print(f"Starting CodeEvolution web server at http://{args.host}:{args.port}")
     serve(host=args.host, port=args.port)
 
 
@@ -117,7 +117,7 @@ def cmd_repos(args):
     repos = list_repos()
     if not repos:
         print("No repos registered.")
-        print("Use 'codehistory register --name <name> --repo <path>' to register one.")
+        print("Use 'codeevolution register --name <name> --repo <path>' to register one.")
         return
     for r in repos:
         members = repository_members(r)
@@ -386,8 +386,8 @@ def cmd_refactor_plan(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="codehistory",
-        description="CodeHistory — codebase feature evolution analysis",
+        prog="codeevolution",
+        description="CodeEvolution — codebase feature evolution analysis",
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
@@ -395,7 +395,7 @@ def main():
     p = subparsers.add_parser("backfill", help="Full initial analysis from git history")
     p.add_argument("--repo", "-r", required=True, help="Path to git repository")
     p.add_argument(
-        "--db", "-d", default="", help="Path to database (default: .codehistory/evolution.db)"
+        "--db", "-d", default="", help="Path to database (default: .codeevolution/evolution.db)"
     )
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     p.set_defaults(handler=cmd_backfill)
@@ -579,7 +579,7 @@ def cmd_topology(args):
     entries = _get_services(args)
 
     if not entries:
-        print("No repos registered. Use 'codehistory register' first.")
+        print("No repos registered. Use 'codeevolution register' first.")
         sys.exit(1)
 
     # Check prerequisites
@@ -670,7 +670,7 @@ def cmd_discover(args):
         print(f"  [{r['role']:10s}] {r['name']:30s} ({r['language']})")
         print(f"         Path: {r['path']}")
         print(f"         {r['suggestion']}")
-        print(f"         To register: codehistory register -n {r['name']} -r {r['path']}")
+        print(f"         To register: codeevolution register -n {r['name']} -r {r['path']}")
         print()
 
 
@@ -793,7 +793,7 @@ def cmd_init_all(args):
                 return
         refresh_meta(name)
 
-    print("\nDone. Run 'codehistory check' to verify status.")
+    print("\nDone. Run 'codeevolution check' to verify status.")
 
 
 def cmd_flow(args):

@@ -19,6 +19,9 @@ class _QuerySource(Protocol):
     def api_call_chain(self, node_id: str, limit: int = 30) -> list[dict[str, Any]]: ...
     def api_call_chain_mermaid(self, node_id: str, limit: int = 30) -> str: ...
     def type_schema(self, type_name: str) -> dict[str, Any] | None: ...
+    # Optional — only sources that can surface stdlib http.server dispatch
+    # handlers implement it (see SQLiteCodeGraphRepository.http_handler_endpoints).
+    def http_handler_endpoints(self) -> list[dict[str, Any]]: ...
 
 
 class ApiContractExtractor:
@@ -61,6 +64,25 @@ class ApiContractExtractor:
                         params=self.parse_params(handler.get("signature") or ""),
                         return_type=self.parse_return_type(handler.get("signature") or ""),
                         decorators=[decorator],
+                    )
+                )
+
+        # Fallback: no declarative endpoints matched (route table / decorators).
+        # Repos that hand-dispatch via stdlib http.server (BaseHTTPRequestHandler
+        # do_GET/do_POST + self.path) surface their endpoints here instead.
+        # Only consulted when the two declarative channels are empty so repos that
+        # already parse cleanly (FastAPI/Express/…) stay free of heuristic noise.
+        if not endpoints and hasattr(self._source, "http_handler_endpoints"):
+            for row in self._source.http_handler_endpoints():  # type: ignore[union-attr]
+                endpoints.append(
+                    ApiEndpoint(
+                        method=row.get("method") or "GET",
+                        path=row.get("path") or "/",
+                        handler_name=row.get("handler_name") or "",
+                        file_path=row.get("file_path") or "",
+                        line=row.get("line") or 0,
+                        params=row.get("params") or [],
+                        decorators=row.get("decorators") or [],
                     )
                 )
 

@@ -1,4 +1,4 @@
-"""FastAPI backend for the CodeHistory web dashboard — multi-repo support."""
+"""FastAPI backend for the CodeEvolution web dashboard — multi-repo support."""
 
 import json
 import os
@@ -25,10 +25,18 @@ from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
-from .registry import get_repo, list_repos, register_repo, repository_members, unregister_member, unregister_repo
+from .paths import data_dir, repo_data_file
+from .registry import (
+    get_repo,
+    list_repos,
+    register_repo,
+    repository_members,
+    unregister_member,
+    unregister_repo,
+)
 from .store import EvolutionStore
 
-app = FastAPI(title="CodeHistory API")
+app = FastAPI(title="CodeEvolution API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,7 +49,7 @@ _stores: dict[str, EvolutionStore] = {}
 _audit_store: AuditStore | None = None
 _ui_test_store: UiTestStore | None = None
 _business_rule_store: BusinessRuleStore | None = None
-_request_dependencies: ContextVar[dict] = ContextVar("codehistory_dependencies", default={})
+_request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies", default={})
 _init_tasks: dict[str, dict] = {}
 _init_lock = threading.Lock()
 
@@ -115,7 +123,7 @@ def get_store(repo: str = "") -> EvolutionStore:
         entry = get_repo(repo)
         if not entry:
             raise HTTPException(404, f"Repo '{repo}' not found")
-        db_path = entry.get("db_path") or str(Path(entry["path"]) / ".codehistory" / "evolution.db")
+        db_path = entry.get("db_path") or str(repo_data_file(entry["path"], "evolution.db"))
         _stores[repo] = EvolutionStore(db_path)
 
     return _stores[repo]
@@ -136,7 +144,7 @@ def get_audit_store() -> AuditStore:
     if injected := dependencies.get("audit_store"):
         return injected
     if _audit_store is None:
-        _audit_store = AuditStore(str(codehistory_data_dir() / "assistant-audit.db"))
+        _audit_store = AuditStore(str(codeevolution_data_dir() / "assistant-audit.db"))
     return _audit_store
 
 
@@ -167,19 +175,19 @@ def get_ui_recording_service() -> UiRecordingService:
     if injected := dependencies.get("ui_recording_service"):
         return injected
     if _ui_test_store is None:
-        _ui_test_store = UiTestStore(str(codehistory_data_dir() / "ui-tests.db"))
+        _ui_test_store = UiTestStore(str(codeevolution_data_dir() / "ui-tests.db"))
     bridge = dependencies.get("webbridge_client") or WebBridgeClient()
     return UiRecordingService(_ui_test_store, bridge)
 
 
-def codehistory_data_dir() -> Path:
-    return Path(os.environ.get("CODEHISTORY_DATA_DIR", str(Path.home() / ".codehistory")))
+def codeevolution_data_dir() -> Path:
+    return data_dir()
 
 
 def get_llm_config_store() -> LLMConfigStore:
     dependencies = _request_dependencies.get()
     return dependencies.get("llm_config_store") or LLMConfigStore(
-        codehistory_data_dir() / "llm-config.json"
+        codeevolution_data_dir() / "llm-config.json"
     )
 
 
@@ -190,7 +198,7 @@ def get_business_rule_store() -> BusinessRuleStore:
         return injected
     if _business_rule_store is None:
         _business_rule_store = BusinessRuleStore(
-            str(codehistory_data_dir() / "business-rules.db")
+            str(codeevolution_data_dir() / "business-rules.db")
         )
     return _business_rule_store
 
@@ -223,7 +231,7 @@ def get_refactoring_technique_catalog(
         return injected
     _, repo_path = get_refactoring_member(repo, member)
     return RefactoringTechniqueCatalog(
-        Path(repo_path) / ".codehistory" / "refactoring-techniques.json"
+        repo_data_file(repo_path, "refactoring-techniques.json")
     )
 
 
@@ -321,7 +329,7 @@ def api_list_repos():
         try:
             store = _stores.get(r["name"])
             if not store:
-                db_path = r.get("db_path") or str(Path(r["path"]) / ".codehistory" / "evolution.db")
+                db_path = r.get("db_path") or str(repo_data_file(r["path"], "evolution.db"))
                 if Path(db_path).exists():
                     store = EvolutionStore(db_path)
                     _stores[r["name"]] = store
@@ -418,8 +426,8 @@ def api_init_repo(name: str):
 
     def _run_init():
         try:
-            from .config import Config
             from .application.evolution_command_service import EvolutionCommandService
+            from .config import Config
 
             members = repository_members(entry)
             if not members:
@@ -475,7 +483,7 @@ def api_init_repo(name: str):
                     config = Config(repo_path=str(member_path))
                     service = EvolutionCommandService.from_config(config)
                     try:
-                        db_path = Path(member_path) / ".codehistory" / "evolution.db"
+                        db_path = repo_data_file(member_path, "evolution.db")
                         if db_path.exists():
                             stats = service.update()
                         else:
@@ -991,7 +999,7 @@ async def _lifespan(application):
 
 def create_app(dependencies: dict | None = None) -> FastAPI:
     """Create an isolated delivery adapter with injectable dependencies."""
-    created = FastAPI(title="CodeHistory API", lifespan=_lifespan)
+    created = FastAPI(title="CodeEvolution API", lifespan=_lifespan)
     created.state.dependencies = dependencies or {}
     created.add_middleware(
         CORSMiddleware,
@@ -1028,6 +1036,6 @@ def serve(host: str = "0.0.0.0", port: int = 8765):
 
         @app.get("/")
         def root():
-            return {"message": "CodeHistory API running. Frontend not built."}
+            return {"message": "CodeEvolution API running. Frontend not built."}
 
     uvicorn.run(app, host=host, port=port, log_level="info")

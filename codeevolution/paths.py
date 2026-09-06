@@ -1,0 +1,31 @@
+"""Path and environment compatibility helpers for the project rename."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+
+def environment_value(name: str, default: str = "") -> str:
+    """Read a CodeEvolution setting, falling back to its legacy name."""
+    legacy_name = name.replace("CODEEVOLUTION_", "CODEHISTORY_", 1)
+    return os.environ.get(name) or os.environ.get(legacy_name, default)
+
+
+def data_dir() -> Path:
+    """Return the configured data directory without orphaning existing data."""
+    configured = environment_value("CODEEVOLUTION_DATA_DIR")
+    if configured:
+        return Path(configured)
+
+    current = Path.home() / ".codeevolution"
+    legacy = Path.home() / ".codehistory"
+    return current if current.exists() or not legacy.exists() else legacy
+
+
+def repo_data_file(repo: str | Path, filename: str) -> Path:
+    """Prefer a renamed repo-local file and fall back to an existing legacy one."""
+    repo = Path(repo)
+    current = repo / ".codeevolution" / filename
+    legacy = repo / ".codehistory" / filename
+    return current if current.exists() or not legacy.exists() else legacy

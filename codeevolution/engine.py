@@ -119,7 +119,7 @@ class EvolutionEngine:
         if self._source_status().strip():
             logger.info("Source repository has local changes; isolated worktree will preserve them")
 
-        worktree_path = tempfile.mkdtemp(prefix="codehistory-worktree-")
+        worktree_path = tempfile.mkdtemp(prefix="codeevolution-worktree-")
         added = False
         try:
             subprocess.run(
@@ -218,7 +218,7 @@ class EvolutionEngine:
         """
         if self.store.get_latest_commit_id() is not None:
             raise RuntimeError(
-                "Evolution database is not empty; use 'codehistory update' for "
+                "Evolution database is not empty; use 'codeevolution update' for "
                 "incremental analysis or choose a new --db path for backfill"
             )
 

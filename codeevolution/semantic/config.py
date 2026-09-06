@@ -3,19 +3,20 @@
 import os
 
 from ..infrastructure.llm_config_store import LLMConfigStore
+from ..paths import environment_value
 
 
 def get_environment_llm_config() -> dict | None:
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return None
-    model = os.environ.get("CODEHISTORY_LLM_MODEL", "gpt-4o-mini")
+    model = environment_value("CODEEVOLUTION_LLM_MODEL", "gpt-4o-mini")
     if "claude" in model.lower():
         api_key = os.environ.get("ANTHROPIC_API_KEY", api_key)
     return {
         "api_key": api_key,
         "model": model,
-        "api_base": os.environ.get("CODEHISTORY_LLM_BASE", ""),
+        "api_base": environment_value("CODEEVOLUTION_LLM_BASE"),
     }
 
 

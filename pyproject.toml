@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "codehistory"
+name = "codeevolution"
 version = "0.1.0"
 description = "Git history-based codebase feature evolution analysis"
 readme = {file = "README.md", content-type = "text/markdown"}
@@ -21,10 +21,10 @@ dependencies = [
 ]
 # Code parsing is delegated to CodeGraph (@colbymchenry/codegraph).
 # Install it separately: npm i -g @colbymchenry/codegraph
-# Then run "codegraph init" on the target repo before using codehistory.
+# Then run "codegraph init" on the target repo before using codeevolution.
 
 [project.scripts]
-codehistory = "codehistory.cli:main"
+codeevolution = "codeevolution.cli:main"
 
 [project.optional-dependencies]
 llm = [
@@ -39,7 +39,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["codehistory"]
+packages = ["codeevolution"]
 
 [tool.ruff]
 line-length = 100

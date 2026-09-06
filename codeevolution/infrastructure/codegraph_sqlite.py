@@ -16,6 +16,7 @@ Schema reference (CodeGraph 0.9.x):
 
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from ..domain.knowledge import CallTarget, EntryPointDef, FunctionDef
@@ -734,6 +735,68 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
             """SELECT id, name, qualified_name, file_path, start_line, signature, decorators
                FROM nodes WHERE kind IN ('function', 'method') AND decorators IS NOT NULL"""
         )
+
+    def http_handler_endpoints(self) -> list[dict[str, Any]]:
+        """Best-effort endpoints from stdlib ``http.server`` dispatch handlers.
+
+        CodeGraph cannot index ``BaseHTTPRequestHandler`` subclasses that hand-
+        dispatch on ``self.path`` (they carry no decorators or route tables).
+        Candidate classes (those with ``do_<VERB>`` methods whose file imports
+        ``http.server``) are resolved from the graph, then the file source is
+        read and URL templates are reconstructed with pure AST logic. Returns []
+        cheaply when a repo has no such handlers.
+        """
+        from ..analysis.knowledge.http_server import HTTP_VERBS, synthesize_class_endpoints
+        from .source_filesystem import FileSystemSourceProvider
+
+        verbs = ",".join(f"'do_{v}'" for v in sorted(HTTP_VERBS))
+        rows = self.query(
+            f"""SELECT DISTINCT c.name AS class_name, c.file_path
+                FROM nodes c
+                JOIN edges e ON e.source = c.id AND e.kind = 'contains'
+                JOIN nodes m ON m.id = e.target AND m.kind IN ('method', 'function')
+                WHERE c.kind = 'class'
+                  AND m.name IN ({verbs})
+                  AND ('/' || c.file_path || '/' NOT LIKE '%/tests/%'
+                       AND '/' || c.file_path || '/' NOT LIKE '%/test/%')
+                  AND c.file_path IN (
+                      SELECT DISTINCT file_path FROM nodes
+                      WHERE kind = 'import'
+                        AND (name = 'http.server' OR qualified_name = 'http.server'
+                             OR signature LIKE '%http.server%'
+                             OR signature LIKE '%BaseHTTPRequestHandler%')
+                  )"""
+        )
+        if not rows:
+            return []
+
+        provider = FileSystemSourceProvider(Path(self.db_path).parent.parent)
+        source_cache: dict[str, str] = {}
+        endpoints: list[dict[str, Any]] = []
+        for row in rows:
+            file_path, class_name = row["file_path"], row["class_name"]
+            source = source_cache.get(file_path)
+            if source is None:
+                source = provider.read_text(file_path)
+                if source is None:
+                    continue
+                source_cache[file_path] = source
+            for spec in synthesize_class_endpoints(source, class_name):
+                endpoints.append(
+                    {
+                        "method": spec.method,
+                        "path": spec.path,
+                        "handler_name": spec.handler,
+                        "file_path": file_path,
+                        "line": spec.line,
+                        "params": spec.params,
+                        "class_name": spec.class_name or class_name,
+                        "note": spec.note,
+                        # provenance marker: this endpoint was inferred from source
+                        "decorators": [f"http.server(源自 {spec.class_name or class_name})"],
+                    }
+                )
+        return endpoints
 
     def module_import_edges(self) -> list[dict[str, Any]]:
         return self.query(

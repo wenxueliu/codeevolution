@@ -8,7 +8,7 @@ from .application.evolution_service import EvolutionQueryService
 from .config import Config
 from .store import EvolutionStore
 
-mcp = FastMCP("codehistory")
+mcp = FastMCP("codeevolution")
 
 
 def get_store() -> EvolutionStore | None:

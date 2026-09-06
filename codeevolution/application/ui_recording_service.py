@@ -11,11 +11,13 @@ from urllib.parse import urlsplit
 from ..infrastructure.webbridge_client import WebBridgeError
 
 RECORDER_SCRIPT = r"""(() => {
-  if (window.__codehistoryRecorder) return 'already-installed';
-  const marker='__CODEHISTORY__:';
-  let named=null; try { if(window.name.startsWith(marker)) named=JSON.parse(window.name.slice(marker.length)); } catch(_error) {}
+  if (window.__codeevolutionRecorder) return 'already-installed';
+  if (window.__codehistoryRecorder) { window.__codeevolutionRecorder=window.__codehistoryRecorder; return 'already-installed'; }
+  const marker='__CODEEVOLUTION__:';
+  const legacyMarker='__CODEHISTORY__:';
+  let named=null; try { const activeMarker=window.name.startsWith(marker)?marker:(window.name.startsWith(legacyMarker)?legacyMarker:''); if(activeMarker) named=JSON.parse(window.name.slice(activeMarker.length)); } catch(_error) {}
   const originalName=named?.original??window.name;
-  const restored = named?.actions || JSON.parse(sessionStorage.getItem('__codehistory_recording') || '[]');
+  const restored = named?.actions || JSON.parse(sessionStorage.getItem('__codeevolution_recording') || sessionStorage.getItem('__codehistory_recording') || '[]');
   const sensitive = /password|token|secret|authorization|cookie|api.?key/i;
   const roleOf = el => el.getAttribute('role') || ({BUTTON:'button',A:'link',INPUT:'textbox',TEXTAREA:'textbox',SELECT:'combobox'})[el.tagName] || '';
   const nameOf = el => (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.getAttribute('placeholder') || el.getAttribute('name') || '').trim().replace(/\s+/g,' ').slice(0,100);
@@ -25,7 +27,7 @@ RECORDER_SCRIPT = r"""(() => {
     return {strategy:'role-name',role:roleOf(el),name:nameOf(el)};
   };
   const state = {actions:restored};
-  const persist=()=>{sessionStorage.setItem('__codehistory_recording',JSON.stringify(state.actions)); window.name=marker+JSON.stringify({original:originalName,actions:state.actions});};
+  const persist=()=>{sessionStorage.setItem('__codeevolution_recording',JSON.stringify(state.actions)); window.name=marker+JSON.stringify({original:originalName,actions:state.actions});};
   const save = item => { state.actions.push({...item,url:location.href,timestamp:Date.now()}); persist(); };
   const click = event => { const el=event.target.closest?.('a,button,[role]')||event.target; if(el.tagName==='A'&&el.target==='_blank') save({action:'new-tab',target:targetOf(el),value:el.href}); else save({action:'click',target:targetOf(el)}); };
   const change = event => { const el=event.target; if(el.type==='file') save({action:'upload',target:targetOf(el),files:[...el.files].map(file=>file.name)}); else { const hidden=el.type==='password'||sensitive.test(el.name||''); save({action:el.tagName==='SELECT'?'select':'fill',target:targetOf(el),value:hidden?'<redacted>':el.value,...(hidden?{secret:'UI_SECRET_'+(el.name||nameOf(el)||'VALUE').replace(/\W+/g,'_').toUpperCase()}:{})}); } };
@@ -37,14 +39,14 @@ RECORDER_SCRIPT = r"""(() => {
   for (const method of ['pushState','replaceState']) { const original=history[method]; history[method]=function(...args){ const result=original.apply(this,args); navigation(); return result; }; }
   state.export = () => { const result=state.actions.splice(0); persist(); return {actions:result,url:location.href}; };
   state.stop = () => { document.removeEventListener('click',click,true); document.removeEventListener('change',change,true); document.removeEventListener('dragstart',dragstart,true); document.removeEventListener('drop',drop,true); window.removeEventListener('hashchange',navigation); window.removeEventListener('popstate',navigation); window.name=originalName; };
-  window.__codehistoryRecorder=state; return 'installed';
+  window.__codeevolutionRecorder=state; return 'installed';
 })()"""
 
 EXPORT_SCRIPT = f"""(() => {{
-  if (!window.__codehistoryRecorder) {RECORDER_SCRIPT};
-  return window.__codehistoryRecorder.export();
+  if (!window.__codeevolutionRecorder) {RECORDER_SCRIPT};
+  return window.__codeevolutionRecorder.export();
 }})()"""
-STOP_SCRIPT = "(() => { if(window.__codehistoryRecorder) window.__codehistoryRecorder.stop(); return true })()"
+STOP_SCRIPT = "(() => { if(window.__codeevolutionRecorder) window.__codeevolutionRecorder.stop(); return true })()"
 
 
 class UiRecordingService:
@@ -372,9 +374,11 @@ def fixture_script(payload: dict) -> str:
 
 
 def validate_upload_files(files: list[str]) -> list[str]:
-    configured = os.environ.get("CODEHISTORY_UI_UPLOAD_ROOT", "")
+    configured = os.environ.get("CODEEVOLUTION_UI_UPLOAD_ROOT") or os.environ.get(
+        "CODEHISTORY_UI_UPLOAD_ROOT", ""
+    )
     if not configured:
-        raise ValueError("Set CODEHISTORY_UI_UPLOAD_ROOT before replaying uploads")
+        raise ValueError("Set CODEEVOLUTION_UI_UPLOAD_ROOT before replaying uploads")
     root = Path(configured).resolve()
     result = []
     for value in files:
@@ -382,7 +386,7 @@ def validate_upload_files(files: list[str]) -> list[str]:
         path = path if path.is_absolute() else root / path
         resolved = path.resolve()
         if root not in resolved.parents and resolved != root:
-            raise ValueError(f"Upload file is outside CODEHISTORY_UI_UPLOAD_ROOT: {value}")
+            raise ValueError(f"Upload file is outside CODEEVOLUTION_UI_UPLOAD_ROOT: {value}")
         if not resolved.is_file():
             raise ValueError(f"Upload file not found: {value}")
         result.append(str(resolved))
