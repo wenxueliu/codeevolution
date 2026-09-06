@@ -1,4 +1,4 @@
-# CodeHistory 安装指南
+# CodeEvolution 安装指南
 
 ## 依赖
 
@@ -12,7 +12,7 @@
 
 ### CodeGraph（必须）
 
-CodeHistory 的代码解析完全委托给 CodeGraph。**每个要分析的目标仓库都需要先初始化 CodeGraph**。
+CodeEvolution 的代码解析完全委托给 CodeGraph。**每个要分析的目标仓库都需要先初始化 CodeGraph**。
 
 ```bash
 npm i -g @colbymchenry/codegraph
@@ -20,7 +20,7 @@ cd /path/to/target/repo
 codegraph init
 ```
 
-CodeHistory 通过直接读取 `.codegraph/codegraph.db`（SQLite WAL）获取代码图谱，不需要启动 CodeGraph 服务进程。所有语言自动支持（CodeGraph 覆盖 30+ 语言）。
+CodeEvolution 通过直接读取 `.codegraph/codegraph.db`（SQLite WAL）获取代码图谱，不需要启动 CodeGraph 服务进程。所有语言自动支持（CodeGraph 覆盖 30+ 语言）。
 
 ### Python 包
 
@@ -70,7 +70,7 @@ cd ..
 ## 验证安装
 
 ```bash
-.venv/bin/codehistory --help
+.venv/bin/codeevolution --help
 # 应显示: backfill / update / status / register / repos / web / serve
 #         / knowledge / topology / impact / trace / flow / entities
 #         / discover / check / init-all
@@ -86,7 +86,7 @@ export OPENAI_API_KEY="sk-..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # 可选：覆盖默认模型
-export CODEHISTORY_LLM_MODEL="gpt-4o-mini"
+export CODEEVOLUTION_LLM_MODEL="gpt-4o-mini"
 ```
 
 ## 快速开始
@@ -96,14 +96,14 @@ export CODEHISTORY_LLM_MODEL="gpt-4o-mini"
 (cd /path/to/your/project && codegraph init)
 
 # 2. 提取知识
-.venv/bin/codehistory knowledge -r /path/to/your/project
+.venv/bin/codeevolution knowledge -r /path/to/your/project
 
 # 3. 查看 Web 面板
-.venv/bin/codehistory web --port 8765
+.venv/bin/codeevolution web --port 8765
 # 浏览器打开 http://localhost:8765
 ```
 
-`codehistory web` 从 `web/dist/` 提供前端页面。如果访问根路径时只看到 `Frontend not built`，请回到 CodeHistory 目录执行 `cd web && npm ci && npm run build`，再重启后端。
+`codeevolution web` 从 `web/dist/` 提供前端页面。如果访问根路径时只看到 `Frontend not built`，请回到 CodeEvolution 目录执行 `cd web && npm ci && npm run build`，再重启后端。
 
 ## Windows (PowerShell)
 
@@ -116,7 +116,7 @@ npm --version
 git --version
 ```
 
-在 CodeHistory 目录中安装后端与前端依赖：
+在 CodeEvolution 目录中安装后端与前端依赖：
 
 ```powershell
 cd services\codehistory
@@ -147,32 +147,32 @@ Push-Location $TargetRepo
 codegraph init
 Pop-Location
 
-.\.venv\Scripts\codehistory.exe knowledge -r $TargetRepo
-.\.venv\Scripts\codehistory.exe web --port 8765
+.\.venv\Scripts\codeevolution.exe knowledge -r $TargetRepo
+.\.venv\Scripts\codeevolution.exe web --port 8765
 ```
 
-浏览器访问 `http://localhost:8765`。如果修改了前端，在 CodeHistory 目录重新执行 `Push-Location web; npm run build; Pop-Location`，再重启后端。
+浏览器访问 `http://localhost:8765`。如果修改了前端，在 CodeEvolution 目录重新执行 `Push-Location web; npm run build; Pop-Location`，再重启后端。
 
 可选的 LLM 环境变量可在当前 PowerShell 会话中设置：
 
 ```powershell
 $env:OPENAI_API_KEY = "sk-..."
-$env:CODEHISTORY_LLM_MODEL = "gpt-4o-mini"
+$env:CODEEVOLUTION_LLM_MODEL = "gpt-4o-mini"
 ```
 
 ## 多仓微服务设置
 
 ```bash
 # 注册多个服务
-.venv/bin/codehistory register -n order-svc -r /repos/order-service
-.venv/bin/codehistory register -n user-svc  -r /repos/user-service
+.venv/bin/codeevolution register -n order-svc -r /repos/order-service
+.venv/bin/codeevolution register -n user-svc  -r /repos/user-service
 
 # 也可将前端和后端等多个独立仓库归入同一逻辑服务
-.venv/bin/codehistory register -n mall -r /repos/mall -r /repos/mall-admin-web
+.venv/bin/codeevolution register -n mall -r /repos/mall -r /repos/mall-admin-web
 
 # 一键初始化所有服务的 CodeGraph
-.venv/bin/codehistory init-all
+.venv/bin/codeevolution init-all
 
 # 查看统一拓扑
-.venv/bin/codehistory topology
+.venv/bin/codeevolution topology
 ```

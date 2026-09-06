@@ -1,4 +1,4 @@
-# CodeHistory
+# CodeEvolution
 
 代码仓功能演进分析 + 业务知识逆向系统。从代码自动抽取 18 维结构化知识，服务产品经理、架构师、开发、测试、运维五个角色。
 
@@ -24,21 +24,21 @@ npm i -g @colbymchenry/codegraph
 (cd /path/to/your/repo && codegraph init)
 
 # 提取知识（13 维，秒级）
-.venv/bin/codehistory knowledge -r /path/to/your/repo
+.venv/bin/codeevolution knowledge -r /path/to/your/repo
 
 # 多仓微服务拓扑
-.venv/bin/codehistory register -n my-svc -r /path/to/repo
-.venv/bin/codehistory topology
+.venv/bin/codeevolution register -n my-svc -r /path/to/repo
+.venv/bin/codeevolution topology
 
 # 将多个仓库注册为一个逻辑服务（例如前端 + 后端）
-.venv/bin/codehistory register -n mall -r /path/to/mall -r /path/to/mall-admin-web
+.venv/bin/codeevolution register -n mall -r /path/to/mall -r /path/to/mall-admin-web
 
 # 启动 Web 面板
-.venv/bin/codehistory web --port 8765
+.venv/bin/codeevolution web --port 8765
 # 浏览器访问 http://localhost:8765
 ```
 
-`codehistory web` 会从 `web/dist/` 加载前端静态资源。如果修改了 `web/src/`，需要重新运行 `cd web && npm run build` 后再启动服务。前端开发时可分别启动后端 `.venv/bin/codehistory web --port 8765` 和前端 `cd web && npm run dev`，然后访问 `http://localhost:5173`。
+`codeevolution web` 会从 `web/dist/` 加载前端静态资源。如果修改了 `web/src/`，需要重新运行 `cd web && npm run build` 后再启动服务。前端开发时可分别启动后端 `.venv/bin/codeevolution web --port 8765` 和前端 `cd web && npm run dev`，然后访问 `http://localhost:5173`。
 
 Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#windows-powershell)，其中包含虚拟环境路径、前端构建和 CodeGraph 初始化命令。
 
@@ -97,34 +97,34 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 
 ```bash
 # 单仓知识提取
-codehistory knowledge -r <repo> [-s api|modules|entities|tests|layers|config|deps|auth|heatmap] [--llm]
-codehistory knowledge -r <repo> -s business|rules|errors|states --llm
+codeevolution knowledge -r <repo> [-s api|modules|entities|tests|layers|config|deps|auth|heatmap] [--llm]
+codeevolution knowledge -r <repo> -s business|rules|errors|states --llm
 
 # 多仓微服务
-codehistory register -n <name> -r <path> [-r <path> ...]  # 注册单仓或多仓逻辑服务
-codehistory discover -d <dir>               # 扫描目录发现 git 仓库
-codehistory init-all                        # 一键初始化所有服务的 CodeGraph
-codehistory check                           # 所有服务健康检查
-codehistory topology                        # 统一服务拓扑（缓存加速）
-codehistory impact -s <svc>                 # 跨服务变更影响（秒级缓存）
-codehistory trace -s <svc>                  # HTTP 调用链追踪
-codehistory flow -s <svc>                   # 全通道流程追踪
-codehistory entities [--llm]                # 跨服务实体对齐
+codeevolution register -n <name> -r <path> [-r <path> ...]  # 注册单仓或多仓逻辑服务
+codeevolution discover -d <dir>               # 扫描目录发现 git 仓库
+codeevolution init-all                        # 一键初始化所有服务的 CodeGraph
+codeevolution check                           # 所有服务健康检查
+codeevolution topology                        # 统一服务拓扑（缓存加速）
+codeevolution impact -s <svc>                 # 跨服务变更影响（秒级缓存）
+codeevolution trace -s <svc>                  # HTTP 调用链追踪
+codeevolution flow -s <svc>                   # 全通道流程追踪
+codeevolution entities [--llm]                # 跨服务实体对齐
 
 # 演进引擎
-codehistory backfill -r <repo>              # 全量回溯分析
-codehistory update -r <repo>                # 增量更新
-codehistory status -r <repo>                # 查看演进状态
+codeevolution backfill -r <repo>              # 全量回溯分析
+codeevolution update -r <repo>                # 增量更新
+codeevolution status -r <repo>                # 查看演进状态
 
 # 渐进式重构：一次只分析一个时间窗口和一种重构手法
-codehistory refactor-plan -r <repo> -t extract-method --window-days 7
+codeevolution refactor-plan -r <repo> -t extract-method --window-days 7
 # 从 7 天扩大到 14 天时，只把第 8～14 天的提交作为新候选入口
-codehistory refactor-plan -r <repo> -t extract-method \
+codeevolution refactor-plan -r <repo> -t extract-method \
   --window-days 14 --previous-window-days 7 -o refactor-plan.json
 
 # 其他
-codehistory serve -r <repo>                 # 启动 MCP Server
-codehistory web                             # 启动 Web 控制台 (:8765)
+codeevolution serve -r <repo>                 # 启动 MCP Server
+codeevolution web                             # 启动 Web 控制台 (:8765)
 ```
 
 ## 技术栈
@@ -139,7 +139,7 @@ codehistory web                             # 启动 Web 控制台 (:8765)
 
 `refactor-plan` 从近期 Git 提交中寻找仍在频繁变化的函数，以当前 CodeGraph 图谱补全直接调用者和
 依赖，并且每次只检查指定的一种重构手法。命令内置 24 种可独立选择的重构手法；使用
-`codehistory refactor-plan --help` 查看完整列表。
+`codeevolution refactor-plan --help` 查看完整列表。
 
 输出是可交给编码 Agent 的结构化 JSON。如果 CodeGraph 没有找到足够的直接测试，测试门禁会阻止
 生产代码修改，改为生成一个只允许添加特征测试的任务；测试安全网充分且影响风险可控时，才会生成
@@ -147,13 +147,13 @@ codehistory web                             # 启动 Web 控制台 (:8765)
 断言、分支和异常覆盖质量。
 
 Web 页面的“新增手法”和“编辑”入口可以维护检查目录。每个代码仓拥有独立配置，用户定义保存在
-目标仓的 `.codehistory/refactoring-techniques.json`；编辑内置手法会保存该仓的覆盖值，不会修改源码中的
+目标仓的 `.codeevolution/refactoring-techniques.json`；编辑内置手法会保存该仓的覆盖值，不会修改源码中的
 默认目录，也不会影响其他代码仓。CLI 和 Web 计划分析都会根据当前目标仓读取合并后的手法。
 
 ## 模块架构
 
 ```
-codehistory/
+codeevolution/
 ├── domain/              # 纯领域 DTO
 ├── ports.py             # CodeGraph Repository / SourceProvider 契约
 ├── infrastructure/      # SQLite、源码、Registry、版本化缓存 adapter
@@ -181,43 +181,52 @@ delivery → application → analysis/domain/ports ← infrastructure
 ### 一键构建与启停
 
 ```bash
+# Python 一键启动（构建前端并在后台启动 :8765）
+python start.py
+
+# 也可自定义监听地址和端口
+python start.py --host 0.0.0.0 --port 9000
+
 make start    # 首次自动 npm ci，构建前端并后台启动 :8765
 make status   # 查看 PID 和日志位置
 make restart  # 重新构建并重启
 make stop     # 停止服务
 ```
 
-Windows PowerShell 使用 `py scripts\service.py start|stop|restart|status`。运行文件保存在 `.run/`，日志为 `.run/codehistory.log`。
+Windows PowerShell 使用 `py scripts\service.py start|stop|restart|status`。运行文件保存在 `.run/`，日志为 `.run/codeevolution.log`。
 
 ### 代码仓问答与审计
 
 进入任一已注册服务后，可通过页面右侧“代码问答”打开助手。配置 `OPENAI_API_KEY`（以及可选的
-`CODEHISTORY_LLM_MODEL`、`CODEHISTORY_LLM_BASE`）后，大模型会把问题转换为最多三个结构化只读操作；
+`CODEEVOLUTION_LLM_MODEL`、`CODEEVOLUTION_LLM_BASE`）后，大模型会把问题转换为最多三个结构化只读操作；
 未配置模型时使用本地意图识别。后端仅执行 CodeGraph 符号/调用查询和演进库功能/事件/统计白名单，
 不接受模型生成的任意 SQL。每次成功或失败的操作都会写入
-`~/.codehistory/assistant-audit.db`，可在对话框“审计日志”页或 `GET /api/audit-logs` 查看。
+`~/.codeevolution/assistant-audit.db`，可在对话框“审计日志”页或 `GET /api/audit-logs` 查看。
 
 也可以通过页面顶部“LLM 设置”配置模型、API Base 和 API Key，并在保存后测试连接。页面配置默认
-保存在 `~/.codehistory/llm-config.json`（或 `CODEHISTORY_DATA_DIR` 指定的目录），文件权限限制为仅当前
+保存在 `~/.codeevolution/llm-config.json`（或 `CODEEVOLUTION_DATA_DIR` 指定的目录），文件权限限制为仅当前
 用户可读写，API 不会回传密钥。环境变量的优先级高于页面配置，适合部署环境统一管理凭据。
+
+升级自 CodeHistory 时，如果新目录或新环境变量尚未配置，CodeEvolution 会继续使用既有的
+`~/.codehistory`、目标仓 `.codehistory` 和 `CODEHISTORY_*` 配置，避免历史数据与密钥失联。
 
 ### 外部系统 UI 录制（Phase 1）
 
 进入已注册服务后，在右侧“代码问答 → UI 测试”填写测试名称、目标名称和 HTTP(S) 地址。
-CodeHistory 通过本机 Kimi WebBridge 打开独立标签页并注入录制器，可采集点击、输入、原生下拉选择、
+CodeEvolution 通过本机 Kimi WebBridge 打开独立标签页并注入录制器，可采集点击、输入、原生下拉选择、
 SPA 路由和 `/api/` 网络请求。停止后生成稳定的 role/name 或 `data-testid` DSL，并可直接使用
 WebBridge 回放；失败运行会保存截图。目标 origin 必须先登记，密码、Token 等敏感输入只记录为
-`<redacted>`。录制数据保存在 `~/.codehistory/ui-tests.db`，测试标签页不会被自动关闭。
-容器或只读 HOME 环境可通过 `CODEHISTORY_DATA_DIR` 指定可写的数据目录。
+`<redacted>`。录制数据保存在 `~/.codeevolution/ui-tests.db`，测试标签页不会被自动关闭。
+容器或只读 HOME 环境可通过 `CODEEVOLUTION_DATA_DIR` 指定可写的数据目录。
 
 Phase 2 会通过 CDP 为整页刷新预注册录制器，并用受限的 `window.name` 缓冲区承接白名单 origin
 之间尚未同步的操作；新标签页、文件选择和 HTML5 拖拽也会写入 DSL。检查点支持可见文本、URL、
 接口状态、同源 fixture 请求、上传和拖拽。敏感输入回放时从录制步骤指定的环境变量读取；上传文件
-必须位于 `CODEHISTORY_UI_UPLOAD_ROOT` 下。Fixture URL 和所有新标签页仍受目标 origin 白名单约束。
+必须位于 `CODEEVOLUTION_UI_UPLOAD_ROOT` 下。Fixture URL 和所有新标签页仍受目标 origin 白名单约束。
 
 ```bash
 # 静态检查
-.venv/bin/ruff check codehistory tests scripts/check_coverage.py
+.venv/bin/ruff check codeevolution tests scripts/check_coverage.py
 
 # 单元与契约测试
 .venv/bin/python -m pytest -q
@@ -229,7 +238,7 @@ Phase 2 会通过 CDP 为整页刷新预注册录制器，并用受限的 `windo
 .venv/bin/python -m build
 cd web && npm run build
 
-# 真实 Chrome 回归（需先启动 CodeHistory Web 和 Kimi WebBridge）
+# 真实 Chrome 回归（需先启动 CodeEvolution Web 和 Kimi WebBridge）
 make test-ui-e2e
 ```
 

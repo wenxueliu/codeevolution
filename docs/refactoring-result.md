@@ -1,4 +1,4 @@
-# CodeHistory 重构实施结果
+# CodeEvolution 重构实施结果
 
 > 完成日期：2026-08-01  
 > 对应规划：[refactoring-plan.md](refactoring-plan.md)
@@ -27,7 +27,7 @@ delivery → application → analysis/domain/ports ← infrastructure
 ## 目录结构
 
 ```text
-codehistory/
+codeevolution/
 ├── domain/                     # 纯 DTO
 ├── ports.py                    # Repository / SourceProvider Protocol
 ├── infrastructure/            # SQLite、文件系统、Registry、缓存 adapter
@@ -52,10 +52,10 @@ codehistory/
 
 以下入口继续有效：
 
-- `codehistory.knowledge.KnowledgeExtractor`
-- `codehistory.codegraph_reader.CodeGraphReader`、原有 DTO import
-- `codehistory.cross_repo.CrossRepoAnalyzer`
-- `codehistory.p2_advanced.P2Analyzer`
+- `codeevolution.knowledge.KnowledgeExtractor`
+- `codeevolution.codegraph_reader.CodeGraphReader`、原有 DTO import
+- `codeevolution.cross_repo.CrossRepoAnalyzer`
+- `codeevolution.p2_advanced.P2Analyzer`
 - `registry.py` 原有函数
 - `api.app`、`create_app()` 和 `serve()`
 - `mcp_server.run_server()` 及原有五个 tool
@@ -66,10 +66,10 @@ codehistory/
 在服务根目录执行：
 
 ```bash
-.venv/bin/ruff check codehistory tests scripts/check_coverage.py
+.venv/bin/ruff check codeevolution tests scripts/check_coverage.py
 .venv/bin/python -m pytest -q
 .venv/bin/python scripts/check_coverage.py
-.venv/bin/python -m compileall -q codehistory
+.venv/bin/python -m compileall -q codeevolution
 cd web && npm run build
 ```
 

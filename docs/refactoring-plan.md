@@ -1,4 +1,4 @@
-# CodeHistory 重构规划
+# CodeEvolution 重构规划
 
 > 状态：已完成（2026-08-01）  
 > 编写日期：2026-08-01  
@@ -8,7 +8,7 @@
 
 ## 1. 背景与目标
 
-CodeHistory 已具备演进分析、单仓知识提取、多仓拓扑、CLI、Web API、MCP 和 Web Dashboard 等完整能力。当前主要问题不是功能缺失，而是分析算法、SQLite 查询、文件系统、缓存、LLM 编排和展示格式相互穿透，导致以下风险：
+CodeEvolution 已具备演进分析、单仓知识提取、多仓拓扑、CLI、Web API、MCP 和 Web Dashboard 等完整能力。当前主要问题不是功能缺失，而是分析算法、SQLite 查询、文件系统、缓存、LLM 编排和展示格式相互穿透，导致以下风险：
 
 - 大型模块承担过多职责，修改一个维度容易影响其他能力。
 - 多个模块重复访问 CodeGraph SQLite，查询语义和连接生命周期不统一。
@@ -74,7 +74,7 @@ CodeHistory 已具备演进分析、单仓知识提取、多仓拓扑、CLI、We
 ## 3. 目标架构
 
 ```text
-codehistory/
+codeevolution/
 ├── domain/
 │   ├── evolution.py
 │   ├── knowledge.py
@@ -346,10 +346,10 @@ semantic/
 
 至少在一个 minor 版本内保留：
 
-- `codehistory.knowledge.KnowledgeExtractor`
-- `codehistory.codegraph_reader.CodeGraphReader` 及现有 DTO re-export
-- `codehistory.cross_repo.CrossRepoAnalyzer`
-- `codehistory.p2_advanced.P2Analyzer`
+- `codeevolution.knowledge.KnowledgeExtractor`
+- `codeevolution.codegraph_reader.CodeGraphReader` 及现有 DTO re-export
+- `codeevolution.cross_repo.CrossRepoAnalyzer`
+- `codeevolution.p2_advanced.P2Analyzer`
 - `registry.py` 的现有函数
 - `api.app` 和 `serve()`
 - `mcp_server.run_server()`
@@ -402,7 +402,7 @@ semantic/
 
 ```bash
 python -m pytest -q
-ruff check codehistory tests
+ruff check codeevolution tests
 python -m build
 cd web && npm run build
 ```

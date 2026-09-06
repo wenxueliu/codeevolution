@@ -2,13 +2,13 @@
 
 # Agent 自动打包与重启
 
-修改 codehistory 代码后，Agent 自动执行打包和重启。
+修改 codeevolution 代码后，Agent 自动执行打包和重启。
 
 ## 触发条件
 
 以下变更应触发自动打包+重启：
 
-- **后端代码变更**: `codehistory/*.py` 任意 Python 源文件
+- **后端代码变更**: `codeevolution/*.py` 任意 Python 源文件
 - **前端代码变更**: `web/src/**` 任意 Vue/JS/CSS 文件
 - **依赖变更**: `pyproject.toml` 或 `web/package.json`
 
@@ -28,7 +28,7 @@ cd services/codehistory
 1. `npm ci`（如果 `web/node_modules` 不存在）
 2. `npm run build`（Vite 构建到 `web/dist/`）
 
-后端是 Python 源码直读 (`python -m codehistory.cli web`)，无需额外打包步骤。
+后端是 Python 源码直读 (`python -m codeevolution.cli web`)，无需额外打包步骤。
 
 ## 自动重启
 
@@ -41,10 +41,10 @@ cd services/codehistory
 ```
 
 `restart` 流程：
-1. 停止当前运行的 codehistory 进程（SIGTERM，5s 超时等待）
+1. 停止当前运行的 codeevolution 进程（SIGTERM，5s 超时等待）
 2. 重新构建前端
 3. 启动新进程，轮询 `/api/repos` 直到就绪
-4. PID 写入 `.run/codehistory.pid`，日志写入 `.run/codehistory.log`
+4. PID 写入 `.run/codeevolution.pid`，日志写入 `.run/codeevolution.log`
 
 ## 验证
 

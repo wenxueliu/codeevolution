@@ -1,8 +1,8 @@
-# CodeHistory — 代码仓功能演进分析 + 业务知识逆向系统设计文档
+# CodeEvolution — 代码仓功能演进分析 + 业务知识逆向系统设计文档
 
 ## 1. 项目定位
 
-CodeHistory 做两件事：
+CodeEvolution 做两件事：
 
 1. **从代码逆向业务知识** — 基于 CodeGraph 知识图谱，无需重新解析代码，自动抽取 18 维结构化知识
 2. **追踪代码演进** — 沿 git 历史逐 commit 分析，以"功能"为单位追踪代码的演变过程
@@ -11,7 +11,7 @@ CodeHistory 做两件事：
 
 ### 1.1 与现有工具的差异
 
-| 工具 | 做什么 | CodeHistory 增加什么 |
+| 工具 | 做什么 | CodeEvolution 增加什么 |
 |------|--------|---------------------|
 | `codegraph` (npm) | 对当前代码建知识图谱 | 从图谱逆向业务知识（18 维）、跨仓库拼接、时间维度演进追踪 |
 | `code-review-graph` (PyPI) | PR diff 影响分析 | 长期演进趋势、业务规则提取、跨服务实体对齐 |
@@ -98,7 +98,7 @@ delivery → application → analysis/domain/ports ← infrastructure
 ### 3.1 模块架构
 
 ```
-codehistory/
+codeevolution/
   domain/                # 纯 DTO
   ports.py               # Repository / SourceProvider Protocol
   infrastructure/       # SQLite、源码、Registry、缓存 adapter
@@ -232,7 +232,7 @@ evolution_events (id, feature_id, commit_id, event_type, detail)
 - SQLite 存储，零服务进程依赖
 - 文件监听增量更新
 
-CodeHistory 不需要自己实现解析 —— 只需要读 CodeGraph 的 SQLite。
+CodeEvolution 不需要自己实现解析 —— 只需要读 CodeGraph 的 SQLite。
 
 ### 7.2 读取的 CodeGraph Schema
 
@@ -270,7 +270,7 @@ files (path, content_hash, language, size, modified_at, indexed_at, node_count)
 | Web | api.py / web/ | 完成：Vue 3 + Mermaid 时序图 |
 | MCP | mcp_server.py | 完成：5 个 MCP tools |
 | 文档 | CLAUDE.md / README.md / INSTALL.md / design.md | 完成 |
-| 技能 | codehistory-knowledge / codehistory-exploring | 完成 |
+| 技能 | codeevolution-knowledge / codeevolution-exploring | 完成 |
 
 ### 待实现
 

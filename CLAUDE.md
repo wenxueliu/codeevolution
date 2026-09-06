@@ -2,7 +2,7 @@
 
 > @AGENTS.md
 
-> **CodeHistory** — 代码仓功能演进分析 + 业务知识逆向系统。
+> **CodeEvolution** — 代码仓功能演进分析 + 业务知识逆向系统。
 
 ## 工作原则
 
@@ -11,7 +11,7 @@
 
 ## 项目概述
 
-CodeHistory 三大子系统：
+CodeEvolution 三大子系统：
 
 1. **Evolution Engine** — 分析 git 历史，以"功能"（入口点 + 调用树）为单位追踪代码演进
 2. **Knowledge Extractor** — 从代码逆向业务知识，三阶段 13 维，服务产品/架构/开发/测试/运维
@@ -28,7 +28,7 @@ CodeHistory 三大子系统：
 ## 模块架构（16 个文件）
 
 ```
-codehistory/
+codeevolution/
   config.py              # 配置管理
   walker.py              # Git 历史遍历（git show 读文件对象）
   store.py               # Evolution 事件存储（SQLite WAL）
@@ -59,42 +59,42 @@ cd /path/to/target/repo
 codegraph init                       # 初始化代码图谱
 
 # ═══ Evolution Engine ═══
-codehistory backfill -r /path/to/repo       # 全量回溯分析
-codehistory update -r /path/to/repo         # 增量更新
-codehistory status -r /path/to/repo         # 查看演进状态
-codehistory serve -r /path/to/repo          # 启动 MCP Server
+codeevolution backfill -r /path/to/repo       # 全量回溯分析
+codeevolution update -r /path/to/repo         # 增量更新
+codeevolution status -r /path/to/repo         # 查看演进状态
+codeevolution serve -r /path/to/repo          # 启动 MCP Server
 
 # ═══ Single-Repo Knowledge ═══
-codehistory knowledge -r /path/to/repo                    # Phase 1+2（秒级，9 维）
-codehistory knowledge -r /path/to/repo -s api             # API 契约
-codehistory knowledge -r /path/to/repo -s modules         # 模块拓扑
-codehistory knowledge -r /path/to/repo -s entities        # 核心实体（PageRank）
-codehistory knowledge -r /path/to/repo -s tests           # 测试缺口
-codehistory knowledge -r /path/to/repo -s layers          # 分层违规
-codehistory knowledge -r /path/to/repo -s config          # 配置消费
-codehistory knowledge -r /path/to/repo -s deps            # 外部依赖
-codehistory knowledge -r /path/to/repo -s auth            # 权限模型
-codehistory knowledge -r /path/to/repo -s heatmap         # 热力图
-codehistory knowledge -r /path/to/repo --llm              # + Phase 3（LLM 4 维）
-codehistory knowledge -r /path/to/repo -s business --llm  # 业务描述
-codehistory knowledge -r /path/to/repo -s rules --llm     # 业务规则
-codehistory knowledge -r /path/to/repo -s errors --llm    # 错误目录
-codehistory knowledge -r /path/to/repo -s states --llm    # 状态机
-codehistory knowledge -r /path/to/repo -o report.json     # 导出 JSON
+codeevolution knowledge -r /path/to/repo                    # Phase 1+2（秒级，9 维）
+codeevolution knowledge -r /path/to/repo -s api             # API 契约
+codeevolution knowledge -r /path/to/repo -s modules         # 模块拓扑
+codeevolution knowledge -r /path/to/repo -s entities        # 核心实体（PageRank）
+codeevolution knowledge -r /path/to/repo -s tests           # 测试缺口
+codeevolution knowledge -r /path/to/repo -s layers          # 分层违规
+codeevolution knowledge -r /path/to/repo -s config          # 配置消费
+codeevolution knowledge -r /path/to/repo -s deps            # 外部依赖
+codeevolution knowledge -r /path/to/repo -s auth            # 权限模型
+codeevolution knowledge -r /path/to/repo -s heatmap         # 热力图
+codeevolution knowledge -r /path/to/repo --llm              # + Phase 3（LLM 4 维）
+codeevolution knowledge -r /path/to/repo -s business --llm  # 业务描述
+codeevolution knowledge -r /path/to/repo -s rules --llm     # 业务规则
+codeevolution knowledge -r /path/to/repo -s errors --llm    # 错误目录
+codeevolution knowledge -r /path/to/repo -s states --llm    # 状态机
+codeevolution knowledge -r /path/to/repo -o report.json     # 导出 JSON
 
 # ═══ Multi-Repo Cross-Service ═══
-codehistory register -n <name> -r /path/to/repo   # 注册服务（自动检测语言/角色/DB/MQ）
-codehistory discover -d /path/to/repos              # 扫描目录发现 git 仓库
-codehistory init-all                                # 一键初始化所有注册服务的 CodeGraph
-codehistory check                                   # 所有服务健康检查
-codehistory topology                                # 统一服务拓扑（首次构建，后续缓存）
-codehistory impact -s <service>                     # 跨服务变更影响（秒级缓存）
-codehistory trace -s <service>                      # HTTP 调用链追踪
-codehistory flow -s <service>                       # 全通道流程追踪（HTTP+MQ+gRPC）
-codehistory entities [--llm]                        # 跨服务实体对齐
+codeevolution register -n <name> -r /path/to/repo   # 注册服务（自动检测语言/角色/DB/MQ）
+codeevolution discover -d /path/to/repos              # 扫描目录发现 git 仓库
+codeevolution init-all                                # 一键初始化所有注册服务的 CodeGraph
+codeevolution check                                   # 所有服务健康检查
+codeevolution topology                                # 统一服务拓扑（首次构建，后续缓存）
+codeevolution impact -s <service>                     # 跨服务变更影响（秒级缓存）
+codeevolution trace -s <service>                      # HTTP 调用链追踪
+codeevolution flow -s <service>                       # 全通道流程追踪（HTTP+MQ+gRPC）
+codeevolution entities [--llm]                        # 跨服务实体对齐
 
 # ═══ Web Dashboard ═══
-codehistory web                        # 启动 Web 控制台 (http://0.0.0.0:8765)
+codeevolution web                        # 启动 Web 控制台 (http://0.0.0.0:8765)
 ```
 
 ## CodeGraph SQLite Schema（查询参考）

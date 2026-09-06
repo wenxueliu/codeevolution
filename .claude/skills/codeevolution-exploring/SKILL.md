@@ -1,5 +1,5 @@
 ---
-name: codehistory-exploring
+name: codeevolution-exploring
 description: Explore code structure via direct CodeGraph SQLite queries. Use when user asks "how does X work?", "who calls this?", "what does this function call?", "show me the call chain", "find functions by name", "what's in this file?", or "what cross-service calls exist?". Works on any repo with CodeGraph initialized.
 ---
 
@@ -127,48 +127,48 @@ db.close()
 
 ### Find all HTTP endpoints
 ```bash
-python -m codehistory.cli knowledge -r . -s api
+python -m codeevolution.cli knowledge -r . -s api
 ```
 
 ## Multi-Repo Cross-Service Queries
 
-Use the `codehistory` CLI for cross-service analysis:
+Use the `codeevolution` CLI for cross-service analysis:
 
 ### Service dependency graph
 ```bash
 cd /home/chengnanfeng/code/harness/services/codehistory
-python -m codehistory.cli topology
+python -m codeevolution.cli topology
 ```
 
 ### Cross-service impact (what breaks if I change X?)
 ```bash
-python -m codehistory.cli impact -s <service-name>
+python -m codeevolution.cli impact -s <service-name>
 ```
 
 ### End-to-end HTTP call trace
 ```bash
-python -m codehistory.cli trace -s <service-name>
+python -m codeevolution.cli trace -s <service-name>
 ```
 
 ### Full flow trace (HTTP + MQ + gRPC)
 ```bash
-python -m codehistory.cli flow -s <service-name>
+python -m codeevolution.cli flow -s <service-name>
 ```
 
 ### Cross-service entity mapping (same concept, different names)
 ```bash
-python -m codehistory.cli entities
-python -m codehistory.cli entities --llm    # with LLM verification
+python -m codeevolution.cli entities
+python -m codeevolution.cli entities --llm    # with LLM verification
 ```
 
 ## When to use which skill
 
 | Question | Use |
 |----------|-----|
-| "Who calls X?" / "What does X call?" | **codehistory-exploring** (direct SQL) |
-| "What's in file Y?" / "Find function Z" | **codehistory-exploring** (direct SQL) |
-| "What APIs does this project have?" | **codehistory-knowledge** (`-s api`) |
-| "How are services connected?" | **codehistory-knowledge** (`topology`) |
-| "What breaks if I change service X?" | **codehistory-knowledge** (`impact -s X`) |
-| "Trace the complete order flow" | **codehistory-knowledge** (`flow -s order-svc`) |
-| "Which entities are shared across services?" | **codehistory-knowledge** (`entities --llm`) |
+| "Who calls X?" / "What does X call?" | **codeevolution-exploring** (direct SQL) |
+| "What's in file Y?" / "Find function Z" | **codeevolution-exploring** (direct SQL) |
+| "What APIs does this project have?" | **codeevolution-knowledge** (`-s api`) |
+| "How are services connected?" | **codeevolution-knowledge** (`topology`) |
+| "What breaks if I change service X?" | **codeevolution-knowledge** (`impact -s X`) |
+| "Trace the complete order flow" | **codeevolution-knowledge** (`flow -s order-svc`) |
+| "Which entities are shared across services?" | **codeevolution-knowledge** (`entities --llm`) |
