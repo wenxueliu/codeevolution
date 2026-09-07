@@ -56,6 +56,7 @@
           <div class="table-tools">
             <label>筛选端点<input v-model.trim="endpointSearch" type="search" placeholder="路径、处理函数或仓库" @input="endpointPage = 1" /></label>
             <label>HTTP 方法<select v-model="endpointMethod" @change="endpointPage = 1"><option value="">全部方法</option><option v-for="method in endpointMethods" :key="method">{{ method }}</option></select></label>
+            <label>服务<select v-model="endpointService" data-testid="endpoint-service-filter" @change="endpointPage = 1"><option value="">全部服务</option><option v-for="service in endpointServices" :key="service">{{ service }}</option></select></label>
             <span>共 {{ filteredEndpoints.length }} 条</span>
           </div>
           <div class="table-wrap"><table><thead><tr><th>方法</th><th>路径</th><th>处理函数</th><th>请求/应答</th><th>前端调用</th></tr></thead><tbody>
@@ -237,7 +238,7 @@ export default {
     return {
       report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS,
       expandedKeys: new Set(), expandedEntityKeys: new Set(),
-      endpointSearch: '', endpointMethod: '', endpointPage: 1, endpointPageSize: 25,
+      endpointSearch: '', endpointMethod: '', endpointService: '', endpointPage: 1, endpointPageSize: 25,
       loadedAt: '', loadDuration: 0,
       businessRules: {}, brLoading: new Set(), brEditing: {},
     }
@@ -258,6 +259,7 @@ export default {
       const query = this.endpointSearch.toLowerCase()
       return (this.report?.api_contract?.endpoints || []).filter(item => {
         if (this.endpointMethod && item.method !== this.endpointMethod) return false
+        if (this.endpointService && item.repository !== this.endpointService) return false
         if (!query) return true
         return [item.path, item.handler, item.repository].some(value => String(value || '').toLowerCase().includes(query))
       })
@@ -265,6 +267,7 @@ export default {
     visibleEndpoints() { return this.filteredEndpoints.slice((this.endpointPage - 1) * this.endpointPageSize, this.endpointPage * this.endpointPageSize) },
     endpointPages() { return Math.max(1, Math.ceil(this.filteredEndpoints.length / this.endpointPageSize)) },
     endpointMethods() { return [...new Set((this.report?.api_contract?.endpoints || []).map(item => item.method).filter(Boolean))].sort() },
+    endpointServices() { return [...new Set((this.report?.api_contract?.endpoints || []).map(item => item.repository).filter(Boolean))].sort() },
   },
   async created() {
     await this.load(false)
@@ -277,6 +280,7 @@ export default {
         this.report = await this.$api.get('/api/knowledge', { repo: this.repoName || '', include_llm: includeLlm })
         this.llmLoaded = includeLlm
         this.endpointPage = 1
+        this.endpointService = ''
         this.expandedKeys = new Set()
         this.expandedEntityKeys = new Set()
         this.loadedAt = new Date().toLocaleTimeString()

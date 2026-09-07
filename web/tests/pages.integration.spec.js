@@ -269,12 +269,28 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.text()).toContain('现在抽取')
   })
 
-  it('filters and paginates API contracts without rendering the full result set', async () => {
-    const endpoints = Array.from({ length: 60 }, (_, index) => ({ method: index % 2 ? 'POST' : 'GET', path: `/orders/${index}`, handler: `handler${index}`, repository: 'mall' }))
+  it('filters API contracts by service and search while paginating the result set', async () => {
+    const endpoints = Array.from({ length: 60 }, (_, index) => ({
+      method: index % 2 ? 'POST' : 'GET',
+      path: `/orders/${index}`,
+      handler: `handler${index}`,
+      repository: index % 3 ? 'orders' : 'billing',
+    }))
     const { wrapper } = mountPage(Knowledge, { '/api/knowledge': { api_contract: { endpoint_count: 60, endpoints } } }, { repoName: 'mall' })
     await flushPromises()
     expect(wrapper.findAll('tbody tr')).toHaveLength(25)
+
+    const serviceSelect = wrapper.find('[data-testid="endpoint-service-filter"]')
+    expect(serviceSelect.findAll('option').map(option => option.text())).toEqual(['全部服务', 'billing', 'orders'])
+    await serviceSelect.setValue('billing')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(20)
+    expect(wrapper.text()).toContain('/orders/0')
+    expect(wrapper.findAll('tbody tr code').some(node => node.text() === '/orders/1')).toBe(false)
+
     await wrapper.find('.table-tools input').setValue('/orders/59')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(0)
+
+    await serviceSelect.setValue('orders')
     expect(wrapper.findAll('tbody tr')).toHaveLength(1)
     expect(wrapper.text()).toContain('/orders/59')
   })
