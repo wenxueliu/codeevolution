@@ -211,6 +211,39 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.text()).toContain('现在抽取')
   })
 
+  it('enlarges and zooms the sequence diagram for each API endpoint', async () => {
+    mermaidRun.mockClear()
+    const endpoints = [
+      { method: 'GET', path: '/first', handler: 'FirstHandler', call_chain_mermaid: 'sequenceDiagram\nA->>B: FirstHandler' },
+      { method: 'POST', path: '/second', handler: 'SecondHandler', call_chain_mermaid: 'sequenceDiagram\nC->>D: SecondHandler' },
+      { method: 'DELETE', path: '/without-sequence', handler: 'ThirdHandler' },
+    ]
+    const { wrapper } = mountPage(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: endpoints.length, endpoints } },
+    }, { repoName: 'mall' })
+    await flushPromises()
+
+    for (const row of wrapper.findAll('tr.clickable').slice(0, 2)) await row.trigger('click')
+    expect(wrapper.findAll('[data-testid="sequence-expand"]')).toHaveLength(2)
+
+    await wrapper.findAll('[data-testid="sequence-expand"]')[1].trigger('click')
+    await flushPromises()
+    const dialog = wrapper.find('[data-testid="sequence-dialog"]')
+    expect(dialog.attributes('aria-modal')).toBe('true')
+    expect(dialog.text()).toContain('POST')
+    expect(dialog.text()).toContain('/second')
+    expect(dialog.find('.mermaid').text()).toContain('SecondHandler')
+    expect(dialog.find('.mermaid').text()).not.toContain('FirstHandler')
+    expect(mermaidRun).toHaveBeenCalledWith({ nodes: [expect.any(HTMLElement)] })
+
+    await dialog.find('[aria-label="放大时序图"]').trigger('click')
+    expect(dialog.text()).toContain('125%')
+    await dialog.findAll('.sequence-zoom-controls button')[2].trigger('click')
+    expect(dialog.text()).toContain('100%')
+    await dialog.find('.sequence-zoom-close').trigger('click')
+    expect(wrapper.find('[data-testid="sequence-dialog"]').exists()).toBe(false)
+  })
+
   it('filters API contracts by service and search while paginating the result set', async () => {
     const endpoints = Array.from({ length: 60 }, (_, index) => ({
       method: index % 2 ? 'POST' : 'GET',

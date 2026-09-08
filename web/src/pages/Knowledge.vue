@@ -87,6 +87,9 @@
                   <p class="muted" v-else>未解析到处理函数（file/line 缺失），无法展示调用链树。</p>
                   <details v-if="item.call_chain_mermaid" class="seq-details" @toggle="seqToggle($event, item)">
                     <summary>展开时序图</summary>
+                    <div class="seq-actions">
+                      <button class="secondary sm" type="button" data-testid="sequence-expand" @click.stop="openSequenceZoom(item)">放大查看</button>
+                    </div>
                     <div class="mermaid-wrap"><pre class="mermaid">{{ item.call_chain_mermaid }}</pre></div>
                   </details>
                   <div v-if="!item.call_chain_mermaid && item.call_chain?.length" class="call-chain"><span v-for="(node, idx) in item.call_chain || []" :key="node.id || node.name">{{ node.name }}<b v-if="idx < item.call_chain.length - 1">→</b></span></div>
@@ -191,6 +194,38 @@
     </div>
 
     <div v-else-if="!loading && !error" class="empty-state">暂无知识数据</div>
+
+    <div v-if="sequenceZoom" class="sequence-zoom-backdrop" @click.self="closeSequenceZoom">
+      <section
+        ref="sequenceZoomDialog"
+        class="sequence-zoom-dialog"
+        data-testid="sequence-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="sequence-zoom-title"
+        tabindex="-1"
+        @keydown.esc="closeSequenceZoom"
+      >
+        <header class="sequence-zoom-header">
+          <div>
+            <h2 id="sequence-zoom-title">API 时序图</h2>
+            <p><span class="method">{{ sequenceZoom.method }}</span> <code>{{ sequenceZoom.path }}</code></p>
+          </div>
+          <button class="sequence-zoom-close" type="button" aria-label="关闭放大时序图" @click="closeSequenceZoom">×</button>
+        </header>
+        <div class="sequence-zoom-canvas">
+          <div class="sequence-zoom-controls" aria-label="时序图缩放控制">
+            <button type="button" aria-label="缩小时序图" :disabled="sequenceZoomScale <= 0.5" @click="changeSequenceZoom(-0.25)">−</button>
+            <span aria-live="polite">{{ Math.round(sequenceZoomScale * 100) }}%</span>
+            <button type="button" aria-label="放大时序图" :disabled="sequenceZoomScale >= 3" @click="changeSequenceZoom(0.25)">+</button>
+            <button type="button" @click="resetSequenceZoom">恢复原始大小</button>
+          </div>
+          <div class="sequence-zoom-stage" :style="{ width: `${sequenceZoomScale * 100}%` }">
+            <pre ref="sequenceZoomMermaid" class="mermaid">{{ sequenceZoom.mermaid }}</pre>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -241,6 +276,8 @@ export default {
       endpointSearch: '', endpointMethod: '', endpointService: '', endpointPage: 1, endpointPageSize: 25,
       loadedAt: '', loadDuration: 0,
       businessRules: {}, brLoading: new Set(), brEditing: {},
+      sequenceZoom: null,
+      sequenceZoomScale: 1,
     }
   },
   computed: {
@@ -318,6 +355,26 @@ export default {
       if (event.target && event.target.open) {
         this.$nextTick(() => this.renderMermaid())
       }
+    },
+    async openSequenceZoom(item) {
+      this.sequenceZoomScale = 1
+      this.sequenceZoom = {
+        method: item.method || '',
+        path: item.path || '',
+        mermaid: item.call_chain_mermaid,
+      }
+      await this.$nextTick()
+      this.$refs.sequenceZoomDialog?.focus()
+      await this.renderMermaidNodes([this.$refs.sequenceZoomMermaid])
+    },
+    closeSequenceZoom() {
+      this.sequenceZoom = null
+    },
+    changeSequenceZoom(delta) {
+      this.sequenceZoomScale = Math.min(3, Math.max(0.5, this.sequenceZoomScale + delta))
+    },
+    resetSequenceZoom() {
+      this.sequenceZoomScale = 1
     },
     // ── business rules ──
 
@@ -448,6 +505,10 @@ JSON:`
 
     async renderMermaid() {
       const els = this.$el.querySelectorAll('.expand-detail .mermaid:not([data-processed])')
+      await this.renderMermaidNodes(els)
+    },
+    async renderMermaidNodes(nodes) {
+      const els = [...nodes].filter(Boolean)
       if (!els.length) return
       try {
         const mermaid = await loadMermaid()
@@ -532,6 +593,22 @@ td code { color: #666; word-break: break-all; }
 .seq-details { margin: 0 0 15px; }
 .seq-details summary { cursor: pointer; color: #2a6496; font-size: 12px; padding: 2px 0; user-select: none; }
 .seq-details summary:hover { text-decoration: underline; }
+.seq-actions { display: flex; justify-content: flex-end; margin: 6px 0; }
+.sequence-zoom-backdrop { position: fixed; z-index: 100; inset: 0; padding: 24px; display: grid; place-items: center; background: rgba(17, 17, 28, .72); }
+.sequence-zoom-dialog { width: min(1400px, 96vw); height: min(900px, 92vh); display: flex; flex-direction: column; overflow: hidden; background: white; border-radius: 10px; box-shadow: 0 24px 80px rgba(0, 0, 0, .42); }
+.sequence-zoom-header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 18px; border-bottom: 1px solid #e5e5eb; }
+.sequence-zoom-header h2 { margin: 0 0 4px; font-size: 18px; }
+.sequence-zoom-header p { margin: 0; font-size: 12px; color: #666; }
+.sequence-zoom-close { width: 36px; height: 36px; border: 0; border-radius: 50%; background: #f0f0f4; color: #444; font-size: 24px; line-height: 1; cursor: pointer; }
+.sequence-zoom-close:hover { background: #e94560; color: white; }
+.sequence-zoom-canvas { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 64px 24px 24px; background: #fafafd; }
+.sequence-zoom-controls { position: absolute; z-index: 1; top: 14px; right: 18px; display: flex; align-items: center; gap: 6px; padding: 5px; border: 1px solid #dddde5; border-radius: 7px; background: rgba(255, 255, 255, .94); box-shadow: 0 2px 8px rgba(0, 0, 0, .08); }
+.sequence-zoom-controls button { border: 1px solid #d7d7df; border-radius: 5px; padding: 5px 9px; background: white; color: #333; cursor: pointer; }
+.sequence-zoom-controls button:disabled { cursor: not-allowed; }
+.sequence-zoom-controls span { min-width: 44px; text-align: center; color: #555; font-size: 12px; }
+.sequence-zoom-stage { transition: width .15s ease; }
+.sequence-zoom-stage .mermaid { display: flex; justify-content: center; }
+.sequence-zoom-stage :deep(svg) { width: 100% !important; max-width: none !important; height: auto; }
 .frontend-call { border-left: 3px solid #e94560; padding: 5px 9px; margin: 6px 0; font-size: 11px; }
 .muted { color: #aaa; font-size: 11px; }
 .repo-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 8px; background: #fff0f2; color: #c82d48; font-size: 9px; }
@@ -564,5 +641,7 @@ td code { color: #666; word-break: break-all; }
   .section-nav { display: flex; overflow-x: auto; }
   .section-nav button { min-width: 145px; }
   .table-tools > span { margin-left: 0; width: 100%; }
+  .sequence-zoom-backdrop { padding: 0; }
+  .sequence-zoom-dialog { width: 100vw; height: 100vh; border-radius: 0; }
 }
 </style>
