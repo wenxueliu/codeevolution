@@ -46,7 +46,7 @@ codeevolution topology / impact -s <svc> / flow -s <svc> / entities
 codeevolution web                    # http://0.0.0.0:8765
 ```
 
-完整命令（17 个子命令）以 `codeevolution --help` 与 `codeevolution/cli.py` 为准。
+完整命令（16 个子命令）以 `codeevolution --help` 与 `codeevolution/cli.py` 为准。
 
 ## 能力矩阵（18 维 × 5 角色，兼作命令速查）
 

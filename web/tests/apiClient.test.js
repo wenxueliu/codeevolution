@@ -13,8 +13,8 @@ test('api client uses the injected fetch adapter', async () => {
     calls.push(url)
     return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ ok: true }) }
   })
-  assert.deepEqual(await client.get('/api/features', { repo: 'orders' }), { ok: true })
-  assert.deepEqual(calls, ['/api/features?repo=orders'])
+  assert.deepEqual(await client.get('/api/knowledge', { repo: 'orders' }), { ok: true })
+  assert.deepEqual(calls, ['/api/knowledge?repo=orders'])
 })
 
 test('api client sends DELETE requests', async () => {

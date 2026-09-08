@@ -6,7 +6,7 @@
     <div class="page-header">
       <div>
         <h1>知识中心</h1>
-        <p>基于当前 CodeGraph 索引实时推导，结果不写入演进数据库。<span v-if="loadedAt"> 最近刷新：{{ loadedAt }} · {{ loadDuration }} ms</span></p>
+        <p>基于当前 CodeGraph 索引实时推导。<span v-if="loadedAt"> 最近刷新：{{ loadedAt }} · {{ loadDuration }} ms</span></p>
       </div>
       <div class="actions">
         <button class="secondary" :disabled="loading" @click="load(false)">刷新结构知识</button>

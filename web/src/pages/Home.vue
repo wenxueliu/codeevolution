@@ -3,7 +3,7 @@
     <UiState v-if="error" kind="error" title="代码仓加载失败" :message="error.message" action-label="重试" dismiss-label="关闭" @action="loadRepos" @dismiss="error = null" />
     <UiState v-else-if="loading" kind="loading" title="正在加载代码仓" />
     <div class="page-header">
-      <div><h1>代码仓列表</h1><p>查看索引与演进状态，进入仓库继续分析。</p></div>
+      <div><h1>代码仓列表</h1><p>查看代码仓索引状态，进入仓库继续分析。</p></div>
       <button class="primary" type="button" @click="showRegister = !showRegister">{{ showRegister ? '取消添加' : '添加代码仓' }}</button>
     </div>
 
@@ -34,16 +34,7 @@
             <button class="primary sm" :disabled="addingMember[r.name]" @click.stop="addMember(r)">{{ addingMember[r.name] ? '添加中...' : '确认' }}</button>
             <button class="secondary sm" @click.stop="toggleAddMember(r)">取消</button>
           </div>
-          <div class="repo-stats" v-if="hasAnalysis(r)">
-            <div class="stat"><b>{{ r.stats.total_commits }}</b> 已分析提交</div>
-            <div class="stat"><b>{{ r.stats.active_features }}</b> 活跃功能</div>
-            <div class="stat"><b>{{ r.stats.total_events }}</b> 演变事件</div>
-          </div>
-          <div class="repo-empty" v-else>
-            <strong>尚未生成演进数据</strong>
-            <span>运行首次回溯后即可查看功能和事件。</span>
-            <code>codeevolution backfill -r {{ r.path }}</code>
-          </div>
+          <div class="repo-enter">进入知识中心</div>
         </router-link>
         <div class="repo-actions">
           <button class="add-member-button" type="button" title="添加代码仓" @click.stop="toggleAddMember(r)">+ 代码仓</button>
@@ -78,7 +69,7 @@
     </div>
 
     <div class="empty-state" v-else>
-      <UiState title="还没有代码仓" message="添加一个已初始化 CodeGraph 的本地仓库，开始提取结构知识和演进数据。" action-label="添加代码仓" @action="showRegister = true" />
+      <UiState title="还没有代码仓" message="添加一个已初始化 CodeGraph 的本地仓库，开始提取结构知识。" action-label="添加代码仓" @action="showRegister = true" />
     </div>
   </div>
 </template>
@@ -119,7 +110,7 @@ export default {
     },
     async removeRepo(repo) {
       const confirmed = window.confirm(
-        `确定从 CodeEvolution 移除”${repo.name}”吗？\n\n仅删除注册记录，不会删除代码仓、CodeGraph 或演进数据库。`,
+        `确定从 CodeEvolution 移除”${repo.name}”吗？\n\n仅删除注册记录，不会删除代码仓或 CodeGraph 数据。`,
       )
       if (!confirmed) return
       await this.$runAsync(async () => {
@@ -137,8 +128,6 @@ export default {
       })
       this.registering = false
     },
-    hasAnalysis(repo) { return Boolean(repo.stats && repo.stats.total_commits > 0) },
-
     // ── member management ──
 
     toggleAddMember(repo) {
@@ -310,10 +299,7 @@ export default {
 .member-add input { flex: 1; border: 1px solid #cfd3da; border-radius: 5px; padding: 5px 8px; font-size: 11px; min-width: 0; }
 .add-member-button { border: 1px solid #c5d8c5; background: #fff; color: #3a7d44; border-radius: 5px; padding: 4px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .add-member-button:hover { color: #fff; background: #3a7d44; border-color: #3a7d44; }
-.repo-stats { display: flex; gap: 20px; font-size: 13px; color: #666; }
-.repo-stats b { color: #333; }
-.repo-empty { display: grid; gap: 5px; font-size: 12px; color: #73622d; background: #fff9e8; padding: 10px; border-radius: 6px; }
-.repo-empty code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #66561f; }
+.repo-enter { font-size: 13px; color: #e94560; font-weight: 600; }
 .empty-state { text-align: center; padding: 60px 0; color: #888; }
 .empty-state p { margin-bottom: 12px; font-size: 16px; }
 .empty-state code { background: #f5f5f5; padding: 8px 16px; border-radius: 4px; font-size: 13px; display: inline-block; margin-bottom: 12px; }
@@ -323,6 +309,5 @@ export default {
   .register-form { grid-template-columns: 1fr; }
   .register-form p { grid-column: auto; }
   .repo-grid { grid-template-columns: 1fr; }
-  .repo-stats { gap: 12px; flex-wrap: wrap; }
 }
 </style>

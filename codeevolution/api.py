@@ -17,15 +17,12 @@ from pydantic import BaseModel, Field
 from .analysis.knowledge.call_tree import CallTreeService
 from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService
-from .application.evolution_service import EvolutionQueryService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
-from .application.refactoring_service import RefactoringPlanningService
 from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
 from .infrastructure.business_rule_store import BusinessRuleStore
 from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.node_rule_store import NodeRuleStore
-from .infrastructure.refactoring_techniques import RefactoringTechniqueCatalog
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
 from .paths import data_dir, repo_data_file
@@ -84,13 +81,6 @@ class UiCheckpointRequest(BaseModel):
     page_url: str = ""
 
 
-class RefactoringTechniqueRequest(BaseModel):
-    id: str = Field(min_length=1, max_length=100)
-    name: str = Field(min_length=1, max_length=100)
-    objective: str = Field(min_length=1, max_length=500)
-    checks: list[str] = Field(min_length=1, max_length=30)
-
-
 class LLMConfigRequest(BaseModel):
     model: str = Field(min_length=1, max_length=200)
     api_base: str = Field(default="", max_length=1000)
@@ -143,15 +133,6 @@ def get_store(repo: str = "") -> EvolutionStore:
         _stores[repo] = EvolutionStore(db_path)
 
     return _stores[repo]
-
-
-def get_evolution_service(repo: str = "") -> EvolutionQueryService:
-    dependencies = _request_dependencies.get()
-    if factory := dependencies.get("evolution_service_factory"):
-        return factory(repo)
-    if injected := dependencies.get("evolution_service"):
-        return injected
-    return EvolutionQueryService(get_store(repo))
 
 
 def get_audit_store() -> AuditStore:
@@ -231,38 +212,6 @@ def get_node_rule_store() -> NodeRuleStore:
     return _node_rule_store
 
 
-def get_refactoring_member(repo: str, member: str = "") -> tuple[str, str]:
-    """Resolve one physical repository inside a registered logical service."""
-    if not repo:
-        repos = list_repos()
-        if not repos:
-            raise HTTPException(400, "No repos registered. Register a repo first.")
-        repo = repos[0]["name"]
-    entry = get_repo(repo)
-    if not entry:
-        raise HTTPException(404, f"Repo '{repo}' not found")
-    members = repository_members(entry)
-    selected = next(
-        (item for item in members if not member or (item.get("name") or Path(item["path"]).name) == member),
-        None,
-    )
-    if selected is None:
-        raise HTTPException(404, f"Repository member '{member}' not found in '{repo}'")
-    return selected.get("name") or Path(selected["path"]).name, selected["path"]
-
-
-def get_refactoring_technique_catalog(
-    repo: str = "", member: str = ""
-) -> RefactoringTechniqueCatalog:
-    dependencies = _request_dependencies.get()
-    if injected := dependencies.get("refactoring_technique_catalog"):
-        return injected
-    _, repo_path = get_refactoring_member(repo, member)
-    return RefactoringTechniqueCatalog(
-        repo_data_file(repo_path, "refactoring-techniques.json")
-    )
-
-
 def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
     """Return a knowledge service and whether the caller owns its lifecycle."""
     dependencies = _request_dependencies.get()
@@ -306,41 +255,6 @@ def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
     return GroupedKnowledgeService(services), True
 
 
-def get_refactoring_services(
-    repo: str = "", member: str = ""
-) -> tuple[list[tuple[str, object]], bool]:
-    """Resolve planning services for every repository in a logical service."""
-    dependencies = _request_dependencies.get()
-    if injected := dependencies.get("refactoring_planning_service"):
-        return [(repo or "injected", injected)], False
-
-    if not repo:
-        repos = list_repos()
-        if not repos:
-            raise HTTPException(400, "No repos registered. Register a repo first.")
-        repo = repos[0]["name"]
-    entry = get_repo(repo)
-    if not entry:
-        raise HTTPException(404, f"Repo '{repo}' not found")
-
-    services = []
-    try:
-        for member_entry in repository_members(entry):
-            member_name = member_entry.get("name") or Path(member_entry["path"]).name
-            if member and member_name != member:
-                continue
-            services.append(
-                (member_name, RefactoringPlanningService.from_repository(member_entry["path"]))
-            )
-    except ValueError as error:
-        for _, service in services:
-            service.close()
-        raise HTTPException(409, str(error)) from error
-    if member and not services:
-        raise HTTPException(404, f"Repository member '{member}' not found in '{repo}'")
-    return services, True
-
-
 # --- Repo management ---
 
 
@@ -354,19 +268,6 @@ def api_list_repos():
             "path": r["path"],
             "repositories": repository_members(r),
         }
-        try:
-            store = _stores.get(r["name"])
-            if not store:
-                db_path = r.get("db_path") or str(repo_data_file(r["path"], "evolution.db"))
-                if Path(db_path).exists():
-                    store = EvolutionStore(db_path)
-                    _stores[r["name"]] = store
-            if store:
-                entry["stats"] = store.get_stats()
-            else:
-                entry["stats"] = None
-        except Exception:
-            entry["stats"] = None
         result.append(entry)
     return {"repos": result}
 
@@ -557,79 +458,6 @@ def api_init_repo_status(name: str):
 # --- Scoped API routes ---
 
 
-@app.get("/api/stats")
-def get_stats(repo: str = Query("")):
-    return get_evolution_service(repo).stats()
-
-
-@app.get("/api/features")
-def list_features(
-    repo: str = Query(""),
-    status: str = Query("all"),
-    search: str = Query(""),
-    at_commit: str = Query(""),
-    limit: int = Query(100),
-    offset: int = Query(0),
-):
-    if at_commit:
-        return get_evolution_service(repo).list_features_at_commit(
-            at_commit, status, search, limit, offset
-        )
-    return get_evolution_service(repo).list_features(status, search, limit, offset)
-
-
-@app.get("/api/commits")
-def list_commits(repo: str = Query(""), limit: int = Query(200)):
-    return get_evolution_service(repo).commits(limit)
-
-
-@app.get("/api/features/{stable_id:path}/explain")
-def explain_feature(stable_id: str, repo: str = Query("")):
-    """Generate LLM explanation for a feature's call chain. Optional: requires OPENAI_API_KEY."""
-    from .llm import explain_feature, is_available
-
-    if not is_available():
-        return {"available": False, "message": "Set OPENAI_API_KEY to enable AI explanations"}
-    context = get_evolution_service(repo).explanation_context(stable_id)
-    if not context:
-        return {"error": "Feature not found"}
-    feature = context["feature"]
-    result = explain_feature(
-        feature_name=feature["canonical_name"],
-        description=feature.get("description", ""),
-        description_zh=feature.get("description_zh", ""),
-        call_chain=context["call_chain"],
-        features_context=context["related_features"],
-    )
-    return {"available": True, "explanation": result}
-
-
-@app.get("/api/features/{stable_id:path}")
-def get_feature_detail(stable_id: str, repo: str = Query("")):
-    feature = get_evolution_service(repo).feature_detail(stable_id)
-    if not feature:
-        return {"error": "Feature not found"}
-    return feature
-
-
-@app.get("/api/events")
-def list_events(
-    repo: str = Query(""),
-    feature_stable_id: str = Query(""),
-    event_type: str = Query(""),
-    limit: int = Query(50),
-    offset: int = Query(0),
-):
-    return get_evolution_service(repo).query_events(
-        feature_stable_id=feature_stable_id, event_type=event_type, limit=limit, offset=offset
-    )
-
-
-@app.get("/api/capabilities")
-def get_capabilities(repo: str = Query("")):
-    return {"capabilities": get_evolution_service(repo).capabilities()}
-
-
 @app.get("/api/llm-status")
 def llm_status():
     from .semantic.config import get_llm_config_status
@@ -718,11 +546,6 @@ def test_llm_settings():
     if isinstance(parsed, dict) and parsed.get("error"):
         raise HTTPException(502, f"连接失败：{parsed['error']}")
     return {"ok": True, "message": "连接成功", "model": config["model"]}
-
-
-@app.get("/api/event-stats")
-def event_stats(repo: str = Query("")):
-    return {"stats": get_evolution_service(repo).event_stats()}
 
 
 @app.get("/api/knowledge")
@@ -1001,106 +824,6 @@ def generate_call_tree_node_rule(request: NodeRuleGenerateRequest):
     except Exception as exc:
         store.update_status(rule_id, status="failed", error=str(exc)[:1000])
         raise HTTPException(502, f"LLM 生成失败：{exc}")
-
-
-@app.get("/api/refactor-techniques")
-def list_refactoring_techniques(repo: str = Query(""), member: str = Query("")):
-    dependencies = _request_dependencies.get()
-    if dependencies.get("refactoring_technique_catalog"):
-        selected_member = member or repo or "injected"
-        members = [selected_member]
-    else:
-        selected_member, _ = get_refactoring_member(repo, member)
-        entry = get_repo(repo) if repo else list_repos()[0]
-        members = [item.get("name") or Path(item["path"]).name for item in repository_members(entry)]
-    return {
-        "repository_member": selected_member,
-        "repository_members": members,
-        "techniques": get_refactoring_technique_catalog(repo, selected_member).list(),
-    }
-
-
-@app.post("/api/refactor-techniques", status_code=201)
-def create_refactoring_technique(
-    request: RefactoringTechniqueRequest,
-    repo: str = Query(""),
-    member: str = Query(""),
-):
-    try:
-        return get_refactoring_technique_catalog(repo, member).create(request.model_dump())
-    except ValueError as error:
-        raise HTTPException(400, str(error)) from error
-
-
-@app.put("/api/refactor-techniques/{technique_id}")
-def update_refactoring_technique(
-    technique_id: str,
-    request: RefactoringTechniqueRequest,
-    repo: str = Query(""),
-    member: str = Query(""),
-):
-    try:
-        return get_refactoring_technique_catalog(repo, member).update(
-            technique_id, request.model_dump()
-        )
-    except ValueError as error:
-        status = 404 if "not found" in str(error) else 400
-        raise HTTPException(status, str(error)) from error
-
-
-@app.delete("/api/refactor-techniques/{technique_id}")
-def delete_refactoring_technique(
-    technique_id: str,
-    repo: str = Query(""),
-    member: str = Query(""),
-):
-    """Delete a custom technique, or remove a built-in technique override."""
-    try:
-        return get_refactoring_technique_catalog(repo, member).delete(technique_id)
-    except ValueError as error:
-        raise HTTPException(404, str(error)) from error
-
-
-@app.get("/api/refactor-plans")
-def get_refactoring_plans(
-    repo: str = Query(""),
-    member: str = Query(""),
-    technique: str = Query("extract-method"),
-    window_days: int = Query(7, ge=1, le=3650),
-    previous_window_days: int = Query(0, ge=0, le=3649),
-    limit: int = Query(5, ge=1, le=50),
-    min_tests: int = Query(1, ge=1, le=20),
-):
-    """Return Agent-ready refactoring scopes and their test-safety gates."""
-    services, owned = get_refactoring_services(repo, member)
-    plans = []
-    try:
-        for member_name, service in services:
-            member_plans = service.plan(
-                technique_id=technique,
-                window_days=window_days,
-                previous_window_days=previous_window_days,
-                limit=limit,
-                min_tests=min_tests,
-            )
-            for plan in member_plans:
-                item = plan.to_dict()
-                item["repository_member"] = member_name
-                plans.append(item)
-    except ValueError as error:
-        raise HTTPException(400, str(error)) from error
-    finally:
-        if owned:
-            for _, service in services:
-                service.close()
-
-    ranked_plans = sorted(plans, key=lambda item: -item["hotspot"]["score"])
-    return {
-        "version": "1.0",
-        "repository": repo,
-        "plan_count": min(len(ranked_plans), limit),
-        "plans": ranked_plans[:limit],
-    }
 
 
 @app.post("/api/chat")

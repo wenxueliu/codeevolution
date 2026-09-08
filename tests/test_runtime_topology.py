@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 from codeevolution.analysis.topology.cross_repo_impl import CrossServiceEdge, UnifiedTopology
-from codeevolution.application.evolution_service import EvolutionQueryService
 from codeevolution.application.runtime_telemetry_service import RuntimeTelemetryService
 from codeevolution.application.topology_service import TopologyService
 from codeevolution.infrastructure.otlp_json import OTLPJSONCollector
@@ -109,10 +108,6 @@ def test_otlp_ingest_persists_and_associates_spans_logs_and_errors(tmp_path):
     assert {item["kind"] for item in saved} == {"span", "log", "error"}
     assert next(item for item in saved if item["kind"] == "span")["latency_ms"] == 5
     assert next(item for item in saved if item["kind"] == "error")["error_type"] == "TimeoutError"
-    detail = EvolutionQueryService(store).feature_detail("api.py::order")
-    assert len(detail["runtime_observations"]) == 3
-
-
 def test_otlp_explicit_feature_attribute_and_runtime_validation(tmp_path):
     store = EvolutionStore(str(tmp_path / "evolution.db"))
     commit_id = store.insert_commit("abc", None, 1, "tester", "fixture")
