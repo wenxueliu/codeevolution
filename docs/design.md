@@ -161,14 +161,26 @@ codeevolution/
 
 ### P0 — 跨服务调用拼接
 
-从每个服务的 CodeGraph 提取出站 HTTP 调用 + 入站 API 契约 → URL 模式匹配拼接跨服务边。
+从每个服务提取 HTTP 路由和消息消费者入口，以处理函数为根沿 CodeGraph `calls` 边遍历，只保留入口可达的 HTTP、消息发布和 Redis 调用。HTTP 通过服务 host、方法和路径模板拼接；Kafka、RabbitMQ、NATS、Redis Pub/Sub 与 Redis Streams 通过消息通道拼接生产者和消费者。先生成带完整证据链的 typed endpoint edges，再投影为服务级依赖图。
 
 ```
 order-svc:  requests.post("http://user-svc/api/users/123")  → 出站调用
 user-svc:   POST /api/users/:id                               → 入站 API
 
-匹配结果: order-svc.create_order ──[POST /api/users/:id]──→ user-svc.get_user
+端点级结果:
+  order-svc::POST /orders
+    → create_order → validate_user → HTTP client
+    → user-svc::POST /api/users/:id
+
+服务级投影:
+  order-svc → user-svc
 ```
+
+每条高置信依赖边保存入口端点、内部调用路径、HTTP 调用位置、原始 URL、目标处理函数和匹配规则。相同方法与路径命中多个服务时不按遍历顺序选择，而是保留为歧义候选；无法匹配已注册服务的 host 作为外部依赖候选。仓库中存在但不能从入口端点到达的 HTTP 调用不会进入 API 服务依赖图。
+
+消息边保存 broker 类型、topic/queue/channel/stream、生产函数、消费函数、入口类型和完整调用链。只有可从 HTTP 或消息消费入口到达、且通道名高置信匹配的发布调用才进入服务依赖图；未解析通道不会宽泛匹配，避免制造异步依赖。
+
+Redis 采用两种不同语义：`PUBLISH/SUBSCRIBE` 和 `XADD/XREADGROUP` 通过通道形成异步服务依赖，同时保留服务到 Redis 实例的底层资源边；`GET/SET/HGET/HSET` 等缓存或数据命令只形成资源依赖。资源依赖写入独立的 `resource_edges` 与 `resource_dependency_graph`，不会把共享缓存误判成服务互调。实例标识优先取脱敏后的 Redis URL，其次取 host/port，无法解析时使用 `redis:default`；每条边同时保留命令、key、入口和 CodeGraph 调用链。
 
 ### P1 — 服务管理
 
@@ -261,7 +273,7 @@ files (path, content_hash, language, size, modified_at, indexed_at, node_count)
 | 知识提取 | knowledge.py（Phase 1） | 完成：5 维（API/模块/实体/测试/分层） |
 | 知识提取 | knowledge.py（Phase 2） | 完成：4 维（配置/依赖/权限/热力图） |
 | 知识提取 | llm.py（Phase 3） | 完成：4 维 LLM 语义理解 |
-| 多仓分析 | cross_repo.py（P0） | 完成：HTTP 调用拼接 + 统一拓扑 + 影响分析 |
+| 多仓分析 | cross_repo.py（P0） | 完成：HTTP/MQ/Redis typed edges + 双层依赖图 + 影响分析 |
 | 多仓分析 | registry.py（P1） | 完成：服务发现 + 自动检测 + 健康检查 + 拓扑缓存 |
 | 多仓分析 | p2_advanced.py（P2） | 完成：全通道流程追踪 + 跨服务实体对齐 |
 | 演进引擎 | engine.py | 完成：git checkout + codegraph sync + 特征追踪 |

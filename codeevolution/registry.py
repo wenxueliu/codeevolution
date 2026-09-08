@@ -636,7 +636,7 @@ def build_topology_cache() -> dict | None:
     cache_data = {
         "_built_at": __import__("time").time(),
         "_service_count": len(topology.services),
-        "_edge_count": len(topology.cross_edges),
+        "_edge_count": len(topology.cross_edges) + len(getattr(topology, "message_edges", [])),
         "services": [
             {
                 "name": s.name,
@@ -651,6 +651,7 @@ def build_topology_cache() -> dict | None:
             for s in topology.services
         ],
         "dependency_graph": topology.dependency_graph,
+        "resource_dependency_graph": getattr(topology, "resource_dependency_graph", {}),
         "cross_edges": [
             {
                 "source_service": e.source_service,
@@ -659,10 +660,58 @@ def build_topology_cache() -> dict | None:
                 "target_function": e.target_function,
                 "http_method": e.http_method,
                 "url_pattern": e.url_pattern,
+                "source_endpoint_method": e.source_endpoint_method,
+                "source_endpoint_path": e.source_endpoint_path,
+                "source_endpoint_handler": e.source_endpoint_handler,
+                "call_chain": e.call_chain,
+                "confidence": e.confidence,
+                "evidence": e.evidence,
+                "match_rule": e.match_rule,
+                "rule_version": e.rule_version,
             }
             for e in topology.cross_edges
         ],
         "potential_edges": topology.potential_edges,
+        "message_edges": [
+            {
+                "source_service": e.source_service,
+                "source_function": e.source_function,
+                "target_service": e.target_service,
+                "target_function": e.target_function,
+                "broker_type": e.broker_type,
+                "channel": e.channel,
+                "source_endpoint_method": e.source_endpoint_method,
+                "source_endpoint_path": e.source_endpoint_path,
+                "source_endpoint_handler": e.source_endpoint_handler,
+                "source_entry_kind": e.source_entry_kind,
+                "call_chain": e.call_chain,
+                "confidence": e.confidence,
+                "evidence": e.evidence,
+                "match_rule": e.match_rule,
+                "rule_version": e.rule_version,
+            }
+            for e in getattr(topology, "message_edges", [])
+        ],
+        "resource_edges": [
+            {
+                "source_service": e.source_service,
+                "source_function": e.source_function,
+                "resource_type": e.resource_type,
+                "resource_id": e.resource_id,
+                "operation": e.operation,
+                "resource_key": e.resource_key,
+                "source_endpoint_method": e.source_endpoint_method,
+                "source_endpoint_path": e.source_endpoint_path,
+                "source_endpoint_handler": e.source_endpoint_handler,
+                "source_entry_kind": e.source_entry_kind,
+                "call_chain": e.call_chain,
+                "confidence": e.confidence,
+                "evidence": e.evidence,
+                "match_rule": e.match_rule,
+                "rule_version": e.rule_version,
+            }
+            for e in getattr(topology, "resource_edges", [])
+        ],
     }
 
     save_topology_cache(cache_data)
@@ -677,6 +726,8 @@ def get_cached_impact(service_name: str) -> dict | None:
 
     dep_graph = cached.get("dependency_graph", {})
     edges = cached.get("cross_edges", [])
+    message_edges = cached.get("message_edges", [])
+    resource_edges = cached.get("resource_edges", [])
 
     downstream = dep_graph.get(service_name, [])
     upstream = [svc for svc, deps in dep_graph.items() if service_name in deps]
@@ -692,6 +743,13 @@ def get_cached_impact(service_name: str) -> dict | None:
         "upstream_impact": upstream,
         "downstream_impact": downstream,
         "affected_cross_edges": affected,
+        "affected_message_edges": [
+            edge for edge in message_edges
+            if edge["source_service"] == service_name or edge["target_service"] == service_name
+        ],
+        "affected_resource_edges": [
+            edge for edge in resource_edges if edge["source_service"] == service_name
+        ],
     }
 
 
@@ -705,22 +763,32 @@ def get_cached_trace(
 
     edges = cached.get("cross_edges", [])
     chain: list[dict] = []
-    visited: set[tuple[str, str, str]] = set()
+    visited: set[tuple[str, str, str, str, str]] = set()
 
-    def follow(svc: str, depth: int):
+    def follow(svc: str, depth: int, entry_handler: str = ""):
         if depth > max_depth:
             return
         for e in edges:
             if e["source_service"] != svc:
                 continue
-            if api_path and e["url_pattern"] != api_path:
+            source_path = e.get("source_endpoint_path", "")
+            source_handler = e.get("source_endpoint_handler", "")
+            if depth == 0 and api_path and source_path and source_path != api_path:
                 continue
-            key = (e["source_service"], e["target_service"], e["url_pattern"])
+            if depth > 0 and entry_handler and source_handler and source_handler != entry_handler:
+                continue
+            key = (
+                e["source_service"],
+                source_path,
+                e.get("source_function", ""),
+                e["target_service"],
+                e["url_pattern"],
+            )
             if key in visited:
                 continue
             visited.add(key)
             chain.append({**e, "depth": depth})
-            follow(e["target_service"], depth + 1)
+            follow(e["target_service"], depth + 1, e.get("target_function", ""))
 
     follow(service_name, 0)
     return chain

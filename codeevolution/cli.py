@@ -741,10 +741,26 @@ def _print_cached_topology(cached: dict):
                 print(f"  {svc} → {d}")
 
     if cached.get("cross_edges"):
-        print(f"\nCross-Service Edges ({cached['_edge_count']}):")
+        print(f"\nHTTP Cross-Service Edges ({len(cached['cross_edges'])}):")
         for e in cached["cross_edges"][:20]:
             print(
                 f"  {e['source_service']} ──[{e['http_method']} {e['url_pattern']}]──→ {e['target_service']}"
+            )
+
+    if cached.get("message_edges"):
+        print(f"\nMessage Edges ({len(cached['message_edges'])}):")
+        for e in cached["message_edges"][:20]:
+            print(
+                f"  {e['source_service']} ──[{e['broker_type']}:{e['channel']}]──→ "
+                f"{e['target_service']}"
+            )
+
+    if cached.get("resource_edges"):
+        print(f"\nResource Edges ({len(cached['resource_edges'])}):")
+        for e in cached["resource_edges"][:20]:
+            print(
+                f"  {e['source_service']} ──[{e['operation']} {e['resource_key']}]──→ "
+                f"{e['resource_id']}"
             )
 
 

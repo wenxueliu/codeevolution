@@ -23,6 +23,14 @@ from .database import DatabaseAccessCollector
 
 MQ_PRODUCER_PATTERNS = [
     (
+        "redis_pubsub",
+        ["redis.publish", "Redis.publish"],
+    ),
+    (
+        "redis_streams",
+        ["redis.xadd", "Redis.xadd", "xadd"],
+    ),
+    (
         "kafka",
         [
             "KafkaProducer.send",
@@ -83,6 +91,14 @@ MQ_PRODUCER_PATTERNS = [
 ]
 
 MQ_CONSUMER_PATTERNS = [
+    (
+        "redis_pubsub",
+        ["redis.subscribe", "Redis.subscribe", "pubsub.subscribe"],
+    ),
+    (
+        "redis_streams",
+        ["redis.xread", "redis.xreadgroup", "Redis.xreadgroup", "xreadgroup"],
+    ),
     (
         "kafka",
         [
@@ -261,7 +277,7 @@ class AdvancedTopologyImplementation:
         database_edges = self._collect_db_edges()
 
         # Phase B: BFS through all channels, starting from entry
-        visited_pairs: set[tuple[str, str, str]] = set()
+        visited_pairs: set[tuple[str, ...]] = set()
         queue: list[tuple[str, str, int]] = [(entry_service, entry_api_pattern, 0)]
 
         while queue:
@@ -271,7 +287,14 @@ class AdvancedTopologyImplementation:
 
             # B1: follow HTTP calls from this service
             for e in http_edges.get(svc, []):
-                edge_key = (svc, e["target_service"], e["url_pattern"])
+                if trigger and not self._http_edge_matches_trigger(e, trigger):
+                    continue
+                edge_key = (
+                    svc,
+                    e.get("source_endpoint_path", ""),
+                    e["target_service"],
+                    e["url_pattern"],
+                )
                 if edge_key in visited_pairs:
                     continue
                 visited_pairs.add(edge_key)
@@ -293,10 +316,15 @@ class AdvancedTopologyImplementation:
                 steps.append(step)
                 services_involved.add(e["target_service"])
                 services_involved.add(svc)
-                queue.append((e["target_service"], "", depth + 1))
+                next_trigger = (
+                    f"handler:{e['target_function']}" if e.get("target_function") else ""
+                )
+                queue.append((e["target_service"], next_trigger, depth + 1))
 
             # B2: follow MQ publish → consume chains
             for pub in mq_pub.get(svc, []):
+                if trigger and not self._http_edge_matches_trigger(pub, trigger):
+                    continue
                 topic = pub.get("topic", "")
                 mq_type = pub["mq_type"]
                 edge_key = (svc, f"mq:{mq_type}:{topic}", "publish")
@@ -344,7 +372,9 @@ class AdvancedTopologyImplementation:
                             steps.append(step_sub)
                             services_involved.add(svc)
                             services_involved.add(consumer_svc)
-                            queue.append((consumer_svc, topic, depth + 2))
+                            queue.append(
+                                (consumer_svc, f"handler:{sub['function']}", depth + 2)
+                            )
                             matched_consumer = True
 
                 if not matched_consumer:
@@ -431,6 +461,18 @@ class AdvancedTopologyImplementation:
 
     # ── Channel collectors ──────────────────────────────────────────────
 
+    @staticmethod
+    def _http_edge_matches_trigger(edge: dict, trigger: str) -> bool:
+        if trigger.startswith("handler:"):
+            return edge.get("source_endpoint_handler", "") == trigger[len("handler:") :]
+        method, separator, path = trigger.partition(" ")
+        if not separator:
+            path, method = trigger, ""
+        return (
+            (not method or edge.get("source_endpoint_method", "").upper() == method.upper())
+            and (not path or edge.get("source_endpoint_path", "") == path)
+        )
+
     def _collect_http_edges(self) -> dict[str, list[dict]]:
         """Collect HTTP cross-service edges from all repos."""
         from .cross_repo_impl import CrossRepoImplementation
@@ -443,6 +485,9 @@ class AdvancedTopologyImplementation:
             edges[e.source_service].append(
                 {
                     "source_function": e.source_function,
+                    "source_endpoint_method": e.source_endpoint_method,
+                    "source_endpoint_path": e.source_endpoint_path,
+                    "source_endpoint_handler": e.source_endpoint_handler,
                     "target_service": e.target_service,
                     "target_function": e.target_function,
                     "http_method": e.http_method,
@@ -459,7 +504,7 @@ class AdvancedTopologyImplementation:
         return DatabaseAccessCollector(self.repos).collect()
 
     def _collect_mq_channels(self) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
-        """Collect MQ producers and consumers from all services."""
+        """Collect MQ boundaries and retain their CodeGraph entry paths."""
         producers: dict[str, list[dict]] = defaultdict(list)
         consumers: dict[str, list[dict]] = defaultdict(list)
 
@@ -469,40 +514,15 @@ class AdvancedTopologyImplementation:
                 continue
             svc_name = repo["name"]
 
-            # Find producers
-            for mq_type, patterns in MQ_PRODUCER_PATTERNS:
-                for pat in patterns:
-                    with SQLiteCodeGraphRepository(db) as repository:
-                        rows = repository.mq_producer_calls(pat)
-                    for r in rows:
-                        # Extract topic from source code near the call
-                        topic = self._extract_topic_from_source(
-                            db,
-                            r["caller"],
-                            r.get("file_path"),
-                            r.get("call_line") or r.get("start_line"),
-                        )
-                        if not topic:
-                            # Fallback: look for topic constants in the function
-                            topic = self._extract_topic_from_function(db, r["caller"])
-                        producers[svc_name].append(
-                            {
-                                "mq_type": mq_type,
-                                "function": r["caller"],
-                                "topic": topic or pat.split(".")[-1],
-                                "evidence": {
-                                    "caller": f"{r.get('file_path', '')}:{r.get('call_line') or r.get('start_line', 0)}",
-                                    "callee": r.get("callee_name", ""),
-                                },
-                            }
-                        )
-
             # Find consumers
+            service_consumers: list[dict] = []
             for mq_type, patterns in MQ_CONSUMER_PATTERNS:
                 for pat in patterns:
                     with SQLiteCodeGraphRepository(db) as repository:
                         rows = repository.mq_consumers(pat)
                     for r in rows:
+                        if not r.get("decorators") and "::" not in r["qualified_name"]:
+                            continue
                         # Extract topic from decorator or function context
                         topic = self._extract_topic_from_decorator(r.get("decorators") or "")
                         if not topic:
@@ -511,19 +531,130 @@ class AdvancedTopologyImplementation:
                             )
                         if not topic:
                             topic = self._guess_topic(r["name"], mq_type)
-                        consumers[svc_name].append(
-                            {
-                                "mq_type": mq_type,
-                                "function": r["qualified_name"],
-                                "topic": topic,
-                                "evidence": {
-                                    "handler": f"{r.get('file_path', '')}:{r.get('start_line', 0)}",
-                                    "decorators": r.get("decorators") or "",
-                                },
-                            }
+                        item = {
+                            "node_id": r.get("node_id", ""),
+                            "mq_type": mq_type,
+                            "function": r["qualified_name"],
+                            "topic": topic,
+                            "evidence": {
+                                "handler": f"{r.get('file_path', '')}:{r.get('start_line', 0)}",
+                                "decorators": r.get("decorators") or "",
+                            },
+                        }
+                        service_consumers.append(item)
+                        consumers[svc_name].append(item)
+
+            roots = self._service_entry_roots(db, service_consumers)
+            with SQLiteCodeGraphRepository(db) as repository:
+                adjacency: dict[str, list[str]] = defaultdict(list)
+                for edge in repository.call_edges():
+                    adjacency[edge["source"]].append(edge["target"])
+                node_index = repository.call_node_index()
+
+            # Only publications reachable from an HTTP or message entry are
+            # eligible to create service dependencies.
+            seen_calls: set[tuple[str, str, int]] = set()
+            for mq_type, patterns in MQ_PRODUCER_PATTERNS:
+                for pat in patterns:
+                    with SQLiteCodeGraphRepository(db) as repository:
+                        rows = repository.mq_producer_calls(pat)
+                    for r in rows:
+                        call_key = (
+                            r["caller_node_id"],
+                            r["callee_node_id"],
+                            int(r.get("call_line") or 0),
                         )
+                        if call_key in seen_calls:
+                            continue
+                        seen_calls.add(call_key)
+                        contexts = self._reachable_entry_contexts(
+                            roots, r["caller_node_id"], adjacency
+                        )
+                        for root, path in contexts:
+                            topic = self._extract_topic_from_source(
+                                db,
+                                r["caller"],
+                                r.get("file_path"),
+                                r.get("call_line") or r.get("start_line"),
+                            ) or self._extract_topic_from_function(db, r["caller"])
+                            chain = [
+                                self._call_path_node(node_index, node_id)
+                                for node_id in path + [r["callee_node_id"]]
+                            ]
+                            producers[svc_name].append(
+                                {
+                                    "mq_type": mq_type,
+                                    "function": r["caller"],
+                                    "topic": topic or pat.split(".")[-1],
+                                    "source_entry_kind": root["kind"],
+                                    "source_endpoint_method": root.get("method", ""),
+                                    "source_endpoint_path": root.get("path", ""),
+                                    "source_endpoint_handler": root["handler"],
+                                    "call_chain": chain,
+                                    "evidence": {
+                                        "caller": f"{r.get('file_path', '')}:{r.get('call_line') or r.get('start_line', 0)}",
+                                        "callee": r.get("callee_name", ""),
+                                        "entry_kind": root["kind"],
+                                    },
+                                }
+                            )
 
         return dict(producers), dict(consumers)
+
+    @staticmethod
+    def _service_entry_roots(db_path: str, consumers: list[dict]) -> list[dict]:
+        from ...analysis.knowledge.api_contract import ApiContractExtractor
+
+        roots: list[dict] = []
+        with SQLiteCodeGraphRepository(db_path) as repository:
+            for endpoint in ApiContractExtractor(repository).extract().endpoints:
+                node = repository.function_node(endpoint.handler_name)
+                if node:
+                    roots.append(
+                        {
+                            "kind": "http",
+                            "method": endpoint.method,
+                            "path": endpoint.path,
+                            "handler": endpoint.handler_name,
+                            "node_id": node["id"],
+                        }
+                    )
+        roots.extend(
+            {
+                "kind": "message",
+                "method": item["mq_type"],
+                "path": item.get("topic", ""),
+                "handler": item["function"],
+                "node_id": item.get("node_id", ""),
+            }
+            for item in consumers
+            if item.get("node_id")
+        )
+        return roots
+
+    @staticmethod
+    def _reachable_entry_contexts(
+        roots: list[dict],
+        caller_id: str,
+        adjacency: dict[str, list[str]],
+        max_depth: int = 12,
+    ) -> list[tuple[dict, list[str]]]:
+        from .cross_repo_impl import CrossRepoImplementation
+
+        contexts = []
+        for root in roots:
+            paths = CrossRepoImplementation._shortest_paths_to_callers(
+                root["node_id"], adjacency, {caller_id}, max_depth
+            )
+            if caller_id in paths:
+                contexts.append((root, paths[caller_id]))
+        return contexts
+
+    @staticmethod
+    def _call_path_node(node_index: dict[str, dict], node_id: str) -> dict:
+        from .cross_repo_impl import CrossRepoImplementation
+
+        return CrossRepoImplementation._call_path_node(node_index, node_id)
 
     def _extract_topic_from_source(
         self, db_path: str, caller_qname: str, file_path: str | None, line: int | None
@@ -562,6 +693,12 @@ class AdvancedTopologyImplementation:
             # Filter out things that are clearly not topic names
             if not candidate.startswith(("http", "https", "//", "./", "../")) and "." in candidate:
                 return candidate
+
+        # Redis channels/streams and some queues commonly use a simple name.
+        call_line = lines[line - 1]
+        m = re.search(r"\(\s*['\"]([\w:./-]+)['\"]", call_line)
+        if m and not m.group(1).startswith(("http://", "https://")):
+            return m.group(1)
 
         # Pattern 2: f-string topic — f"{prefix}.created" or f"order.{event}"
         m = re.search(r"""f['\"][{]?\w+[}]?\.[\w.{}]+['\"]""", context)

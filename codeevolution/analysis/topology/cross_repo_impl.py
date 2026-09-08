@@ -1,17 +1,18 @@
 """Cross-repo microservice topology — stitch services into a unified graph.
 
 P0 capabilities:
-  1. Extract outbound HTTP calls from each service (via CodeGraph edges)
-  2. Match outbound URLs against inbound route templates across services
-  3. Build unified service dependency topology
-  4. Trace end-to-end call chains across service boundaries
-  5. Cross-service change impact analysis
+  1. Traverse CodeGraph calls from inbound endpoint handlers
+  2. Extract endpoint-reachable outbound HTTP calls
+  3. Match outbound URLs against inbound route templates across services
+  4. Build unified service dependency topology
+  5. Trace end-to-end call chains across service boundaries
+  6. Cross-service change impact analysis
 
 All reads from each service's `.codegraph/codegraph.db` SQLite.
 """
 
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -246,6 +247,10 @@ class OutboundCall:
     http_method: str | None  # GET/POST/PUT/DELETE or None (inferred from context)
     url_or_pattern: str  # raw URL string from source if extractable
     callee_name: str  # the HTTP client function name
+    source_endpoint_method: str = ""
+    source_endpoint_path: str = ""
+    source_endpoint_handler: str = ""
+    call_chain: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -267,6 +272,52 @@ class CrossServiceEdge:
     confidence: float = 1.0
     evidence: dict = field(default_factory=dict)
     rule_version: str = "http-static-v1"
+    source_endpoint_method: str = ""
+    source_endpoint_path: str = ""
+    source_endpoint_handler: str = ""
+    call_chain: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class MessageDependencyEdge:
+    """An asynchronous producer-to-consumer service dependency."""
+
+    source_service: str
+    source_function: str
+    target_service: str
+    target_function: str
+    broker_type: str
+    channel: str
+    source_endpoint_method: str = ""
+    source_endpoint_path: str = ""
+    source_endpoint_handler: str = ""
+    source_entry_kind: str = "http"
+    call_chain: list[dict] = field(default_factory=list)
+    confidence: float = 0.9
+    match_rule: str = "message-channel-name"
+    evidence: dict = field(default_factory=dict)
+    rule_version: str = "message-static-v1"
+
+
+@dataclass
+class ResourceDependencyEdge:
+    """A service-to-infrastructure dependency, not a service call."""
+
+    source_service: str
+    source_function: str
+    resource_type: str
+    resource_id: str
+    operation: str
+    resource_key: str = ""
+    source_endpoint_method: str = ""
+    source_endpoint_path: str = ""
+    source_endpoint_handler: str = ""
+    source_entry_kind: str = "http"
+    call_chain: list[dict] = field(default_factory=list)
+    confidence: float = 0.8
+    match_rule: str = "resource-client-call"
+    evidence: dict = field(default_factory=dict)
+    rule_version: str = "resource-static-v1"
 
 
 @dataclass
@@ -294,6 +345,9 @@ class UnifiedTopology:
     dependency_graph: dict[str, list[str]] = field(default_factory=dict)
     # service pairs without cross-service edges but with matching URL patterns
     potential_edges: list[dict] = field(default_factory=list)
+    message_edges: list[MessageDependencyEdge] = field(default_factory=list)
+    resource_edges: list[ResourceDependencyEdge] = field(default_factory=list)
+    resource_dependency_graph: dict[str, list[str]] = field(default_factory=dict)
 
 
 # ── Cross-repo analyzer ────────────────────────────────────────────────
@@ -358,28 +412,33 @@ class CrossRepoImplementation:
                 continue
             self.cache_stats["misses"] += 1
 
-            svc = self._analyze_service(repo["name"], repo["path"], db_path)
-            self._merge_service(services_by_name, svc)
-
-            outbound = self._extract_outbound_calls(repo["name"], db_path)
-            all_outbound.extend(outbound)
-
             # We'll collect inbound APIs from each service for matching
             from ...analysis.knowledge.api_contract import ApiContractExtractor
             from ...infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 
             with SQLiteCodeGraphRepository(db_path) as reader:
                 api = ApiContractExtractor(reader).extract()
-            inbound = [
-                {
-                    "method": ep.method,
-                    "path": ep.path,
-                    "handler": ep.handler_name,
-                    "file": ep.file_path,
-                    "line": ep.line,
-                }
-                for ep in api.endpoints
-            ]
+                inbound = []
+                for ep in api.endpoints:
+                    handler_node = (
+                        reader.function_node(ep.handler_name) if ep.handler_name else None
+                    )
+                    inbound.append(
+                        {
+                            "method": ep.method,
+                            "path": ep.path,
+                            "handler": ep.handler_name,
+                            "file": ep.file_path,
+                            "line": ep.line,
+                            "node_id": handler_node["id"] if handler_node else "",
+                        }
+                    )
+
+            outbound = self._extract_outbound_calls(repo["name"], db_path, inbound)
+            all_outbound.extend(outbound)
+
+            svc = self._analyze_service(repo["name"], repo["path"], db_path)
+            self._merge_service(services_by_name, svc)
             all_inbound.setdefault(repo["name"], []).extend(inbound)
             self._service_cache[cache_key] = (
                 fingerprint,
@@ -391,11 +450,23 @@ class CrossRepoImplementation:
         services = list(services_by_name.values())
 
         # Match outbound calls to inbound APIs
-        cross_edges = self._match_cross_edges(all_outbound, all_inbound)
+        cross_edges, ambiguous = self._match_cross_edges(all_outbound, all_inbound)
+
+        # Message channels are asynchronous service boundaries. Redis cache/data
+        # access remains a resource dependency; Redis Pub/Sub becomes a message
+        # edge only when a matching subscriber exists.
+        message_edges, resource_edges = self._collect_non_http_dependencies()
+        resource_graph: dict[str, list[str]] = defaultdict(list)
+        for edge in resource_edges:
+            if edge.resource_id not in resource_graph[edge.source_service]:
+                resource_graph[edge.source_service].append(edge.resource_id)
 
         # Build dependency graph
         dep_graph: dict[str, list[str]] = defaultdict(list)
         for edge in cross_edges:
+            if edge.target_service not in dep_graph[edge.source_service]:
+                dep_graph[edge.source_service].append(edge.target_service)
+        for edge in message_edges:
             if edge.target_service not in dep_graph[edge.source_service]:
                 dep_graph[edge.source_service].append(edge.target_service)
 
@@ -403,16 +474,115 @@ class CrossRepoImplementation:
         for svc in services:
             svc.apis = all_inbound.get(svc.name, [])
             svc.dependencies = dep_graph.get(svc.name, [])
+            svc.outbound_calls = [
+                {
+                    "source_endpoint_method": call.source_endpoint_method,
+                    "source_endpoint_path": call.source_endpoint_path,
+                    "source_endpoint_handler": call.source_endpoint_handler,
+                    "caller_function": call.caller_function,
+                    "caller_file": call.caller_file,
+                    "caller_line": call.caller_line,
+                    "http_method": call.http_method,
+                    "url": call.url_or_pattern,
+                    "call_chain": call.call_chain,
+                }
+                for call in all_outbound
+                if call.caller_service == svc.name
+            ]
 
         # Find potential unmatched edges
-        potential = self._find_potential_edges(all_outbound, all_inbound, cross_edges)
+        potential = self._find_potential_edges(
+            all_outbound, all_inbound, cross_edges, ambiguous
+        )
 
         return UnifiedTopology(
             services=services,
             cross_edges=cross_edges,
             dependency_graph=dict(dep_graph),
             potential_edges=potential,
+            message_edges=message_edges,
+            resource_edges=resource_edges,
+            resource_dependency_graph=dict(resource_graph),
         )
+
+    def _collect_non_http_dependencies(
+        self,
+    ) -> tuple[list[MessageDependencyEdge], list[ResourceDependencyEdge]]:
+        """Collect endpoint-rooted MQ/Redis edges through CodeGraph."""
+        from .advanced_impl import AdvancedTopologyImplementation
+        from .database import RedisDependencyCollector
+
+        repositories = [
+            {**member, "name": service["name"]}
+            for service in self.repos
+            for member in service.get("repositories", [service])
+        ]
+        collector = AdvancedTopologyImplementation(repositories)
+        producers, consumers = collector._collect_mq_channels()
+        message_edges: list[MessageDependencyEdge] = []
+        emitted: set[tuple[str, str, str, str, str]] = set()
+        for source_service, publications in producers.items():
+            for publication in publications:
+                channel = publication.get("topic", "")
+                broker = publication["mq_type"]
+                for target_service, subscriptions in consumers.items():
+                    if target_service == source_service:
+                        continue
+                    for subscription in subscriptions:
+                        if subscription["mq_type"] != broker or not self._message_channels_match(
+                            channel, subscription.get("topic", "")
+                        ):
+                            continue
+                        key = (
+                            source_service,
+                            publication.get("source_endpoint_handler", ""),
+                            broker,
+                            channel,
+                            target_service,
+                        )
+                        if key in emitted:
+                            continue
+                        emitted.add(key)
+                        message_edges.append(
+                            MessageDependencyEdge(
+                                source_service=source_service,
+                                source_function=publication["function"],
+                                target_service=target_service,
+                                target_function=subscription["function"],
+                                broker_type=broker,
+                                channel=channel,
+                                source_endpoint_method=publication.get(
+                                    "source_endpoint_method", ""
+                                ),
+                                source_endpoint_path=publication.get("source_endpoint_path", ""),
+                                source_endpoint_handler=publication.get(
+                                    "source_endpoint_handler", ""
+                                ),
+                                source_entry_kind=publication.get("source_entry_kind", "http"),
+                                call_chain=publication.get("call_chain", []),
+                                confidence=0.9 if channel else 0.5,
+                                evidence={
+                                    "producer": publication.get("evidence", {}),
+                                    "consumer": subscription.get("evidence", {}),
+                                },
+                            )
+                        )
+
+        resource_edges = RedisDependencyCollector(repositories).collect()
+        return message_edges, resource_edges
+
+    @staticmethod
+    def _message_channels_match(produced: str, consumed: str) -> bool:
+        """High-confidence channel matching for persisted dependencies."""
+        if not produced or not consumed:
+            return False
+        left = produced.lower().strip().replace("-", "").replace("_", "")
+        right = consumed.lower().strip().replace("-", "").replace("_", "")
+        if "*" in left or "*" in right:
+            pattern = re.escape(left).replace(r"\*", ".*")
+            reverse = re.escape(right).replace(r"\*", ".*")
+            return bool(re.fullmatch(pattern, right) or re.fullmatch(reverse, left))
+        return left == right
 
     @staticmethod
     def _merge_service(services: dict[str, ServiceNode], incoming: ServiceNode) -> None:
@@ -493,6 +663,8 @@ class CrossRepoImplementation:
             "kafka": ("kafka",),
             "rabbitmq": ("rabbitmq", "amqp", "pika"),
             "nats": ("nats", "stan"),
+            "redis_pubsub": ("redis.publish", "redis.subscribe"),
+            "redis_streams": ("redis.xadd", "redis.xreadgroup"),
             "sqs": ("sqs",),
             "pubsub": ("pubsub",),
             "celery": ("celery",),
@@ -508,41 +680,131 @@ class CrossRepoImplementation:
 
     # ── Outbound HTTP call extraction ───────────────────────────────────
 
-    def _extract_outbound_calls(self, service_name: str, db_path: str) -> list[OutboundCall]:
-        """Extract all outbound HTTP calls from a service's call graph."""
-        results: list[OutboundCall] = []
+    def _extract_outbound_calls(
+        self,
+        service_name: str,
+        db_path: str,
+        inbound: list[dict],
+        max_depth: int = 12,
+    ) -> list[OutboundCall]:
+        """Extract HTTP calls reachable from an inbound endpoint handler.
 
-        # Get the language pattern set for this service
-        # First detect language
+        CodeGraph's ``calls`` edges are the authority for reachability.  A
+        client call that exists in the repository but cannot be reached from a
+        resolved HTTP entry handler is deliberately omitted from the service
+        dependency graph; it may belong to a job, test, or dead code.
+        """
         with SQLiteCodeGraphRepository(db_path) as repository:
             language = repository.primary_language()
-        patterns = self.rules.http_client_callers.get(language, [])
+            patterns = self.rules.http_client_callers.get(language, [])
+            if not patterns:
+                return []
 
-        if not patterns:
-            return results
-
-        # Find all call edges where the callee matches an HTTP client pattern
-        for pattern, method in patterns:
-            with SQLiteCodeGraphRepository(db_path) as repository:
-                rows = repository.http_client_calls(pattern)
-
-            for r in rows:
-                # Try to extract URL from the call context
-                url = self._extract_url_from_context(db_path, r["caller_qname"], r["call_line"])
-
-                results.append(
-                    OutboundCall(
-                        caller_service=service_name,
-                        caller_function=r["caller_qname"],
-                        caller_file=r["file_path"],
-                        caller_line=r["caller_line"],
-                        http_method=method,
-                        url_or_pattern=url or "",
-                        callee_name=r["callee_name"],
+            # A single call can match more than one configured pattern. Keep
+            # the first (most specific) rule and identify the call by graph
+            # node IDs plus source line.
+            calls: dict[tuple[str, str, int], tuple[dict, str | None]] = {}
+            for pattern, method in patterns:
+                for row in repository.http_client_calls(pattern):
+                    key = (
+                        row["caller_node_id"],
+                        row["callee_node_id"],
+                        int(row.get("call_line") or 0),
                     )
-                )
+                    calls.setdefault(key, (row, method))
+            if not calls:
+                return []
 
+            adjacency: dict[str, list[str]] = defaultdict(list)
+            for edge in repository.call_edges():
+                adjacency[edge["source"]].append(edge["target"])
+            node_index = repository.call_node_index()
+
+        calls_by_caller: dict[str, list[tuple[dict, str | None]]] = defaultdict(list)
+        for row, method in calls.values():
+            calls_by_caller[row["caller_node_id"]].append((row, method))
+
+        results: list[OutboundCall] = []
+        emitted: set[tuple[str, str, str, str, int]] = set()
+        for endpoint in inbound:
+            root = endpoint.get("node_id") or ""
+            if not root:
+                continue
+            paths = self._shortest_paths_to_callers(
+                root, adjacency, set(calls_by_caller), max_depth
+            )
+            for caller_id, path in paths.items():
+                for row, method in calls_by_caller[caller_id]:
+                    key = (
+                        root,
+                        endpoint.get("path") or "",
+                        row["caller_node_id"],
+                        row["callee_node_id"],
+                        int(row.get("call_line") or 0),
+                    )
+                    if key in emitted:
+                        continue
+                    emitted.add(key)
+                    url = self._extract_url_from_context(
+                        db_path, row["caller_qname"], row["call_line"]
+                    )
+                    chain_ids = path + [row["callee_node_id"]]
+                    chain = [
+                        self._call_path_node(node_index, node_id)
+                        for node_id in chain_ids
+                    ]
+                    results.append(
+                        OutboundCall(
+                            caller_service=service_name,
+                            caller_function=row["caller_qname"],
+                            caller_file=row["file_path"],
+                            caller_line=row["caller_line"],
+                            http_method=method,
+                            url_or_pattern=url or "",
+                            callee_name=row["callee_name"],
+                            source_endpoint_method=endpoint.get("method") or "",
+                            source_endpoint_path=endpoint.get("path") or "",
+                            source_endpoint_handler=endpoint.get("handler") or "",
+                            call_chain=chain,
+                        )
+                    )
         return results
+
+    @staticmethod
+    def _shortest_paths_to_callers(
+        root: str,
+        adjacency: dict[str, list[str]],
+        targets: set[str],
+        max_depth: int,
+    ) -> dict[str, list[str]]:
+        """Return a shortest CodeGraph call path from one endpoint to each target."""
+        paths = {root: [root]}
+        queue = deque([(root, 0)])
+        found: dict[str, list[str]] = {}
+        while queue:
+            current, depth = queue.popleft()
+            if current in targets:
+                found[current] = paths[current]
+            if depth >= max_depth:
+                continue
+            for callee in adjacency.get(current, []):
+                if callee in paths:
+                    continue
+                paths[callee] = paths[current] + [callee]
+                queue.append((callee, depth + 1))
+        return found
+
+    @staticmethod
+    def _call_path_node(node_index: dict[str, dict], node_id: str) -> dict:
+        node = node_index.get(node_id, {})
+        return {
+            "node_id": node_id,
+            "name": node.get("name") or node_id,
+            "qualified_name": node.get("qualified_name") or "",
+            "kind": node.get("kind") or "",
+            "file": node.get("file_path") or "",
+            "line": int(node.get("start_line") or 0),
+        }
 
     def _extract_url_from_context(
         self, db_path: str, caller_qname: str, call_line: int | None
@@ -560,9 +822,10 @@ class CrossRepoImplementation:
         self,
         outbound: list[OutboundCall],
         inbound: dict[str, list[dict]],
-    ) -> list[CrossServiceEdge]:
-        """Match outbound HTTP calls to inbound API endpoints across services."""
+    ) -> tuple[list[CrossServiceEdge], list[dict]]:
+        """Match outbound calls, retaining ambiguous endpoint candidates."""
         edges: list[CrossServiceEdge] = []
+        ambiguous: list[dict] = []
 
         for call in outbound:
             url = call.url_or_pattern
@@ -576,10 +839,22 @@ class CrossRepoImplementation:
             if not path:
                 continue
 
+            host = self._extract_host(url)
+            host_target = self._known_service_for_host(host) if host else ""
+            candidates: list[tuple[float, str, dict]] = []
+
+            # An explicit host that is not a registered service is external.
+            # Do not manufacture an internal dependency merely because its
+            # path happens to resemble one of our APIs.
+            if host and not host_target:
+                continue
+
             # Try to match against each service's inbound APIs
             for svc_name, apis in inbound.items():
                 if svc_name == call.caller_service:
                     continue  # skip self-calls
+                if host_target and svc_name != host_target:
+                    continue
 
                 for api in apis:
                     api_method = api.get("method", "")
@@ -593,32 +868,108 @@ class CrossRepoImplementation:
                     if self._paths_match(path, api_path):
                         exact_path = path.rstrip("/").lower() == api_path.rstrip("/").lower()
                         confidence = 1.0 if exact_path and method else 0.9 if method else 0.8
-                        edges.append(
-                            CrossServiceEdge(
-                                source_service=call.caller_service,
-                                source_function=call.caller_function,
-                                source_file=call.caller_file,
-                                source_line=call.caller_line,
-                                target_service=svc_name,
-                                target_function=api.get("handler", ""),
-                                target_file=api.get("file", ""),
-                                target_line=api.get("line", 0),
-                                http_method=api_method or method or "UNKNOWN",
-                                url_pattern=api_path,
-                                raw_url=url,
-                                confidence=confidence,
-                                evidence={
-                                    "caller": f"{call.caller_file}:{call.caller_line}",
-                                    "handler": f"{api.get('file', '')}:{api.get('line', 0)}",
-                                    "raw_url": url,
-                                    "normalized_path": path,
-                                },
-                                rule_version=self.rules.version,
-                            )
-                        )
-                        break  # first match wins
+                        if host_target == svc_name:
+                            confidence = min(1.0, confidence + 0.05)
+                        candidates.append((confidence, svc_name, api))
 
-        return edges
+            if not candidates:
+                continue
+            candidates = list(
+                {
+                    (
+                        score,
+                        service,
+                        api.get("method", ""),
+                        api.get("path", ""),
+                        api.get("handler", ""),
+                    ): (score, service, api)
+                    for score, service, api in candidates
+                }.values()
+            )
+            best_score = max(item[0] for item in candidates)
+            best = [item for item in candidates if item[0] == best_score]
+            if len(best) != 1:
+                ambiguous.append(
+                    self._ambiguous_dependency(call, path, host, best)
+                )
+                continue
+
+            confidence, svc_name, api = best[0]
+            api_method = api.get("method", "")
+            edges.append(
+                CrossServiceEdge(
+                    source_service=call.caller_service,
+                    source_function=call.caller_function,
+                    source_file=call.caller_file,
+                    source_line=call.caller_line,
+                    target_service=svc_name,
+                    target_function=api.get("handler", ""),
+                    target_file=api.get("file", ""),
+                    target_line=api.get("line", 0),
+                    http_method=api_method or method or "UNKNOWN",
+                    url_pattern=api.get("path", ""),
+                    raw_url=url,
+                    confidence=confidence,
+                    evidence={
+                        "entry_endpoint": (
+                            f"{call.source_endpoint_method} {call.source_endpoint_path}"
+                        ).strip(),
+                        "caller": f"{call.caller_file}:{call.caller_line}",
+                        "handler": f"{api.get('file', '')}:{api.get('line', 0)}",
+                        "raw_url": url,
+                        "normalized_path": path,
+                        "host": host,
+                        "call_chain": call.call_chain,
+                    },
+                    rule_version=self.rules.version,
+                    source_endpoint_method=call.source_endpoint_method,
+                    source_endpoint_path=call.source_endpoint_path,
+                    source_endpoint_handler=call.source_endpoint_handler,
+                    call_chain=call.call_chain,
+                )
+            )
+
+        return edges, ambiguous
+
+    def _ambiguous_dependency(
+        self,
+        call: OutboundCall,
+        path: str,
+        host: str,
+        candidates: list[tuple[float, str, dict]],
+    ) -> dict:
+        return {
+            "kind": "ambiguous",
+            "source_service": call.caller_service,
+            "source_endpoint_method": call.source_endpoint_method,
+            "source_endpoint_path": call.source_endpoint_path,
+            "source_endpoint_handler": call.source_endpoint_handler,
+            "source_function": call.caller_function,
+            "source_file": call.caller_file,
+            "source_line": call.caller_line,
+            "http_method": call.http_method,
+            "url": call.url_or_pattern,
+            "suspected_target": "",
+            "reason": "Multiple registered endpoints matched with equal confidence",
+            "confidence": candidates[0][0] if candidates else 0.0,
+            "candidates": [
+                {
+                    "service": service,
+                    "method": api.get("method", ""),
+                    "path": api.get("path", ""),
+                    "handler": api.get("handler", ""),
+                    "confidence": score,
+                }
+                for score, service, api in candidates
+            ],
+            "evidence": {
+                "host": host,
+                "normalized_path": path,
+                "call_chain": call.call_chain,
+            },
+            "match_rule": "ambiguous-method+path-template",
+            "rule_version": self.rules.version,
+        }
 
     @staticmethod
     def _extract_path(url: str) -> str:
@@ -647,41 +998,119 @@ class CrossRepoImplementation:
         outbound: list[OutboundCall],
         inbound: dict[str, list[dict]],
         matched: list[CrossServiceEdge],
+        ambiguous: list[dict] | None = None,
     ) -> list[dict]:
         """Find outbound calls that COULD be cross-service but didn't match.
 
         Useful for surfacing calls that might be to external services
         or where URL extraction failed to produce a matchable pattern.
         """
-        matched_callers = {(e.source_service, e.source_function, e.raw_url) for e in matched}
+        del inbound  # retained for compatibility with older internal callers
+        matched_callers = {
+            (
+                e.source_service,
+                e.source_endpoint_path,
+                e.source_function,
+                e.raw_url,
+            )
+            for e in matched
+        }
 
-        potential = []
+        potential = list(ambiguous or [])
         for call in outbound:
-            key = (call.caller_service, call.caller_function, call.url_or_pattern)
+            key = (
+                call.caller_service,
+                call.source_endpoint_path,
+                call.caller_function,
+                call.url_or_pattern,
+            )
             if key in matched_callers:
+                continue
+
+            if any(
+                item.get("source_service") == call.caller_service
+                and item.get("source_endpoint_path") == call.source_endpoint_path
+                and item.get("source_function") == call.caller_function
+                and item.get("url") == call.url_or_pattern
+                for item in potential
+            ):
                 continue
 
             url = call.url_or_pattern
             if not url:
+                potential.append(
+                    {
+                        "kind": "unresolved",
+                        "source_service": call.caller_service,
+                        "source_endpoint_method": call.source_endpoint_method,
+                        "source_endpoint_path": call.source_endpoint_path,
+                        "source_endpoint_handler": call.source_endpoint_handler,
+                        "source_function": call.caller_function,
+                        "source_file": call.caller_file,
+                        "source_line": call.caller_line,
+                        "http_method": call.http_method,
+                        "url": "",
+                        "suspected_target": "",
+                        "reason": "HTTP client call is endpoint-reachable but its URL could not be resolved",
+                        "confidence": 0.0,
+                        "evidence": {"call_chain": call.call_chain},
+                        "match_rule": "endpoint-reachability-only",
+                        "rule_version": self.rules.version,
+                    }
+                )
                 continue
 
             # Guess target service from URL hostname
             host = self._extract_host(url)
             if host:
+                known_target = self._known_service_for_host(host)
                 potential.append(
                     {
+                        "kind": "internal_candidate" if known_target else "external",
                         "source_service": call.caller_service,
+                        "source_endpoint_method": call.source_endpoint_method,
+                        "source_endpoint_path": call.source_endpoint_path,
+                        "source_endpoint_handler": call.source_endpoint_handler,
                         "source_function": call.caller_function,
                         "source_file": call.caller_file,
                         "source_line": call.caller_line,
                         "http_method": call.http_method,
                         "url": url,
-                        "suspected_target": host,
-                        "reason": "URL hostname matched a known service name"
-                        if any(r["name"] in host for r in self.repos)
+                        "suspected_target": known_target or host,
+                        "reason": "URL hostname identifies a registered service, but no endpoint matched"
+                        if known_target
                         else "Possible external service",
-                        "confidence": 0.35 if any(r["name"] in host for r in self.repos) else 0.1,
+                        "confidence": 0.35 if known_target else 0.1,
+                        "evidence": {
+                            "host": host,
+                            "normalized_path": self._extract_path(url),
+                            "call_chain": call.call_chain,
+                        },
                         "match_rule": "hostname-heuristic",
+                        "rule_version": self.rules.version,
+                    }
+                )
+            else:
+                potential.append(
+                    {
+                        "kind": "unresolved",
+                        "source_service": call.caller_service,
+                        "source_endpoint_method": call.source_endpoint_method,
+                        "source_endpoint_path": call.source_endpoint_path,
+                        "source_endpoint_handler": call.source_endpoint_handler,
+                        "source_function": call.caller_function,
+                        "source_file": call.caller_file,
+                        "source_line": call.caller_line,
+                        "http_method": call.http_method,
+                        "url": url,
+                        "suspected_target": "",
+                        "reason": "Endpoint-reachable URL path did not match a registered endpoint",
+                        "confidence": 0.0,
+                        "evidence": {
+                            "normalized_path": self._extract_path(url),
+                            "call_chain": call.call_chain,
+                        },
+                        "match_rule": "unmatched-path",
                         "rule_version": self.rules.version,
                     }
                 )
@@ -693,6 +1122,33 @@ class CrossRepoImplementation:
         """Extract hostname from a URL string."""
         m = re.search(r'://([^/\'",;?#]+)', url)
         return m.group(1) if m else ""
+
+    def _known_service_for_host(self, host: str) -> str:
+        """Resolve a URL host to a registered logical service without substring guesses."""
+        host_name = host.rsplit("@", 1)[-1].split(":", 1)[0].lower().replace("_", "-")
+        host_labels = {host_name, host_name.split(".", 1)[0]}
+        matches = []
+        for service in self.repos:
+            aliases = [service.get("name", "")]
+            aliases.extend(
+                member.get("name", "")
+                for member in service.get("repositories", [])
+            )
+            normalized = set()
+            for alias in aliases:
+                value = alias.lower().replace("_", "-")
+                if not value:
+                    continue
+                normalized.add(value)
+                if value.endswith("-service"):
+                    normalized.add(value[: -len("-service")])
+                elif value.endswith("-svc"):
+                    normalized.add(value[: -len("-svc")])
+                else:
+                    normalized.update({f"{value}-service", f"{value}-svc"})
+            if normalized & host_labels:
+                matches.append(service.get("name", ""))
+        return matches[0] if len(set(matches)) == 1 else ""
 
     # ── Impact analysis ─────────────────────────────────────────────────
 
@@ -797,7 +1253,9 @@ class CrossRepoImplementation:
         lines = []
         lines.append(f"{'=' * 70}")
         lines.append(
-            f"Unified Topology: {len(t.services)} services, {len(t.cross_edges)} cross-service edges"
+            f"Unified Topology: {len(t.services)} services, "
+            f"{len(t.cross_edges)} HTTP edges, {len(t.message_edges)} message edges, "
+            f"{len(t.resource_edges)} resource edges"
         )
         lines.append(f"{'=' * 70}")
 
@@ -828,13 +1286,34 @@ class CrossRepoImplementation:
         if t.cross_edges:
             lines.append(f"\nCross-Service Edges ({len(t.cross_edges)}):")
             for e in t.cross_edges[:30]:
+                source_endpoint = (
+                    f"{e.source_endpoint_method} {e.source_endpoint_path}"
+                    if e.source_endpoint_path
+                    else e.source_function.split("::")[-1]
+                )
                 lines.append(
-                    f"  {e.source_service}::{e.source_function.split('::')[-1]}"
+                    f"  {e.source_service}::{source_endpoint}"
                     f"  ──[{e.http_method} {e.url_pattern}]──→"
                     f"  {e.target_service}::{e.target_function.split('::')[-1]}"
                 )
             if len(t.cross_edges) > 30:
                 lines.append(f"  ... and {len(t.cross_edges) - 30} more")
+
+        if t.message_edges:
+            lines.append(f"\nMessage Edges ({len(t.message_edges)}):")
+            for edge in t.message_edges[:30]:
+                lines.append(
+                    f"  {edge.source_service} ──[{edge.broker_type}:{edge.channel}]──→ "
+                    f"{edge.target_service}::{edge.target_function.split('::')[-1]}"
+                )
+
+        if t.resource_edges:
+            lines.append(f"\nResource Edges ({len(t.resource_edges)}):")
+            for edge in t.resource_edges[:30]:
+                key = f" key={edge.resource_key}" if edge.resource_key else ""
+                lines.append(
+                    f"  {edge.source_service} ──[{edge.operation}{key}]──→ {edge.resource_id}"
+                )
 
         # Potential edges
         if t.potential_edges:

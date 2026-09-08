@@ -852,6 +852,18 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
     def call_edges(self) -> list[dict[str, Any]]:
         return self.query("SELECT source, target FROM edges WHERE kind = 'calls'")
 
+    def call_node_index(self) -> dict[str, dict[str, Any]]:
+        """Return node details used to explain endpoint-rooted call paths."""
+        rows = self.query(
+            """SELECT id, name, qualified_name, kind, file_path, start_line
+               FROM nodes WHERE id IN (
+                   SELECT source FROM edges WHERE kind = 'calls'
+                   UNION
+                   SELECT target FROM edges WHERE kind = 'calls'
+               )"""
+        )
+        return {row["id"]: row for row in rows}
+
     def layer_call_edges(self) -> list[dict[str, Any]]:
         return self.query(
             """SELECT n1.file_path AS source_file, n1.name AS source_name,
@@ -917,7 +929,9 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
 
     def database_call_candidates(self) -> list[dict[str, Any]]:
         return self.query(
-            """SELECT DISTINCT caller.qualified_name AS function,
+            """SELECT DISTINCT caller.id AS caller_node_id, target.id AS callee_node_id,
+                      caller.qualified_name AS function, caller.file_path,
+                      caller.start_line, e.line AS call_line,
                       target.qualified_name AS target, target.name, target.signature, e.metadata
                FROM edges e JOIN nodes caller ON caller.id=e.source
                JOIN nodes target ON target.id=e.target WHERE e.kind='calls'"""
@@ -935,7 +949,8 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
 
     def http_client_calls(self, pattern: str) -> list[dict[str, Any]]:
         return self.query(
-            """SELECT n1.name AS caller_name, n1.qualified_name AS caller_qname,
+            """SELECT n1.id AS caller_node_id, n2.id AS callee_node_id,
+                      n1.name AS caller_name, n1.qualified_name AS caller_qname,
                       n1.file_path, n1.start_line AS caller_line, n2.name AS callee_name,
                       e.line AS call_line FROM edges e
                JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
@@ -965,7 +980,8 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
 
     def mq_producer_calls(self, pattern: str) -> list[dict[str, Any]]:
         return self.query(
-            """SELECT n1.qualified_name AS caller, n1.name, n1.file_path, n1.start_line,
+            """SELECT n1.id AS caller_node_id, n2.id AS callee_node_id,
+                      n1.qualified_name AS caller, n1.name, n1.file_path, n1.start_line,
                       e.line AS call_line, n2.name AS callee_name FROM edges e
                JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
                WHERE e.kind = 'calls' AND n2.name LIKE ?""",
@@ -975,10 +991,14 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
     def mq_consumers(self, pattern: str) -> list[dict[str, Any]]:
         wildcard = f"%{pattern}%"
         return self.query(
-            """SELECT n1.qualified_name, n1.name, n1.decorators, n1.file_path, n1.start_line
-               FROM nodes n1 WHERE n1.kind IN ('function', 'method')
-               AND (n1.name LIKE ? OR n1.decorators LIKE ?)""",
-            [wildcard, wildcard],
+            """SELECT DISTINCT n1.id AS node_id, n1.qualified_name, n1.name,
+                      n1.decorators, n1.file_path, n1.start_line
+               FROM nodes n1
+               LEFT JOIN edges e ON e.source = n1.id AND e.kind = 'calls'
+               LEFT JOIN nodes target ON target.id = e.target
+               WHERE n1.kind IN ('function', 'method')
+               AND (n1.name LIKE ? OR n1.decorators LIKE ? OR target.name LIKE ?)""",
+            [wildcard, wildcard, wildcard],
         )
 
     def topic_candidate_nodes(self, file_path: str) -> list[dict[str, Any]]:

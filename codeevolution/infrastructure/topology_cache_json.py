@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .registry_json import atomic_write_json
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 
 
 class TopologyCache:

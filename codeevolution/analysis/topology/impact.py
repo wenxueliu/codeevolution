@@ -19,6 +19,16 @@ class ImpactAnalyzer:
             for edge in topology.cross_edges
             if edge.source_service == service or edge.target_service == service
         ]
+        affected_messages = [
+            edge
+            for edge in getattr(topology, "message_edges", [])
+            if edge.source_service == service or edge.target_service == service
+        ]
+        affected_resources = [
+            edge
+            for edge in getattr(topology, "resource_edges", [])
+            if edge.source_service == service
+        ]
         return {
             "service": service,
             "upstream_impact": upstream,
@@ -29,7 +39,41 @@ class ImpactAnalyzer:
                     "to": f"{edge.target_service}::{edge.target_function}",
                     "method": edge.http_method,
                     "url": edge.url_pattern,
+                    "source_endpoint_method": getattr(edge, "source_endpoint_method", ""),
+                    "source_endpoint_path": getattr(edge, "source_endpoint_path", ""),
+                    "call_chain": getattr(edge, "call_chain", []),
+                    "confidence": edge.confidence,
+                    "evidence": edge.evidence,
                 }
                 for edge in affected
+            ],
+            "affected_message_edges": [
+                {
+                    "from": f"{edge.source_service}::{edge.source_function}",
+                    "to": f"{edge.target_service}::{edge.target_function}",
+                    "broker_type": edge.broker_type,
+                    "channel": edge.channel,
+                    "source_endpoint_method": edge.source_endpoint_method,
+                    "source_endpoint_path": edge.source_endpoint_path,
+                    "call_chain": edge.call_chain,
+                    "confidence": edge.confidence,
+                    "evidence": edge.evidence,
+                }
+                for edge in affected_messages
+            ],
+            "affected_resource_edges": [
+                {
+                    "from": f"{edge.source_service}::{edge.source_function}",
+                    "to": edge.resource_id,
+                    "resource_type": edge.resource_type,
+                    "operation": edge.operation,
+                    "resource_key": edge.resource_key,
+                    "source_endpoint_method": edge.source_endpoint_method,
+                    "source_endpoint_path": edge.source_endpoint_path,
+                    "call_chain": edge.call_chain,
+                    "confidence": edge.confidence,
+                    "evidence": edge.evidence,
+                }
+                for edge in affected_resources
             ],
         }

@@ -54,6 +54,9 @@ def test_legacy_dto_contracts_are_stable():
             "cross_edges",
             "dependency_graph",
             "potential_edges",
+            "message_edges",
+            "resource_edges",
+            "resource_dependency_graph",
         ],
         p2_advanced.FlowDiagram: [
             "entry_service",

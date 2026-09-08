@@ -4,7 +4,9 @@ from .analysis.topology.cross_repo_impl import (
     HTTP_CLIENT_CALLERS,
     CrossRepoImplementation,
     CrossServiceEdge,
+    MessageDependencyEdge,
     OutboundCall,
+    ResourceDependencyEdge,
     ServiceNode,
     UnifiedTopology,
 )
@@ -27,8 +29,10 @@ class CrossRepoAnalyzer:
 __all__ = [
     "CrossRepoAnalyzer",
     "CrossServiceEdge",
+    "MessageDependencyEdge",
     "HTTP_CLIENT_CALLERS",
     "OutboundCall",
+    "ResourceDependencyEdge",
     "ServiceNode",
     "UnifiedTopology",
 ]
