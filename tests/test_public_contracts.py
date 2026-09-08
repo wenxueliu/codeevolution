@@ -105,6 +105,13 @@ def test_openapi_path_snapshot():
     schema = app.openapi()
     assert schema["info"]["title"] == "CodeEvolution API"
     assert sorted(schema["paths"]) == [
+        "/api/api-explanations/current",
+        "/api/api-explanations/generate",
+        "/api/api-explanations/snapshots",
+        "/api/api-explanations/snapshots/{snapshot_id}",
+        "/api/api-explanations/snapshots/{snapshot_id}/cancel",
+        "/api/api-explanations/snapshots/{snapshot_id}/nodes/{node_key}",
+        "/api/api-explanations/snapshots/{snapshot_id}/nodes/{node_key}/chunks",
         "/api/audit-logs",
         "/api/business-rules",
         "/api/business-rules/generate",

@@ -7,6 +7,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -21,6 +22,10 @@ from .application.knowledge_service import GroupedKnowledgeService, KnowledgeSer
 from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
 from .infrastructure.business_rule_store import BusinessRuleStore
+from .infrastructure.explanation_snapshot_store import (
+    ExplanationSnapshotStore,
+    SnapshotStateError,
+)
 from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.node_rule_store import NodeRuleStore
 from .infrastructure.ui_test_store import UiTestStore
@@ -50,9 +55,11 @@ _audit_store: AuditStore | None = None
 _ui_test_store: UiTestStore | None = None
 _business_rule_store: BusinessRuleStore | None = None
 _node_rule_store: NodeRuleStore | None = None
+_explanation_snapshot_store: ExplanationSnapshotStore | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies", default={})
 _init_tasks: dict[str, dict] = {}
 _init_lock = threading.Lock()
+_explanation_generation_lock = threading.Lock()
 
 
 class ChatRequest(BaseModel):
@@ -110,6 +117,16 @@ class NodeRuleGenerateRequest(BaseModel):
     node_id: str = Field(default="", max_length=200)
     handler: str = Field(default="", max_length=500)
     custom_prompt: str = Field(default="", max_length=5000)
+
+
+class ApiExplanationGenerateRequest(BaseModel):
+    repo: str = Field(min_length=1, max_length=200)
+    member: str = Field(default="", max_length=200)
+    method: str = Field(min_length=1, max_length=16)
+    path: str = Field(min_length=1, max_length=1000)
+    handler: str = Field(min_length=1, max_length=500)
+    file: str = Field(default="", max_length=2000)
+    line: int | None = Field(default=None, ge=1)
 
 
 def get_store(repo: str = "") -> EvolutionStore:
@@ -210,6 +227,18 @@ def get_node_rule_store() -> NodeRuleStore:
             str(codeevolution_data_dir() / "node-rules.db")
         )
     return _node_rule_store
+
+
+def get_explanation_snapshot_store() -> ExplanationSnapshotStore:
+    global _explanation_snapshot_store
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("explanation_snapshot_store"):
+        return injected
+    if _explanation_snapshot_store is None:
+        _explanation_snapshot_store = ExplanationSnapshotStore(
+            codeevolution_data_dir() / "api-explanations.db"
+        )
+    return _explanation_snapshot_store
 
 
 def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
@@ -826,6 +855,202 @@ def generate_call_tree_node_rule(request: NodeRuleGenerateRequest):
         raise HTTPException(502, f"LLM 生成失败：{exc}")
 
 
+def _snapshot_payload(snapshot, *, include_nodes: bool = False) -> dict:
+    payload = asdict(snapshot)
+    if include_nodes:
+        payload["nodes"] = [
+            asdict(node) for node in get_explanation_snapshot_store().list_nodes(snapshot.id)
+        ]
+    return payload
+
+
+def _explanation_member(repo: str, member: str) -> str:
+    if member:
+        return member
+    entry = get_repo(repo)
+    if not entry:
+        raise HTTPException(404, f"Repo '{repo}' not found")
+    members = repository_members(entry)
+    if len(members) != 1:
+        raise HTTPException(400, "多成员仓库必须明确指定 member")
+    item = members[0]
+    return item.get("name") or Path(item["path"]).name
+
+
+def _build_explanation_service():
+    dependencies = _request_dependencies.get()
+    if factory := dependencies.get("explanation_generation_service_factory"):
+        return factory()
+    from .application.explanation_generation_service import ExplanationGenerationService
+    from .infrastructure.explanation_source import RepositoryExplanationSource
+    from .semantic.client import OpenAILLMClient
+    from .semantic.config import get_llm_config
+    from .semantic.explanation_service import ExplanationSemanticService
+
+    config = get_llm_config()
+    if not config:
+        raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
+    return ExplanationGenerationService(
+        get_explanation_snapshot_store(),
+        RepositoryExplanationSource(),
+        ExplanationSemanticService(OpenAILLMClient(config)),
+        config["model"],
+    )
+
+
+def _submit_explanation_generation(service, snapshot_id: str, frozen: dict) -> None:
+    submit = _request_dependencies.get().get("background_submit")
+    if submit:
+        submit(service.generate, snapshot_id, frozen)
+        return
+    threading.Thread(
+        target=service.generate,
+        args=(snapshot_id, frozen),
+        name=f"api-explanation-{snapshot_id[:8]}",
+        daemon=True,
+    ).start()
+
+
+@app.post("/api/api-explanations/generate", status_code=202)
+def generate_api_explanation(request: ApiExplanationGenerateRequest):
+    """Manually start one endpoint-scoped explanation candidate."""
+    from .infrastructure.explanation_source import api_key
+
+    store = get_explanation_snapshot_store()
+    member = _explanation_member(request.repo, request.member)
+    key = api_key(request.method, request.path, request.handler)
+    with _explanation_generation_lock:
+        active = next(
+            (
+                item
+                for item in store.list_snapshots(request.repo, member, key)
+                if item.status in {"pending", "running", "validating"}
+            ),
+            None,
+        )
+        if active:
+            raise HTTPException(409, f"该 API 已有生成任务：{active.id}")
+        service = _build_explanation_service()
+        try:
+            spec = request.model_dump()
+            spec["member"] = member
+            snapshot_id, frozen = service.prepare(spec)
+        except ValueError as error:
+            message = str(error)
+            status = 409 if "CodeGraph" in message else 404
+            raise HTTPException(status, message) from error
+        snapshot = store.get_snapshot(snapshot_id)
+        _submit_explanation_generation(service, snapshot_id, frozen)
+    return {"snapshot": _snapshot_payload(snapshot)}
+
+
+@app.get("/api/api-explanations/current")
+def current_api_explanation(
+    repo: str = Query(...), member: str = Query(""), api_key: str = Query(...)
+):
+    member = _explanation_member(repo, member)
+    snapshot = get_explanation_snapshot_store().get_current(repo, member, api_key)
+    if snapshot is None:
+        return {"status": "missing", "snapshot": None}
+    freshness = "unknown"
+    try:
+        dependencies = _request_dependencies.get()
+        source = dependencies.get("explanation_source_loader")
+        if source is None:
+            from .infrastructure.explanation_source import RepositoryExplanationSource
+
+            source = RepositoryExplanationSource()
+        current = source.load(
+            {
+                "repo": snapshot.repo_name,
+                "member": snapshot.member_name,
+                "method": snapshot.method,
+                "path": snapshot.path,
+                "handler": snapshot.handler,
+            }
+        )
+        freshness = (
+            "current"
+            if current["source_digest"] == snapshot.source_digest
+            and current["graph_digest"] == snapshot.graph_digest
+            else "outdated"
+        )
+    except (OSError, ValueError, KeyError):
+        pass
+    return {
+        "freshness": freshness,
+        "snapshot": _snapshot_payload(snapshot, include_nodes=True),
+    }
+
+
+@app.get("/api/api-explanations/snapshots")
+def list_api_explanation_snapshots(
+    repo: str = Query(...), member: str = Query(""), api_key: str = Query(...)
+):
+    member = _explanation_member(repo, member)
+    snapshots = get_explanation_snapshot_store().list_snapshots(repo, member, api_key)
+    return {"snapshots": [_snapshot_payload(item) for item in snapshots]}
+
+
+@app.get("/api/api-explanations/snapshots/{snapshot_id}")
+def get_api_explanation_snapshot(snapshot_id: str):
+    store = get_explanation_snapshot_store()
+    snapshot = store.get_snapshot(snapshot_id)
+    if snapshot is None:
+        raise HTTPException(404, "解释快照不存在")
+    payload = _snapshot_payload(snapshot, include_nodes=True)
+    payload["edges"] = [asdict(edge) for edge in store.list_edges(snapshot_id)]
+    return {"snapshot": payload}
+
+
+@app.get("/api/api-explanations/snapshots/{snapshot_id}/nodes/{node_key}")
+def get_api_explanation_node(snapshot_id: str, node_key: str):
+    store = get_explanation_snapshot_store()
+    node = store.get_node(snapshot_id, node_key)
+    if node is None:
+        raise HTTPException(404, "节点解释不存在")
+    return {
+        "node": asdict(node),
+        "chunks": [asdict(chunk) for chunk in store.list_chunks(snapshot_id, node_key)],
+    }
+
+
+@app.get("/api/api-explanations/snapshots/{snapshot_id}/nodes/{node_key}/chunks")
+def get_api_explanation_node_chunks(snapshot_id: str, node_key: str):
+    store = get_explanation_snapshot_store()
+    if store.get_node(snapshot_id, node_key) is None:
+        raise HTTPException(404, "节点解释不存在")
+    return {
+        "chunks": [asdict(chunk) for chunk in store.list_chunks(snapshot_id, node_key)]
+    }
+
+
+@app.post("/api/api-explanations/snapshots/{snapshot_id}/cancel")
+def cancel_api_explanation_snapshot(snapshot_id: str):
+    try:
+        snapshot = get_explanation_snapshot_store().cancel(snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "解释快照不存在") from error
+    except SnapshotStateError as error:
+        raise HTTPException(409, str(error)) from error
+    return {"snapshot": _snapshot_payload(snapshot)}
+
+
+@app.delete("/api/api-explanations/snapshots/{snapshot_id}")
+def delete_api_explanation_snapshot(
+    snapshot_id: str, confirm_current: bool = Query(False)
+):
+    try:
+        get_explanation_snapshot_store().delete(
+            snapshot_id, confirm_current=confirm_current
+        )
+    except KeyError as error:
+        raise HTTPException(404, "解释快照不存在") from error
+    except SnapshotStateError as error:
+        raise HTTPException(409, str(error)) from error
+    return {"ok": True, "deleted": snapshot_id}
+
+
 @app.post("/api/chat")
 def ask_repository(request: ChatRequest):
     """Plan and execute constrained repository queries, recording every attempt."""
@@ -913,6 +1138,7 @@ _route_app = app
 @asynccontextmanager
 async def _lifespan(application):
     global _audit_store, _ui_test_store, _business_rule_store, _node_rule_store
+    global _explanation_snapshot_store
     yield
     for store in list(_stores.values()):
         store.close()
@@ -929,6 +1155,9 @@ async def _lifespan(application):
     if _node_rule_store is not None:
         _node_rule_store.close()
         _node_rule_store = None
+    if _explanation_snapshot_store is not None:
+        _explanation_snapshot_store.close()
+        _explanation_snapshot_store = None
 
 
 def create_app(dependencies: dict | None = None) -> FastAPI:

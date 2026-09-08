@@ -244,6 +244,58 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.find('[data-testid="sequence-dialog"]').exists()).toBe(false)
   })
 
+  it('loads endpoint explanations without generating, then manually generates, polls and deletes snapshots', async () => {
+    vi.useFakeTimers()
+    const endpoint = { method: 'POST', path: '/orders', handler: 'OrderController.create', repository: 'orders', file: 'OrderController.java', line: 42 }
+    let pollCompleted = false
+    const completed = {
+      id: 'snapshot-2', status: 'completed', source_revision: '1234567890abcdef', model_id: 'test-model', created_at: 1,
+      explanation: { summary: '创建订单并预占库存', main_flow: ['校验请求', { title: '预占库存', detail: '调用库存服务' }] },
+      coverage: { total_nodes: 2, completed_nodes: 2, partial_nodes: 0, failed_nodes: 0 },
+      nodes: [
+        { node_key: 'orders::OrderService.create', status: 'completed', file: 'OrderService.java', line_start: 10, local_explanation: { summary: '协调订单创建' } },
+        { node_key: 'orders::StockService.reserve', status: 'completed', local_explanation: { summary: '预占库存' } },
+      ],
+    }
+    const { wrapper, api } = mountPage(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 1, endpoints: [endpoint] } },
+      '/api/api-explanations/current': () => pollCompleted ? { snapshot: completed } : { status: 'missing' },
+      '/api/api-explanations/snapshots': () => ({ snapshots: pollCompleted ? [completed] : [] }),
+      '/api/api-explanations/generate': { id: 'snapshot-2', status: 'running', created_at: 1 },
+    }, { repoName: 'mall' })
+    await flushPromises()
+
+    expect(api.request).not.toHaveBeenCalledWith('/api/api-explanations/generate', expect.anything())
+    await wrapper.find('tr.clickable').trigger('click')
+    await flushPromises()
+    expect(api.get).toHaveBeenCalledWith('/api/api-explanations/current', { repo: 'mall', member: 'orders', api_key: 'POST|/orders|OrderController.create' })
+    expect(wrapper.text()).toContain('尚未生成该端点的解释快照')
+
+    await wrapper.find('[data-testid="explanation-generate"]').trigger('click')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/api-explanations/generate', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ repo: 'mall', member: 'orders', method: 'POST', path: '/orders', handler: 'OrderController.create', file: 'OrderController.java', line: 42 }),
+    }))
+    expect(wrapper.text()).toContain('正在生成候选快照')
+
+    pollCompleted = true
+    await vi.runOnlyPendingTimersAsync()
+    await flushPromises()
+    expect(wrapper.text()).toContain('创建订单并预占库存')
+    expect(wrapper.text()).toContain('节点 2/2')
+    expect(wrapper.text()).toContain('节点解释状态（2）')
+
+    await wrapper.findAll('.api-explanation-actions button')[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="explanation-snapshots"]').text()).toContain('snapshot-2')
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await wrapper.find('.snapshot-item button').trigger('click')
+    await flushPromises()
+    expect(api.delete).toHaveBeenCalledWith('/api/api-explanations/snapshots/snapshot-2?confirm_current=true')
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
   it('filters API contracts by service and search while paginating the result set', async () => {
     const endpoints = Array.from({ length: 60 }, (_, index) => ({
       method: index % 2 ? 'POST' : 'GET',

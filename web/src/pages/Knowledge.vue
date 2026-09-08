@@ -99,6 +99,55 @@
                     <div v-for="site in call.call_sites" :key="site.file + site.line"><code>{{ site.file }}:{{ site.line }}</code></div>
                   </div>
                   <p class="muted" v-if="!item.frontend_callers?.length">未匹配到前端调用。</p>
+                  <section class="api-explanation-section" data-testid="api-explanation">
+                    <div class="api-explanation-heading">
+                      <div>
+                        <h4>API 功能解释
+                          <span v-if="explanationState(item).status" class="explanation-status" :class="'explanation-' + explanationState(item).status">{{ explanationStatusText(explanationState(item).status) }}</span>
+                        </h4>
+                        <p class="muted">解释由调用链叶子节点向入口聚合，仅在手动触发时调用模型。</p>
+                      </div>
+                      <div class="api-explanation-actions">
+                        <button class="primary sm" type="button" data-testid="explanation-generate" :disabled="explanationState(item).running || !item.handler || !item.file || !item.line" @click.stop="generateEndpointExplanation(item)">{{ explanationState(item).current ? '手动刷新解释' : '生成 API 功能解释' }}</button>
+                        <button class="secondary sm" type="button" @click.stop="toggleExplanationSnapshots(item)">{{ explanationState(item).showSnapshots ? '收起快照' : '管理快照' }}</button>
+                      </div>
+                    </div>
+                    <p v-if="explanationState(item).loading" class="muted">正在读取解释快照…</p>
+                    <p v-else-if="explanationState(item).error" class="explanation-error">{{ explanationState(item).error }}</p>
+                    <p v-if="explanationState(item).running" class="explanation-progress">正在生成候选快照，当前解释仍可正常查看…</p>
+                    <div v-if="explanationState(item).current" class="explanation-current">
+                      <div class="explanation-meta">
+                        <span>快照 {{ explanationState(item).current.id }}</span>
+                        <span v-if="explanationState(item).current.source_revision">源码 {{ shortRevision(explanationState(item).current.source_revision) }}</span>
+                        <span v-if="explanationState(item).current.model_id || explanationState(item).current.model">模型 {{ explanationState(item).current.model_id || explanationState(item).current.model }}</span>
+                      </div>
+                      <div v-if="snapshotExplanation(explanationState(item).current)" class="explanation-body">
+                        <p class="explanation-summary">{{ snapshotExplanation(explanationState(item).current).summary || snapshotExplanation(explanationState(item).current).business_purpose_zh || snapshotExplanation(explanationState(item).current).business_purpose_en }}</p>
+                        <details v-if="explanationSteps(explanationState(item).current).length"><summary>业务流程（{{ explanationSteps(explanationState(item).current).length }}）</summary><ol><li v-for="(step, stepIndex) in explanationSteps(explanationState(item).current)" :key="stepIndex">{{ explanationStepText(step) }}</li></ol></details>
+                      </div>
+                      <div class="coverage-grid" v-if="snapshotCoverage(explanationState(item).current)">
+                        <span>节点 {{ coverageValue(explanationState(item).current, 'completed_nodes', 'translated_nodes') }}/{{ coverageValue(explanationState(item).current, 'total_nodes', 'nodes_total') }}</span>
+                        <span>完整 {{ coveragePercent(explanationState(item).current) }}</span>
+                        <span v-if="coverageValue(explanationState(item).current, 'partial_nodes')">部分 {{ coverageValue(explanationState(item).current, 'partial_nodes') }}</span>
+                        <span v-if="coverageValue(explanationState(item).current, 'failed_nodes')">失败 {{ coverageValue(explanationState(item).current, 'failed_nodes') }}</span>
+                      </div>
+                      <details v-if="snapshotNodes(explanationState(item).current).length" class="node-explanations">
+                        <summary>节点解释状态（{{ snapshotNodes(explanationState(item).current).length }}）</summary>
+                        <article v-for="node in snapshotNodes(explanationState(item).current)" :key="node.node_key" class="node-explanation">
+                          <header><code>{{ node.node_key }}</code><span class="explanation-status" :class="'explanation-' + node.status">{{ explanationStatusText(node.status) }}</span></header>
+                          <p v-if="nodeSummary(node)">{{ nodeSummary(node) }}</p><small v-if="node.file">{{ node.file }}{{ node.line_start ? ':' + node.line_start : '' }}</small>
+                        </article>
+                      </details>
+                    </div>
+                    <p v-else-if="!explanationState(item).loading" class="muted">尚未生成该端点的解释快照。</p>
+                    <div v-if="explanationState(item).showSnapshots" class="snapshot-list" data-testid="explanation-snapshots">
+                      <h5>解释快照</h5><p v-if="!explanationState(item).snapshots.length" class="muted">暂无快照。</p>
+                      <article v-for="snapshot in explanationState(item).snapshots" :key="snapshot.id" class="snapshot-item">
+                        <div><b>{{ snapshot.id }}</b><span class="explanation-status" :class="'explanation-' + snapshot.status">{{ explanationStatusText(snapshot.status) }}</span><small>{{ formatSnapshotTime(snapshot.created_at) }}<template v-if="snapshot.model_id || snapshot.model"> · {{ snapshot.model_id || snapshot.model }}</template></small></div>
+                        <button v-if="!['running', 'pending'].includes(snapshot.status)" class="secondary sm" type="button" :disabled="explanationState(item).deleting === snapshot.id" @click.stop="deleteExplanationSnapshot(item, snapshot)">删除</button>
+                      </article>
+                    </div>
+                  </section>
                   <div class="business-rule-section">
                     <h4>业务规则 <span v-if="brState(item).status" class="br-status" :class="'br-' + brState(item).status">{{ brState(item).statusText }}</span></h4>
                     <div v-if="brState(item).editing" class="br-prompt-edit">
@@ -278,6 +327,8 @@ export default {
       businessRules: {}, brLoading: new Set(), brEditing: {},
       sequenceZoom: null,
       sequenceZoomScale: 1,
+      apiExplanations: {},
+      explanationPollTimers: {},
     }
   },
   computed: {
@@ -310,11 +361,17 @@ export default {
     await this.load(false)
     await this.loadBusinessRules()
   },
+  beforeUnmount() {
+    for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
+  },
   methods: {
     async load(includeLlm) {
       const started = performance.now()
       await this.$runAsync(async () => {
         this.report = await this.$api.get('/api/knowledge', { repo: this.repoName || '', include_llm: includeLlm })
+        for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
+        this.explanationPollTimers = {}
+        this.apiExplanations = {}
         this.llmLoaded = includeLlm
         this.endpointPage = 1
         this.endpointService = ''
@@ -331,6 +388,15 @@ export default {
     isDisabled(value) { return Boolean(value && !Array.isArray(value) && value.note) },
     formatJson(value) { return JSON.stringify(value, null, 2) },
     endpointKey(item, index) { return `${item.method || ''}-${item.path || ''}-${index}` },
+    explanationKey(item) { return [this.repoName || '', item.repository || '', item.method || '', item.path || '', item.handler || ''].join('||') },
+    apiKey(item) { return item.api_key || [String(item.method || '').toUpperCase(), item.path || '', item.handler || ''].join('|') },
+    explanationState(item) {
+      return this.apiExplanations[this.explanationKey(item)] || { loading: false, running: false, current: null, snapshots: [], showSnapshots: false, deleting: '', error: '' }
+    },
+    setExplanationState(item, patch) {
+      const key = this.explanationKey(item)
+      this.apiExplanations = { ...this.apiExplanations, [key]: { ...this.explanationState(item), ...patch } }
+    },
     toggleEntity(item) {
       const key = item.node_id || item.qualified_name
       if (this.expandedEntityKeys.has(key)) {
@@ -346,9 +412,128 @@ export default {
         this.expandedKeys.delete(key)
       } else {
         this.expandedKeys.add(key)
+        if (!this.apiExplanations[this.explanationKey(item)]) this.loadEndpointExplanation(item)
       }
       // trigger reactivity for Set
       this.expandedKeys = new Set(this.expandedKeys)
+    },
+    explanationQuery(item) { return { repo: this.repoName || '', member: item.repository || '', api_key: this.apiKey(item) } },
+    unwrapCurrent(data) {
+      if (!data || data.status === 'missing') return null
+      const snapshot = data.snapshot || data.current || data.current_snapshot || (data.id ? data : null)
+      return snapshot && data.freshness ? { ...snapshot, freshness: data.freshness } : snapshot
+    },
+    unwrapSnapshots(data) { return Array.isArray(data) ? data : (data?.snapshots || []) },
+    async loadEndpointExplanation(item, { quiet = false } = {}) {
+      if (!quiet) this.setExplanationState(item, { loading: true, error: '' })
+      try {
+        const query = this.explanationQuery(item)
+        const [currentData, snapshotsData] = await Promise.all([
+          this.$api.get('/api/api-explanations/current', query).catch(err => {
+            if (err.status === 404) return null
+            throw err
+          }),
+          this.$api.get('/api/api-explanations/snapshots', query),
+        ])
+        const snapshots = this.unwrapSnapshots(snapshotsData)
+        const running = snapshots.some(snapshot => ['pending', 'running'].includes(snapshot.status))
+        const current = this.unwrapCurrent(currentData)
+        this.setExplanationState(item, { current, snapshots, running, status: running ? 'running' : (current?.freshness === 'outdated' ? 'stale' : (current?.status || (current ? 'completed' : 'missing'))), loading: false, error: '' })
+        if (running) this.scheduleExplanationPoll(item)
+      } catch (err) {
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || '读取解释失败'
+        this.setExplanationState(item, { loading: false, error: detail })
+        if (quiet && this.explanationState(item).running) this.scheduleExplanationPoll(item)
+      }
+    },
+    async generateEndpointExplanation(item) {
+      this.clearExplanationPoll(item)
+      this.setExplanationState(item, { running: true, status: 'running', error: '' })
+      try {
+        const response = await this.$api.request('/api/api-explanations/generate', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo: this.repoName || '', member: item.repository || '', method: item.method || '', path: item.path || '', handler: item.handler || '', file: item.file || '', line: Number(item.line || 0) }),
+        })
+        const snapshot = response.snapshot || response
+        const snapshots = snapshot?.id ? [snapshot, ...this.explanationState(item).snapshots.filter(existing => existing.id !== snapshot.id)] : this.explanationState(item).snapshots
+        this.setExplanationState(item, { snapshots, running: ['pending', 'running'].includes(snapshot?.status || 'running') })
+        if (['completed', 'partial', 'failed'].includes(snapshot?.status)) await this.loadEndpointExplanation(item, { quiet: true })
+        else this.scheduleExplanationPoll(item)
+      } catch (err) {
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || '生成解释失败'
+        this.setExplanationState(item, { running: false, status: 'failed', error: detail })
+      }
+    },
+    scheduleExplanationPoll(item) {
+      const key = this.explanationKey(item)
+      this.clearExplanationPoll(item)
+      this.explanationPollTimers[key] = setTimeout(async () => { await this.loadEndpointExplanation(item, { quiet: true }) }, 1200)
+    },
+    clearExplanationPoll(item) {
+      const key = this.explanationKey(item)
+      if (this.explanationPollTimers[key]) clearTimeout(this.explanationPollTimers[key])
+      delete this.explanationPollTimers[key]
+    },
+    async toggleExplanationSnapshots(item) {
+      const showSnapshots = !this.explanationState(item).showSnapshots
+      this.setExplanationState(item, { showSnapshots })
+      if (showSnapshots) await this.loadEndpointExplanation(item, { quiet: true })
+    },
+    async deleteExplanationSnapshot(item, snapshot) {
+      const isCurrent = this.explanationState(item).current?.id === snapshot.id
+      const warning = isCurrent ? '这是当前解释快照，删除后该 API 将进入无快照状态。是否删除？' : '是否删除该解释快照？'
+      if (!window.confirm(warning)) return
+      this.setExplanationState(item, { deleting: snapshot.id, error: '' })
+      try {
+        const suffix = isCurrent ? '?confirm_current=true' : ''
+        await this.$api.delete(`/api/api-explanations/snapshots/${encodeURIComponent(snapshot.id)}${suffix}`)
+        await this.loadEndpointExplanation(item, { quiet: true })
+      } catch (err) {
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || '删除快照失败'
+        this.setExplanationState(item, { error: detail })
+      } finally { this.setExplanationState(item, { deleting: '' }) }
+    },
+    snapshotExplanation(snapshot) {
+      const value = snapshot?.explanation || snapshot?.aggregate_explanation
+      if (!value) return null
+      if (typeof value === 'object') return value
+      try { return JSON.parse(value) } catch { return { summary: value } }
+    },
+    explanationSteps(snapshot) {
+      const explanation = this.snapshotExplanation(snapshot) || {}
+      return explanation.main_flow || explanation.business_flow || explanation.business_flow_zh || explanation.steps || []
+    },
+    explanationStepText(step) { return typeof step === 'string' ? step : (step.detail || step.summary || step.title || JSON.stringify(step)) },
+    snapshotCoverage(snapshot) {
+      const value = snapshot?.coverage || snapshot?.statistics
+      if (!value) return null
+      if (typeof value === 'object') return value
+      try { return JSON.parse(value) } catch { return null }
+    },
+    coverageValue(snapshot, ...keys) {
+      const coverage = this.snapshotCoverage(snapshot) || {}
+      for (const key of keys) if (coverage[key] !== undefined && coverage[key] !== null) return coverage[key]
+      return 0
+    },
+    coveragePercent(snapshot) {
+      const coverage = this.snapshotCoverage(snapshot) || {}
+      if (coverage.coverage_pct !== undefined) return `${coverage.coverage_pct}%`
+      const total = this.coverageValue(snapshot, 'total_nodes', 'nodes_total'); const completed = this.coverageValue(snapshot, 'completed_nodes', 'translated_nodes')
+      return total ? `${Math.round(completed / total * 100)}%` : '-'
+    },
+    snapshotNodes(snapshot) { return snapshot?.nodes || snapshot?.node_explanations || [] },
+    nodeSummary(node) {
+      const value = node.aggregate_explanation || node.local_explanation || node.explanation
+      if (!value) return ''
+      if (typeof value === 'object') return value.summary || value.business_purpose_zh || value.business_purpose_en || ''
+      try { const parsed = JSON.parse(value); return parsed.summary || parsed.business_purpose_zh || parsed.business_purpose_en || '' } catch { return value }
+    },
+    explanationStatusText(status) { return ({ pending: '等待中', running: '生成中', completed: '已完成', partial: '部分完成', failed: '失败', stale: '已过期', missing: '未生成' })[status] || status || '' },
+    shortRevision(revision) { return String(revision || '').slice(0, 10) },
+    formatSnapshotTime(value) {
+      if (!value) return ''
+      const date = new Date(typeof value === 'number' && value < 1e12 ? value * 1000 : value)
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString()
     },
     // Render the sequence diagram only once its <details> is actually open.
     seqToggle(event) {
@@ -612,6 +797,34 @@ td code { color: #666; word-break: break-all; }
 .frontend-call { border-left: 3px solid #e94560; padding: 5px 9px; margin: 6px 0; font-size: 11px; }
 .muted { color: #aaa; font-size: 11px; }
 .repo-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 8px; background: #fff0f2; color: #c82d48; font-size: 9px; }
+.api-explanation-section { margin-top: 16px; border-top: 1px solid #e2e2e8; padding-top: 12px; }
+.api-explanation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.api-explanation-heading h4 { margin-bottom: 3px; font-size: 13px; color: #333; }
+.api-explanation-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.explanation-status { display: inline-block; margin-left: 5px; padding: 2px 6px; border-radius: 8px; background: #eeeef3; color: #666; font-size: 10px; font-weight: 400; }
+.explanation-running, .explanation-pending { background: #e3f0fc; color: #2a6496; }
+.explanation-completed { background: #eaf8f0; color: #23764a; }
+.explanation-partial, .explanation-stale { background: #fff3d6; color: #8a6500; }
+.explanation-failed { background: #ffeaea; color: #b8324a; }
+.explanation-progress { margin: 9px 0; padding: 8px 10px; border-radius: 5px; background: #eef7ff; color: #2a6496; font-size: 11px; }
+.explanation-error { margin: 9px 0; color: #b8324a; font-size: 11px; }
+.explanation-current { margin-top: 9px; padding: 11px; border: 1px solid #e5e5eb; border-radius: 6px; background: white; }
+.explanation-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: #888; font-size: 10px; }
+.explanation-summary { margin: 9px 0; color: #333; font-size: 12px; line-height: 1.55; }
+.explanation-body details, .node-explanations { margin-top: 7px; font-size: 11px; }
+.explanation-body summary, .node-explanations > summary { cursor: pointer; color: #555; }
+.explanation-body ol { margin: 5px 0 0 18px; }
+.coverage-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.coverage-grid span { padding: 3px 7px; border-radius: 4px; background: #f2f2f6; color: #555; font-size: 10px; }
+.node-explanation { margin-top: 6px; padding: 7px 8px; border-left: 2px solid #ddd; background: #fafafd; }
+.node-explanation header { display: flex; justify-content: space-between; gap: 8px; }
+.node-explanation p { margin: 5px 0; color: #444; line-height: 1.45; }
+.node-explanation small { color: #999; }
+.snapshot-list { margin-top: 10px; padding: 10px; border: 1px solid #e5e5eb; border-radius: 6px; background: #fafafd; }
+.snapshot-list h5 { margin-bottom: 6px; font-size: 11px; color: #555; }
+.snapshot-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-top: 1px solid #e8e8ed; font-size: 11px; }
+.snapshot-item:first-of-type { border-top: 0; }
+.snapshot-item small { display: block; margin-top: 3px; color: #999; }
 .business-rule-section { margin-top: 16px; border-top: 1px solid #eee; padding-top: 12px; }
 .business-rule-section h4 { font-size: 13px; color: #444; margin-bottom: 8px; }
 .br-status { font-size: 10px; padding: 2px 6px; border-radius: 8px; margin-left: 6px; font-weight: 400; }
@@ -643,5 +856,7 @@ td code { color: #666; word-break: break-all; }
   .table-tools > span { margin-left: 0; width: 100%; }
   .sequence-zoom-backdrop { padding: 0; }
   .sequence-zoom-dialog { width: 100vw; height: 100vh; border-radius: 0; }
+  .api-explanation-heading { display: block; }
+  .api-explanation-actions { margin-top: 8px; }
 }
 </style>
