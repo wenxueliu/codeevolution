@@ -16,7 +16,7 @@
 
     <div class="repo-grid" v-if="repos.length">
       <article v-for="r in repos" :key="r.name" class="repo-card">
-        <router-link class="repo-link" :to="'/repo/' + r.name" :aria-label="`进入代码仓 ${r.name}`">
+        <router-link class="repo-link" :to="{ name: 'snapshots' }" :aria-label="`查看代码仓 ${r.name} 的 Snapshots`">
           <div class="repo-header"><h2>{{ r.name }}</h2><span aria-hidden="true">→</span></div>
           <div class="repo-path">{{ r.path }}</div>
           <div class="repo-members">
@@ -34,7 +34,7 @@
             <button class="primary sm" :disabled="addingMember[r.name]" @click.stop="addMember(r)">{{ addingMember[r.name] ? '添加中...' : '确认' }}</button>
             <button class="secondary sm" @click.stop="toggleAddMember(r)">取消</button>
           </div>
-          <div class="repo-enter">进入知识中心</div>
+          <div class="repo-enter">查看 Snapshots</div>
         </router-link>
         <div class="repo-actions">
           <button class="add-member-button" type="button" title="添加代码仓" @click.stop="toggleAddMember(r)">+ 代码仓</button>
