@@ -41,6 +41,12 @@ class RepositoryCatalogService:
     def rename_scope(self, scope_id: str, name: str) -> AnalysisScope:
         return self.store.rename_scope(scope_id, name)
 
+    def retire_scope(self, scope_id: str) -> AnalysisScope:
+        """Retire a scope and its active members while keeping snapshots."""
+        for member in self.list_members(scope_id):
+            self.store.retire_member(member.id)
+        return self.store.retire_scope(scope_id)
+
     def list_members(self, scope_id: str) -> list[RepositoryMember]:
         if self.store.get_scope(scope_id) is None:
             raise KeyError(scope_id)

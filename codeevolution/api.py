@@ -419,6 +419,16 @@ def update_analysis_scope(scope_id: str, request: ScopeUpdateRequest):
         raise HTTPException(409, str(error)) from error
 
 
+@app.delete("/api/scopes/{scope_id}")
+def retire_analysis_scope(scope_id: str):
+    try:
+        return {"scope": _resource(get_catalog_service().retire_scope(scope_id))}
+    except KeyError as error:
+        raise HTTPException(404, "scope not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
 @app.get("/api/scopes/{scope_id}/members")
 def list_analysis_scope_members(scope_id: str):
     try:

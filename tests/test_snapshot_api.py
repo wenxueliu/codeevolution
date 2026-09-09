@@ -74,3 +74,25 @@ def test_run_api_rejects_unknown_member_and_missing_resources(tmp_path):
         assert client.post("/api/analysis-runs", json={"member_ids": ["missing"]}).status_code == 422
         assert client.get("/api/analysis-runs/missing").status_code == 404
         assert client.get("/api/repository-snapshots/missing").status_code == 404
+
+
+def test_scope_delete_retires_catalog_members_without_deleting_snapshot_data(tmp_path):
+    client, _store, _notifications = _client(tmp_path)
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+
+    with client:
+        scope = client.post("/api/scopes", json={"name": "shop"}).json()["scope"]
+        member = client.post(
+            f"/api/scopes/{scope['id']}/members",
+            json={"display_name": "shop", "registered_path": str(repo)},
+        ).json()["member"]
+
+        deleted = client.delete(f"/api/scopes/{scope['id']}")
+
+        assert deleted.status_code == 200
+        assert deleted.json()["scope"]["id"] == scope["id"]
+        assert client.get("/api/scopes").json()["scopes"] == []
+        assert client.get(f"/api/scopes/{scope['id']}/members").status_code == 200
+        assert client.get(f"/api/scopes/{scope['id']}/members").json()["members"] == []
+        assert _store.get_member(member["id"]).retired_at is not None

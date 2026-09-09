@@ -20,10 +20,10 @@
           <div class="repo-header"><h2>{{ r.name }}</h2><span aria-hidden="true">→</span></div>
           <div class="repo-path">{{ r.path }}</div>
           <div class="repo-members">
-            <span v-for="member in r.repositories || []" :key="member.path" :class="{ unhealthy: !member.cg_initialized }">
+            <span v-for="member in r.repositories || []" :key="member.id || member.path" :class="{ unhealthy: !member.cg_initialized }">
               <code class="member-path">{{ member.path }}</code>
               {{ member.cg_initialized ? '索引就绪' : '未初始化索引' }}
-              <button class="member-remove" type="button" title="移除此代码仓" @click.prevent.stop="removeMember(r, member.path)">x</button>
+              <button class="member-remove" type="button" title="移除此代码仓" @click.prevent.stop="removeMember(r, member)">x</button>
             </span>
             <span v-if="!(r.repositories && r.repositories.length)" class="single-repo">
               <code class="member-path">{{ r.path }}</code> · 单仓服务
@@ -103,8 +103,21 @@ export default {
   methods: {
     async loadRepos() {
       await this.$runAsync(async () => {
-        const data = await this.$api.get('/api/repos')
-        this.repos = data.repos || []
+        // Home and Snapshots must use the same Scope/Member catalog. The
+        // legacy /api/repos registry can contain a different set of entries.
+        const data = await this.$api.get('/api/scopes')
+        const scopes = []
+        for (const scope of data.scopes || []) {
+          const members = await this.$api.get(`/api/scopes/${encodeURIComponent(scope.id)}/members`)
+          const repositories = (members.members || []).map(member => ({
+            id: member.id,
+            name: member.display_name,
+            path: member.registered_path,
+            cg_initialized: true,
+          }))
+          scopes.push({ id: scope.id, name: scope.name, path: repositories[0]?.path || '', repositories })
+        }
+        this.repos = scopes
       })
     },
     async removeRepo(repo) {
@@ -113,14 +126,29 @@ export default {
       )
       if (!confirmed) return
       await this.$runAsync(async () => {
-        await this.$api.delete(`/api/repos/${encodeURIComponent(repo.name)}`)
+        await this.$api.delete(`/api/scopes/${encodeURIComponent(repo.id)}`)
         this.repos = this.repos.filter(item => item.name !== repo.name)
       })
     },
     async registerRepo() {
       this.registering = true
       await this.$runAsync(async () => {
-        await this.$api.request('/api/repos/register', { method: 'POST', query: { name: this.newRepo.name, path: this.newRepo.path } })
+        const data = await this.$api.get('/api/scopes')
+        let scope = (data.scopes || []).find(item => item.name === this.newRepo.name)
+        if (!scope) {
+          const response = await this.$api.request('/api/scopes', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: this.newRepo.name }),
+          })
+          scope = response.scope || response
+        }
+        await this.$api.request(`/api/scopes/${encodeURIComponent(scope.id)}/members`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            display_name: this.newRepo.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || this.newRepo.name,
+            registered_path: this.newRepo.path,
+          }),
+        })
         this.newRepo = { name: '', path: '' }
         this.showRegister = false
         await this.loadRepos()
@@ -144,10 +172,13 @@ export default {
       if (!p) return
       this.addingMember[repo.name] = true
       try {
-        await this.$api.request(`/api/repos/${encodeURIComponent(repo.name)}/members`, {
+        await this.$api.request(`/api/scopes/${encodeURIComponent(repo.id)}/members`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: p }),
+          body: JSON.stringify({
+            display_name: p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p,
+            registered_path: p,
+          }),
         })
         delete this.addMemberForm[repo.name]
         delete this.addMemberPath[repo.name]
@@ -159,11 +190,11 @@ export default {
       }
     },
 
-    async removeMember(repo, memberPath) {
-      const confirmed = window.confirm(`确定从"${repo.name}"中移除此代码仓吗？\n\n${memberPath}\n\n仅删除注册记录，不会删除实际代码仓数据。`)
+    async removeMember(repo, member) {
+      const confirmed = window.confirm(`确定从"${repo.name}"中移除此代码仓吗？\n\n${member.path}\n\n仅删除目录成员，不会删除实际代码仓数据。`)
       if (!confirmed) return
       try {
-        await this.$api.delete(`/api/repos/${encodeURIComponent(repo.name)}/members?path=${encodeURIComponent(memberPath)}`)
+        await this.$api.delete(`/api/repository-members/${encodeURIComponent(member.id)}`)
         await this.loadRepos()
       } catch (err) {
         this.error = err

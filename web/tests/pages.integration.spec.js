@@ -196,7 +196,8 @@ describe('repository and knowledge pages', () => {
   it('loads grouped repositories, navigates, cancels and confirms removal', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
     const { wrapper, api } = mountPage(Home, {
-      '/api/repos': { repos: [{ name: 'mall', path: '/mall', repositories: [{ name: 'mall', path: '/mall' }, { name: 'mall-web', path: '/mall-web' }] }] },
+      '/api/scopes': { scopes: [{ id: 'scope-mall', name: 'mall' }] },
+      '/api/scopes/scope-mall/members': { members: [{ id: 'member-mall', display_name: 'mall', registered_path: '/mall' }, { id: 'member-web', display_name: 'mall-web', registered_path: '/mall-web' }] },
     })
     await flushPromises()
     expect(wrapper.text()).toContain('mall-web')
@@ -206,21 +207,24 @@ describe('repository and knowledge pages', () => {
     await wrapper.find('.remove-button').trigger('click')
     await flushPromises()
     expect(confirm).toHaveBeenCalledTimes(2)
-    expect(api.delete).toHaveBeenCalledWith('/api/repos/mall')
+    expect(api.delete).toHaveBeenCalledWith('/api/scopes/scope-mall')
     expect(wrapper.text()).toContain('还没有代码仓')
   })
 
   it('registers a repository from the empty-state workflow', async () => {
-    const { wrapper, api } = mountPage(Home, { '/api/repos': { repos: [] } })
+    const { wrapper, api } = mountPage(Home, { '/api/scopes': { scopes: [] } })
     await flushPromises()
     await wrapper.find('.empty-state button').trigger('click')
     await wrapper.findAll('.register-form input')[0].setValue('shop')
     await wrapper.findAll('.register-form input')[1].setValue('/workspace/shop')
+    api.request.mockImplementation(async (path) => {
+      if (path === '/api/scopes') return { scope: { id: 'scope-shop', name: 'shop' } }
+      return { member: { id: 'member-shop' } }
+    })
     await wrapper.find('.register-form').trigger('submit')
     await flushPromises()
-    expect(api.request).toHaveBeenCalledWith('/api/repos/register', {
-      method: 'POST', query: { name: 'shop', path: '/workspace/shop' },
-    })
+    expect(api.request).toHaveBeenCalledWith('/api/scopes', expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'shop' }) }))
+    expect(api.request).toHaveBeenCalledWith('/api/scopes/scope-shop/members', expect.objectContaining({ method: 'POST', body: JSON.stringify({ display_name: 'shop', registered_path: '/workspace/shop' }) }))
   })
 
   it('selects scope members and follows an analysis run through cancel and failed-member retry', async () => {
@@ -429,7 +433,7 @@ describe('repository and knowledge pages', () => {
   })
 
   it('renders repository and knowledge empty variants', async () => {
-    const { wrapper: home } = mountPage(Home, { '/api/repos': { repos: [{ name: 'empty', path: '/empty', repositories: [{ name: 'empty' }] }] } })
+    const { wrapper: home } = mountPage(Home, { '/api/scopes': { scopes: [{ id: 'scope-empty', name: 'empty' }] }, '/api/scopes/scope-empty/members': { members: [] } })
     await flushPromises()
     expect(home.text()).toContain('查看 Snapshots')
 
