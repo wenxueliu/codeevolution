@@ -144,7 +144,7 @@ async function loadGraphNode() {
   try {
     const d = props.target.descriptor || {}
     const resp = await apiClient.get('/api/call-tree/rule', {
-      repository_snapshot_id: props.snapshotId,
+      snapshot_id: props.snapshotId,
       view_id: '',
       node_type: props.target.node_type || 'func',
       node_id: d.node_id,

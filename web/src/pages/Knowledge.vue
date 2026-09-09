@@ -320,7 +320,13 @@ export default {
   components: { UiState, CallChainTree },
   props: { repoName: String },
   data() {
-    const snapshotId = new URLSearchParams(window.location.search).get('snapshot_id') || ''
+    // With createWebHashHistory the route query is part of the hash
+    // (/#/repo/snapshot?snapshot_id=...), so window.location.search is empty.
+    // Prefer Vue Router's parsed query and keep the window query as a fallback
+    // for embedded/direct usages of this page.
+    const snapshotId = this.$route?.query?.snapshot_id
+      || new URLSearchParams(window.location.search).get('snapshot_id')
+      || ''
     return {
       snapshotId,
       report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS,
@@ -375,7 +381,7 @@ export default {
         return
       }
       await this.$runAsync(async () => {
-        this.report = await this.$api.get('/api/knowledge', { repository_snapshot_id: this.snapshotId, include_llm: includeLlm })
+        this.report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: includeLlm })
         for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
         this.explanationPollTimers = {}
         this.apiExplanations = {}

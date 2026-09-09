@@ -123,7 +123,7 @@ function ancestryIds(node) {
 }
 
 function paramsFor(data) {
-  if (data.type === 'func') return { repository_snapshot_id: props.snapshotId, node_id: data.id }
+  if (data.type === 'func') return { snapshot_id: props.snapshotId, node_id: data.id }
   if (data.type === 'cross') return { repo: data.target_service, handler: data.target_function }
   return null
 }
@@ -157,7 +157,7 @@ async function loadNode(node, resolve) {
     rootError.value = ''
     try {
       const payload = await apiClient.get('/api/call-tree/children', {
-        repository_snapshot_id: props.snapshotId, node_id: props.label.node_id || props.label.handler || '',
+        snapshot_id: props.snapshotId, node_id: props.label.node_id || props.label.handler || '',
       })
       rootLoaded.value = true
       rootEmpty.value = !payload || !(payload.children || []).length
@@ -171,7 +171,7 @@ async function loadNode(node, resolve) {
   }
 
   const params = paramsFor(node.data)
-  if (params && props.snapshotId) params.repository_snapshot_id = props.snapshotId
+  if (params && props.snapshotId) params.snapshot_id = props.snapshotId
   if (!params) {
     resolve([])
     return
