@@ -111,6 +111,8 @@ def test_api_contract_extractor_owns_the_real_extraction_algorithm():
         ("GET", "/api/users/{user_id}"),
     ]
     assert contract.endpoints[1].params == ["user_id"]
+    assert contract.endpoints[0].node_id == "handler-1"
+    assert contract.endpoints[1].node_id == "handler-1"
     assert contract.endpoints[1].return_type == "User"
     assert contract.endpoints[0].request_headers[0]["name"] == "Authorization"
     assert contract.endpoints[0].request_body["type"] == "UserRequest"

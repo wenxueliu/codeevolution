@@ -84,6 +84,11 @@
                     :label="{ method: item.method, path: item.path, handler: item.handler, node_id: item.node_id || item.handler }"
                     :snapshot-id="snapshotId"
                     :mermaid="item.call_chain_mermaid"
+                    :explanation-mode="true"
+                    :explanation-snapshot="explanationState(item).current"
+                    :explanation-state="explanationState(item)"
+                    @generate-api="generateEndpointExplanation(item)"
+                    @manage-api-explanations="toggleExplanationSnapshots(item)"
                   />
                   <p class="muted" v-else>未解析到处理函数（file/line 缺失），无法展示调用链树。</p>
                   <details v-if="item.call_chain_mermaid" class="seq-details" @toggle="seqToggle($event, item)">

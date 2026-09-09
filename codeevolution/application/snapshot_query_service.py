@@ -62,6 +62,10 @@ class SnapshotQueryService:
             facts = handle.snapshot.facts
             if facts is None:
                 raise RuntimeError("snapshot facts are unavailable")
+            # Older immutable snapshots predate ApiEndpoint.node_id.  Their
+            # call_chain already records the entry CodeGraph id, so project it
+            # at the read boundary without mutating the historical facts.
+            facts = _project_api_node_ids(facts)
             if section is None:
                 return facts
             aliases = {"gaps": "test_coverage", "tests": "test_coverage", "deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map"}
@@ -98,3 +102,25 @@ def _children(handle: RepositorySnapshotHandle, node_id: str) -> dict:
                  "line": node.start_line},
         "children": children, "truncated": len(rows) > 60,
     }
+
+
+def _project_api_node_ids(facts: dict) -> dict:
+    api = facts.get("api_contract")
+    if not isinstance(api, dict) or not isinstance(api.get("endpoints"), list):
+        return facts
+    endpoints = []
+    changed = False
+    for endpoint in api["endpoints"]:
+        if not isinstance(endpoint, dict) or endpoint.get("node_id"):
+            endpoints.append(endpoint)
+            continue
+        chain = endpoint.get("call_chain")
+        entry_id = chain[0].get("id") if isinstance(chain, list) and chain and isinstance(chain[0], dict) else None
+        if entry_id:
+            endpoints.append({**endpoint, "node_id": entry_id})
+            changed = True
+        else:
+            endpoints.append(endpoint)
+    if not changed:
+        return facts
+    return {**facts, "api_contract": {**api, "endpoints": endpoints}}

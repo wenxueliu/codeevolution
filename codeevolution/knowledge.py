@@ -105,6 +105,7 @@ class KnowledgeExtractor:
                         "method": item.method,
                         "path": item.path,
                         "handler": item.handler_name,
+                        "node_id": item.node_id,
                         "file": item.file_path,
                         "line": item.line,
                         "params": item.params,

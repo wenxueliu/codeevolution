@@ -6,7 +6,7 @@ from pathlib import Path
 from codeevolution import cli, mcp_server
 from codeevolution.application.analysis_run_service import RepositoryCatalogService
 from codeevolution.application.repository_attempt_worker import RepositoryAttemptWorker
-from codeevolution.application.snapshot_query_service import SnapshotQueryService
+from codeevolution.application.snapshot_query_service import SnapshotQueryService, _project_api_node_ids
 from codeevolution.application.chat_service import SnapshotChatService
 from codeevolution.infrastructure.audit_store import AuditStore
 from codeevolution.domain.analysis_snapshot import AttemptStatus
@@ -20,6 +20,18 @@ from codeevolution.infrastructure.explanation_source import SnapshotExplanationS
 class _Runner:
     def init_or_sync(self, _root, _cancel):
         return CommandResult(("codegraph", "sync"), 0, "", "", 0.01)
+
+
+def test_snapshot_knowledge_backfills_node_id_for_legacy_api_facts():
+    facts = {"api_contract": {"endpoints": [{
+        "handler": "orders::create",
+        "call_chain": [{"id": "method:root", "name": "create"}],
+    }]}}
+
+    projected = _project_api_node_ids(facts)
+
+    assert projected["api_contract"]["endpoints"][0]["node_id"] == "method:root"
+    assert "node_id" not in facts["api_contract"]["endpoints"][0]
 
 
 def _graph(path: Path) -> None:

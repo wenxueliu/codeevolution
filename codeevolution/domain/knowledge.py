@@ -57,6 +57,9 @@ class ApiEndpoint:
     handler_name: str
     file_path: str
     line: int
+    # CodeGraph function id used by the immutable call-tree snapshot.  The
+    # qualified handler name is display-only and is not a graph identifier.
+    node_id: str | None = None
     params: list[str] = field(default_factory=list)
     return_type: str | None = None
     decorators: list[str] = field(default_factory=list)

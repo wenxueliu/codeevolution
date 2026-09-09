@@ -1,7 +1,7 @@
 <template>
   <div class="nrr">
     <template v-if="!target">
-      <p class="nrr-hint">点击左侧的<em>端点根 / 函数 / 跨服务</em>节点，在右侧查看或生成该节点的业务规则解释（提示词可编辑，默认基于节点源码片段）。external 外部调用无可解析源码。</p>
+      <p class="nrr-hint">点击左侧的<em>端点根 / 函数 / 跨服务</em>节点，在右侧查看 API 节点自身翻译和聚合解释。external 外部调用无可解析源码。</p>
     </template>
 
     <template v-else-if="target.kind === 'external' || target.kind === 'note'">
@@ -16,9 +16,39 @@
         <span v-if="status" class="br-status" :class="'br-' + status">{{ statusText }}</span>
       </div>
 
-      <div v-if="loading" class="nrr-loading">正在加载该节点的业务规则…</div>
+      <div v-if="explanationMode" class="nrr-api-mode">
+        <div v-if="target.kind === 'root'" class="nrr-api-actions">
+          <button class="primary sm" :disabled="explanationState.running" @click="emit('generate-api')">
+            {{ explanationState.running ? '生成中…' : (explanationSnapshot ? '手动刷新 API 解释' : '生成 API 功能解释') }}
+          </button>
+          <button class="secondary sm" @click="emit('manage-api-explanations')">{{ explanationState.showSnapshots ? '收起快照' : '管理快照' }}</button>
+        </div>
+        <p v-if="explanationState.running" class="nrr-api-progress">正在按调用链从叶子节点翻译并向入口聚合，当前快照仍可查看。</p>
+        <template v-if="explanationNode">
+          <div class="nrr-api-meta">
+            <span class="br-status" :class="'br-' + (explanationNode.status || 'pending')">{{ apiStatusText(explanationNode.status) }}</span>
+            <span v-if="explanationSnapshot">快照 {{ explanationSnapshot.id }}</span>
+          </div>
+          <section class="nrr-api-card">
+            <h4>节点自身翻译</h4>
+            <p>{{ explanationSummary(explanationNode.local_explanation) || '暂无节点自身解释' }}</p>
+          </section>
+          <details class="nrr-api-card" open v-if="explanationNode.aggregate_explanation">
+            <summary>节点聚合结果</summary>
+            <p>{{ explanationSummary(explanationNode.aggregate_explanation) || '暂无聚合解释' }}</p>
+            <ol v-if="explanationSteps(explanationNode.aggregate_explanation).length">
+              <li v-for="(step, index) in explanationSteps(explanationNode.aggregate_explanation)" :key="index">{{ stepText(step) }}</li>
+            </ol>
+          </details>
+        </template>
+        <p v-else-if="explanationState.loading" class="nrr-loading">正在读取 API 解释快照…</p>
+        <p v-else-if="explanationSnapshot" class="nrr-muted">当前快照未覆盖该节点，或该节点尚未完成翻译。</p>
+        <p v-else class="nrr-muted">尚未生成端点级 API 解释。选中端点根后，可在此处手动生成。</p>
+      </div>
 
-      <div v-else>
+      <div v-else-if="loading" class="nrr-loading">正在加载该节点的业务规则…</div>
+
+      <div v-else-if="!explanationMode">
         <!-- 编辑提示词 + 生成 -->
         <div v-if="editing" class="nrr-edit">
           <textarea
@@ -84,7 +114,13 @@ const props = defineProps({
   snapshotId: { type: String, default: '' },
   mermaid: { type: String, default: '' },
   target: { type: Object, default: null },
+  explanationMode: { type: Boolean, default: false },
+  explanationSnapshot: { type: Object, default: null },
+  explanationState: { type: Object, default: () => ({}) },
+  explanationNode: { type: Object, default: null },
 })
+
+const emit = defineEmits(['generate-api', 'manage-api-explanations'])
 
 const loading = ref(false)
 const genLoading = ref(false)
@@ -131,12 +167,37 @@ function empty() {
 
 function loadNode() {
   empty()
+  if (props.explanationMode) return
   const kind = props.target?.kind
   if (kind === 'root') {
     loadRoot()
   } else if (kind === 'func' || kind === 'cross') {
     loadGraphNode()
   }
+}
+
+function apiStatusText(value) {
+  return ({ pending: '等待中', running: '生成中', completed: '已完成', partial: '部分完成', failed: '失败' })[value] || value || '未生成'
+}
+
+function explanationObject(value) {
+  if (!value) return null
+  if (typeof value === 'object') return value
+  try { return JSON.parse(value) } catch { return { summary: value } }
+}
+
+function explanationSummary(value) {
+  const parsed = explanationObject(value) || {}
+  return parsed.summary || parsed.business_purpose_zh || parsed.business_purpose_en || parsed.purpose || ''
+}
+
+function explanationSteps(value) {
+  const parsed = explanationObject(value) || {}
+  return parsed.main_flow || parsed.business_flow || parsed.business_flow_zh || parsed.steps || []
+}
+
+function stepText(step) {
+  return typeof step === 'string' ? step : (step.detail || step.summary || step.title || JSON.stringify(step))
 }
 
 async function loadGraphNode() {
@@ -266,6 +327,15 @@ watch(
 .nrr-loading, .nrr-muted { color: #8a8f9a; font-size: 11px; margin: 0; }
 .nrr-empty { display: grid; gap: 8px; }
 .nrr-result { font-size: 12px; }
+.nrr-api-mode { display: grid; gap: 8px; }
+.nrr-api-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.nrr-api-progress { color: #2a6496; background: #e3f0fc; border-radius: 6px; padding: 7px 8px; margin: 0; line-height: 1.5; }
+.nrr-api-meta { display: flex; align-items: center; gap: 6px; color: #8a8f9a; font-size: 10px; }
+.nrr-api-card { border: 1px solid #ececf2; border-radius: 6px; padding: 8px 9px; background: #fff; line-height: 1.55; }
+.nrr-api-card h4 { margin: 0 0 4px; font-size: 11px; color: #555; }
+.nrr-api-card p { margin: 0; color: #454852; }
+.nrr-api-card ol { margin: 6px 0 0 16px; padding: 0; color: #555; }
+.nrr-api-card summary { cursor: pointer; color: #555; font-weight: 600; }
 .nrr-error { color: #c0392b; font-size: 11px; margin: 6px 0 0; word-break: break-word; }
 .nrr-edit { display: grid; gap: 8px; }
 

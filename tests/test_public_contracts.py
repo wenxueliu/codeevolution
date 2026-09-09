@@ -36,6 +36,7 @@ def test_legacy_dto_contracts_are_stable():
             "handler_name",
             "file_path",
             "line",
+            "node_id",
             "params",
             "return_type",
                 "decorators",

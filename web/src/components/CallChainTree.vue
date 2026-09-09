@@ -64,8 +64,20 @@
 
       <!-- 右侧：当前节点的业务规则解释 -->
       <aside class="ct-rail">
-        <div class="ct-rail-title">业务规则解释</div>
-        <NodeRuleRail :repo="repo" :member="member" :snapshot-id="snapshotId" :mermaid="mermaid" :target="selected" />
+        <div class="ct-rail-title">后端调用链 · 节点解释与聚合</div>
+        <NodeRuleRail
+          :repo="repo"
+          :member="member"
+          :snapshot-id="snapshotId"
+          :mermaid="mermaid"
+          :target="selected"
+          :explanation-mode="explanationMode"
+          :explanation-snapshot="explanationSnapshot"
+          :explanation-state="explanationState"
+          :explanation-node="selectedExplanation"
+          @generate-api="emit('generate-api')"
+          @manage-api-explanations="emit('manage-api-explanations')"
+        />
       </aside>
     </div>
   </div>
@@ -84,7 +96,12 @@ const props = defineProps({
   line: { type: [String, Number], default: null },
   label: { type: Object, default: () => ({}) },
   mermaid: { type: String, default: '' },
+  explanationMode: { type: Boolean, default: false },
+  explanationSnapshot: { type: Object, default: null },
+  explanationState: { type: Object, default: () => ({}) },
 })
+
+const emit = defineEmits(['generate-api', 'manage-api-explanations'])
 
 const treeProps = { label: 'name', isLeaf: 'leaf' }
 
@@ -104,6 +121,17 @@ const rootLabel = computed(() => ({
 const emptyText = computed(() => {
   if (!rootLoaded.value) return '正在加载调用链…'
   return rootEmpty.value ? '该处理函数未识别到直接子调用。' : ''
+})
+
+const selectedExplanation = computed(() => {
+  const nodeId = selected.value?.kind === 'root'
+    ? props.label.node_id
+    : selected.value?.descriptor?.node_id
+  if (!nodeId) return null
+  return (props.explanationSnapshot?.nodes || []).find((node) => {
+    const key = String(node.node_key || '')
+    return key === nodeId || key.endsWith(`::${nodeId}`)
+  }) || null
 })
 
 function identityOf(child) {
@@ -201,6 +229,7 @@ function selectRoot() {
       method: rootLabel.value.method,
       path: rootLabel.value.path,
       handler: rootLabel.value.handler,
+      node_id: props.label.node_id || '',
     },
   }
 }

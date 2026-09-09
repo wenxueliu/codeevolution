@@ -37,7 +37,7 @@ function mountPage(component, responses = {}, props = {}) {
     global: {
       components: { RouterLink },
       mixins: [{ data: () => ({ loading: false, error: null }) }],
-      mocks: { $api: api, $router: { push: vi.fn() }, $runAsync: async (task) => task() },
+      mocks: { $api: api, $router: { push: vi.fn() }, $route: { query: { snapshot_id: 'test-snapshot' } }, $runAsync: async (task) => task() },
     },
   })
   return { wrapper, api }
@@ -300,7 +300,7 @@ describe('repository and knowledge pages', () => {
     await wrapper.find('.primary').trigger('click')
     await flushPromises()
     expect(confirm).toHaveBeenCalled()
-    expect(api.get).toHaveBeenLastCalledWith('/api/knowledge', { repo: 'mall', include_llm: true })
+    expect(api.get).toHaveBeenLastCalledWith('/api/knowledge', { snapshot_id: 'test-snapshot', include_llm: true })
     wrapper.vm.activeSection = 'business_descriptions'
     await wrapper.vm.$nextTick()
     expect(wrapper.vm.isDisabled({ note: 'x' })).toBe(true)
@@ -374,13 +374,13 @@ describe('repository and knowledge pages', () => {
     expect(api.request).not.toHaveBeenCalledWith('/api/api-explanations/generate', expect.anything())
     await wrapper.find('tr.clickable').trigger('click')
     await flushPromises()
-    expect(api.get).toHaveBeenCalledWith('/api/api-explanations/current', { repo: 'mall', member: 'orders', api_key: 'POST|/orders|OrderController.create' })
+    expect(api.get).toHaveBeenCalledWith('/api/api-explanations/current', { repository_snapshot_id: 'test-snapshot', api_key: 'POST|/orders|OrderController.create' })
     expect(wrapper.text()).toContain('尚未生成该端点的解释快照')
 
     await wrapper.find('[data-testid="explanation-generate"]').trigger('click')
     await flushPromises()
     expect(api.request).toHaveBeenCalledWith('/api/api-explanations/generate', expect.objectContaining({
-      method: 'POST', body: JSON.stringify({ repo: 'mall', member: 'orders', method: 'POST', path: '/orders', handler: 'OrderController.create', file: 'OrderController.java', line: 42 }),
+      method: 'POST', body: JSON.stringify({ repository_snapshot_id: 'test-snapshot', repo: 'mall', member: 'orders', method: 'POST', path: '/orders', handler: 'OrderController.create', file: 'OrderController.java', line: 42 }),
     }))
     expect(wrapper.text()).toContain('正在生成候选快照')
 
@@ -431,7 +431,7 @@ describe('repository and knowledge pages', () => {
   it('renders repository and knowledge empty variants', async () => {
     const { wrapper: home } = mountPage(Home, { '/api/repos': { repos: [{ name: 'empty', path: '/empty', repositories: [{ name: 'empty' }] }] } })
     await flushPromises()
-    expect(home.text()).toContain('进入知识中心')
+    expect(home.text()).toContain('查看 Snapshots')
 
     const { wrapper: knowledge } = mountPage(Knowledge, { '/api/knowledge': null }, { repoName: 'empty' })
     await flushPromises()
