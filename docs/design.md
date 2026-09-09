@@ -1,5 +1,8 @@
 # CodeEvolution — 代码仓功能演进分析 + 业务知识逆向系统设计文档
 
+> 下一阶段已确认方案：[仓库级解析快照设计](repository-analysis-snapshot-design.md)。该方案尚未实施，
+> 将以用户手动生成的仓库级时间点快照替代实时读取，并移除旧 Git Evolution Engine。
+
 ## 1. 项目定位
 
 CodeEvolution 做两件事：

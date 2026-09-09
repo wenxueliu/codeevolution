@@ -16,11 +16,11 @@ from pathlib import Path
 from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 from .infrastructure.registry_json import RegistryRepository
 from .infrastructure.topology_cache_json import TopologyCache
-from .paths import data_dir
+from .paths import shared_data_file
 
-REGISTRY_DIR = data_dir()
-REGISTRY_FILE = REGISTRY_DIR / "registry.json"
-TOPOLOGY_CACHE_FILE = REGISTRY_DIR / "topology_cache.json"
+REGISTRY_FILE = shared_data_file("registry.json")
+REGISTRY_DIR = REGISTRY_FILE.parent
+TOPOLOGY_CACHE_FILE = shared_data_file("topology_cache.json")
 
 
 # ── Service role inference ─────────────────────────────────────────────

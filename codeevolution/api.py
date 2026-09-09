@@ -8,9 +8,11 @@ import time
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
+from enum import Enum
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -19,6 +21,7 @@ from .analysis.knowledge.call_tree import CallTreeService
 from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
+from .application.snapshot_runtime import SnapshotRuntime
 from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
 from .infrastructure.business_rule_store import BusinessRuleStore
@@ -30,8 +33,9 @@ from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.node_rule_store import NodeRuleStore
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
-from .paths import data_dir, repo_data_file
+from .paths import analysis_data_dir, data_dir, repo_data_file
 from .registry import (
+    REGISTRY_FILE,
     get_repo,
     list_repos,
     register_repo,
@@ -56,6 +60,7 @@ _ui_test_store: UiTestStore | None = None
 _business_rule_store: BusinessRuleStore | None = None
 _node_rule_store: NodeRuleStore | None = None
 _explanation_snapshot_store: ExplanationSnapshotStore | None = None
+_snapshot_runtime: SnapshotRuntime | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies", default={})
 _init_tasks: dict[str, dict] = {}
 _init_lock = threading.Lock()
@@ -129,6 +134,62 @@ class ApiExplanationGenerateRequest(BaseModel):
     line: int | None = Field(default=None, ge=1)
 
 
+class AnalysisRunCreateRequest(BaseModel):
+    member_ids: list[str] = Field(min_length=1)
+    external_context: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
+class AnalysisRunRetryRequest(BaseModel):
+    member_ids: list[str] | None = None
+
+
+class ScopeCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ScopeUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class RepositoryMemberCreateRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=200)
+    registered_path: str = Field(min_length=1, max_length=4000)
+
+
+class RepositoryMemberUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    registered_path: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class SnapshotMetadataRequest(BaseModel):
+    label: str = Field(default="", max_length=200)
+    note: str = Field(default="", max_length=5000)
+    pinned: bool = False
+    metadata_version: int = Field(ge=1)
+
+
+class CurrentGraphViewRequest(BaseModel):
+    scope_ids: list[str] | None = None
+    member_ids: list[str] | None = None
+
+
+class ExplicitGraphViewMemberRequest(BaseModel):
+    member_id: str
+    snapshot_id: str | None = None
+    availability: str = Field(pattern="^(available|unparsed|retired)$")
+
+
+class ExplicitGraphViewRequest(BaseModel):
+    members: list[ExplicitGraphViewMemberRequest] = Field(min_length=1)
+
+
+class GraphViewPinRequest(BaseModel):
+    label: str = Field(default="", max_length=200)
+    note: str = Field(default="", max_length=5000)
+
+
 def get_store(repo: str = "") -> EvolutionStore:
     dependencies = _request_dependencies.get()
     if factory := dependencies.get("store_factory"):
@@ -196,6 +257,307 @@ def get_ui_recording_service() -> UiRecordingService:
 
 def codeevolution_data_dir() -> Path:
     return data_dir()
+
+
+def get_snapshot_runtime() -> SnapshotRuntime:
+    global _snapshot_runtime
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("snapshot_runtime"):
+        return injected
+    if _snapshot_runtime is None:
+        _snapshot_runtime = SnapshotRuntime(
+            analysis_data_dir(),
+            legacy_registry=REGISTRY_FILE,
+            concurrency=int(os.environ.get("CODEEVOLUTION_ANALYSIS_CONCURRENCY", "2")),
+        )
+    return _snapshot_runtime
+
+
+def get_catalog_service():
+    dependencies = _request_dependencies.get()
+    return dependencies.get("catalog_service") or get_snapshot_runtime().catalog
+
+
+def get_analysis_run_service():
+    dependencies = _request_dependencies.get()
+    return dependencies.get("analysis_run_service") or get_snapshot_runtime().runs
+
+
+def get_repository_snapshot_service():
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("repository_snapshot_service"):
+        return injected
+    from .application.repository_snapshot_service import RepositorySnapshotService
+
+    return RepositorySnapshotService(get_snapshot_runtime().store)
+
+
+def get_graph_view_service():
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("graph_view_service"):
+        return injected
+    from .application.repository_snapshot_service import GraphViewService
+
+    return GraphViewService(get_snapshot_runtime().store)
+
+
+def _jsonable(value):
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _resource(value) -> dict:
+    return _jsonable(asdict(value))
+
+
+def _run_resource(service, run) -> dict:
+    attempts = {item.id: _resource(item) for item in service.attempts(run.id)}
+    result = _resource(run)
+    for member in result["members"]:
+        attempt_id = member.get("attempt_id")
+        member["attempt"] = attempts.get(attempt_id)
+    result["counts"] = {
+        "total": len(result["members"]),
+        "queued": sum(item["disposition"] == "queued" for item in result["members"]),
+        "already_running": sum(
+            item["disposition"] == "already_running" for item in result["members"]
+        ),
+    }
+    return result
+
+
+def _notify_analysis_scheduler() -> None:
+    dependencies = _request_dependencies.get()
+    if notify := dependencies.get("analysis_scheduler_notify"):
+        notify()
+    elif "analysis_run_service" not in dependencies:
+        get_snapshot_runtime().notify()
+
+
+# --- Repository snapshot runtime ---
+
+
+@app.get("/api/scopes")
+def list_analysis_scopes():
+    return {"scopes": [_resource(item) for item in get_catalog_service().list_scopes()]}
+
+
+@app.post("/api/scopes", status_code=201)
+def create_analysis_scope(request: ScopeCreateRequest):
+    try:
+        return {"scope": _resource(get_catalog_service().create_scope(request.name))}
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.patch("/api/scopes/{scope_id}")
+def update_analysis_scope(scope_id: str, request: ScopeUpdateRequest):
+    try:
+        return {"scope": _resource(get_catalog_service().rename_scope(scope_id, request.name))}
+    except KeyError as error:
+        raise HTTPException(404, "scope not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.get("/api/scopes/{scope_id}/members")
+def list_analysis_scope_members(scope_id: str):
+    try:
+        members = get_catalog_service().list_members(scope_id)
+    except KeyError as error:
+        raise HTTPException(404, "scope not found") from error
+    return {"members": [_resource(item) for item in members]}
+
+
+@app.post("/api/scopes/{scope_id}/members", status_code=201)
+def create_repository_member(scope_id: str, request: RepositoryMemberCreateRequest):
+    try:
+        member = get_catalog_service().add_member(
+            scope_id, request.display_name, request.registered_path
+        )
+        return {"member": _resource(member)}
+    except KeyError as error:
+        raise HTTPException(404, "scope not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@app.patch("/api/repository-members/{member_id}")
+def update_repository_member(member_id: str, request: RepositoryMemberUpdateRequest):
+    try:
+        member = get_catalog_service().update_member(
+            member_id,
+            display_name=request.display_name,
+            registered_path=request.registered_path,
+        )
+        return {"member": _resource(member)}
+    except KeyError as error:
+        raise HTTPException(404, "repository member not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@app.delete("/api/repository-members/{member_id}")
+def retire_repository_member(member_id: str):
+    try:
+        member = get_catalog_service().retire_member(member_id)
+        return {"member": _resource(member), "deleted_data": False}
+    except KeyError as error:
+        raise HTTPException(404, "repository member not found") from error
+
+
+@app.post("/api/analysis-runs", status_code=202)
+def create_analysis_run(request: AnalysisRunCreateRequest, response: Response):
+    service = get_analysis_run_service()
+    try:
+        run = service.create_run(
+            request.member_ids,
+            external_context=request.external_context,
+            tags=request.tags,
+            idempotency_key=request.idempotency_key,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    response.headers["Location"] = f"/api/analysis-runs/{run.id}"
+    _notify_analysis_scheduler()
+    return {"run": _run_resource(service, run)}
+
+
+@app.get("/api/analysis-runs/{run_id}")
+def get_analysis_run(run_id: str):
+    service = get_analysis_run_service()
+    try:
+        return {"run": _run_resource(service, service.get_run(run_id))}
+    except KeyError as error:
+        raise HTTPException(404, "analysis run not found") from error
+
+
+@app.post("/api/analysis-runs/{run_id}/retry", status_code=202)
+def retry_analysis_run(run_id: str, request: AnalysisRunRetryRequest, response: Response):
+    service = get_analysis_run_service()
+    try:
+        run = service.retry_run(run_id, request.member_ids)
+    except KeyError as error:
+        raise HTTPException(404, "analysis run not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    response.headers["Location"] = f"/api/analysis-runs/{run.id}"
+    _notify_analysis_scheduler()
+    return {"run": _run_resource(service, run)}
+
+
+@app.post("/api/analysis-runs/{run_id}/cancel")
+def cancel_analysis_run(run_id: str):
+    service = get_analysis_run_service()
+    try:
+        return {"run": _run_resource(service, service.cancel_run(run_id))}
+    except KeyError as error:
+        raise HTTPException(404, "analysis run not found") from error
+
+
+@app.post("/api/analysis-runs/{run_id}/members/{member_id}/cancel")
+def cancel_analysis_run_member(run_id: str, member_id: str):
+    service = get_analysis_run_service()
+    try:
+        return {"run": _run_resource(service, service.cancel_member(run_id, member_id))}
+    except KeyError as error:
+        raise HTTPException(404, "analysis run or member not found") from error
+
+
+@app.get("/api/repository-members/{member_id}/snapshots")
+def list_repository_snapshots(member_id: str):
+    try:
+        items = get_repository_snapshot_service().list_snapshots(member_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository member not found") from error
+    return {"items": [_resource(item) for item in items], "next_cursor": None}
+
+
+@app.get("/api/repository-snapshots/{snapshot_id}")
+def get_repository_snapshot(snapshot_id: str, include: str = Query(default="")):
+    try:
+        item = _resource(get_repository_snapshot_service().get_snapshot(snapshot_id))
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    if include != "facts":
+        item.pop("facts", None)
+    return {"snapshot": item}
+
+
+@app.patch("/api/repository-snapshots/{snapshot_id}/metadata")
+def update_repository_snapshot_metadata(snapshot_id: str, request: SnapshotMetadataRequest):
+    try:
+        item = get_repository_snapshot_service().update_metadata(
+            snapshot_id,
+            label=request.label,
+            note=request.note,
+            pinned=request.pinned,
+            expected_version=request.metadata_version,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return {"snapshot": _resource(item)}
+
+
+@app.post("/api/graph-views/current", status_code=201)
+def create_current_graph_view(request: CurrentGraphViewRequest):
+    try:
+        view = get_graph_view_service().create_current(
+            scope_ids=request.scope_ids, member_ids=request.member_ids
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"view": _resource(view)}
+
+
+@app.post("/api/graph-views", status_code=201)
+def create_explicit_graph_view(request: ExplicitGraphViewRequest):
+    from .domain.analysis_snapshot import GraphViewMember, ViewAvailability
+
+    members = [
+        GraphViewMember(
+            member_id=item.member_id,
+            ordinal=index,
+            snapshot_id=item.snapshot_id,
+            availability=ViewAvailability(item.availability),
+        )
+        for index, item in enumerate(request.members)
+    ]
+    try:
+        view = get_graph_view_service().create_explicit(members)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"view": _resource(view)}
+
+
+@app.get("/api/graph-views/{view_id}")
+def get_graph_view(view_id: str):
+    from .infrastructure.analysis_snapshot_sqlite import ViewExpiredError
+
+    try:
+        return {"view": _resource(get_graph_view_service().get(view_id))}
+    except ViewExpiredError as error:
+        raise HTTPException(410, "graph view expired") from error
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+
+
+@app.post("/api/graph-views/{view_id}/pin")
+def pin_graph_view(view_id: str, request: GraphViewPinRequest):
+    try:
+        view = get_graph_view_service().pin(view_id, label=request.label, note=request.note)
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+    except ValueError as error:
+        raise HTTPException(410, str(error)) from error
+    return {"view": _resource(view)}
 
 
 def get_llm_config_store() -> LLMConfigStore:
@@ -1139,7 +1501,14 @@ _route_app = app
 async def _lifespan(application):
     global _audit_store, _ui_test_store, _business_rule_store, _node_rule_store
     global _explanation_snapshot_store
+    runtime = application.state.dependencies.get("snapshot_runtime")
+    if runtime is None and application.state.use_default_snapshot_runtime:
+        runtime = get_snapshot_runtime()
+    if runtime is not None:
+        runtime.start()
     yield
+    if runtime is not None:
+        runtime.close()
     for store in list(_stores.values()):
         store.close()
     _stores.clear()
@@ -1164,6 +1533,7 @@ def create_app(dependencies: dict | None = None) -> FastAPI:
     """Create an isolated delivery adapter with injectable dependencies."""
     created = FastAPI(title="CodeEvolution API", lifespan=_lifespan)
     created.state.dependencies = dependencies or {}
+    created.state.use_default_snapshot_runtime = dependencies is None
     created.add_middleware(
         CORSMiddleware,
         allow_origins=created.state.dependencies.get("cors_origins", ["*"]),

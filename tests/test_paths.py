@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from codeevolution.paths import data_dir, environment_value, repo_data_file
+from codeevolution.paths import (
+    analysis_data_dir,
+    data_dir,
+    environment_value,
+    repo_data_file,
+    shared_data_file,
+)
 
 
 def test_new_environment_name_takes_precedence(monkeypatch):
@@ -30,3 +36,33 @@ def test_repo_data_file_prefers_new_then_existing_legacy(tmp_path):
     current.parent.mkdir()
     current.touch()
     assert repo_data_file(tmp_path, "evolution.db") == current
+
+
+def test_analysis_data_dir_never_falls_back_to_legacy(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    (home / ".codehistory").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("CODEEVOLUTION_DATA_DIR", raising=False)
+    monkeypatch.setenv("CODEHISTORY_DATA_DIR", str(tmp_path / "legacy-setting"))
+
+    assert analysis_data_dir() == home / ".codeevolution"
+
+    configured = tmp_path / "snapshots"
+    monkeypatch.setenv("CODEEVOLUTION_DATA_DIR", str(configured))
+    assert analysis_data_dir() == configured
+
+
+def test_shared_data_file_falls_back_by_file_not_directory(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    (home / ".codeevolution").mkdir(parents=True)
+    legacy = home / ".codehistory" / "registry.json"
+    legacy.parent.mkdir()
+    legacy.write_text("[]")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("CODEEVOLUTION_DATA_DIR", raising=False)
+    monkeypatch.delenv("CODEHISTORY_DATA_DIR", raising=False)
+
+    assert shared_data_file("registry.json") == legacy
+    current = home / ".codeevolution" / "registry.json"
+    current.write_text("[]")
+    assert shared_data_file("registry.json") == current

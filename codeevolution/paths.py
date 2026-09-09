@@ -23,6 +23,22 @@ def data_dir() -> Path:
     return current if current.exists() or not legacy.exists() else legacy
 
 
+def analysis_data_dir() -> Path:
+    """Return the snapshot data root without falling back to legacy storage."""
+    configured = os.environ.get("CODEEVOLUTION_DATA_DIR")
+    return Path(configured) if configured else Path.home() / ".codeevolution"
+
+
+def shared_data_file(filename: str) -> Path:
+    """Prefer a current global data file, falling back to that exact legacy file."""
+    configured = environment_value("CODEEVOLUTION_DATA_DIR")
+    if configured:
+        return Path(configured) / filename
+    current = Path.home() / ".codeevolution" / filename
+    legacy = Path.home() / ".codehistory" / filename
+    return current if current.exists() or not legacy.exists() else legacy
+
+
 def repo_data_file(repo: str | Path, filename: str) -> Path:
     """Prefer a renamed repo-local file and fall back to an existing legacy one."""
     repo = Path(repo)
