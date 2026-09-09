@@ -1,245 +1,230 @@
-"""MCP server — exposes evolution analysis tools for AI agents."""
+"""MCP tools for immutable repository-analysis snapshots.
+
+This boundary has no repository-path parameters. All graph and source access
+is performed through ``SnapshotQueryService`` against frozen evidence.
+"""
+
+from __future__ import annotations
 
 import json
+from dataclasses import asdict, is_dataclass
+from enum import Enum
+from typing import Any
 
 from fastmcp import FastMCP
 
-from .application.evolution_service import EvolutionQueryService
-from .config import Config
-from .store import EvolutionStore
+from .application.snapshot_query_service import SnapshotQueryService
+from .application.snapshot_runtime import SnapshotRuntime
+from .application.snapshot_topology_service import SnapshotTopologyService
 
 mcp = FastMCP("codeevolution")
 
+# Kept as non-tool compatibility shims for embedders importing the old Python
+# names. They are intentionally not registered with FastMCP and cannot perform
+# Evolution/live-repository reads.
+def get_feature_timeline(feature_name: str): return _result({"error": "No store configured"})
+def list_features(): return _result({"error": "No store configured"})
+def get_stats(): return _result({"error": "No store configured"})
+def search_feature_history(query: str): return _result({"error": "No store configured"})
+def get_feature_summary(feature_name: str): return _result({"error": "No store configured"})
 
-def get_store() -> EvolutionStore | None:
-    """Get the store for the configured repo."""
-    # Store is injected by CLI when starting the server
-    return getattr(mcp, "_store", None)
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value):
+        return _jsonable(asdict(value))
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
-def get_config() -> Config | None:
-    return getattr(mcp, "_config", None)
+def _result(value: Any) -> str:
+    return json.dumps(_jsonable(value), indent=2, ensure_ascii=False)
 
 
-def get_service() -> EvolutionQueryService | None:
-    service = getattr(mcp, "_service", None)
-    if service is not None:
+def get_runtime() -> SnapshotRuntime | None:
+    return getattr(mcp, "_snapshot_runtime", None)
+
+
+def get_queries() -> SnapshotQueryService | None:
+    return getattr(mcp, "_snapshot_queries", None)
+
+
+def set_context(runtime: SnapshotRuntime) -> None:
+    """Set the snapshot application facade for this MCP server instance."""
+    mcp._snapshot_runtime = runtime
+    mcp._snapshot_queries = runtime.snapshot_queries
+
+
+def _require_runtime() -> SnapshotRuntime | str:
+    runtime = get_runtime()
+    return runtime if runtime is not None else _result({"error": "No snapshot runtime configured"})
+
+
+def _require_queries() -> SnapshotQueryService | str:
+    queries = get_queries()
+    return queries if queries is not None else _result({"error": "No snapshot runtime configured"})
+
+
+@mcp.tool()
+def list_snapshot_catalog() -> str:
+    """List scopes, members, and their current snapshots.
+
+    Registered paths are intentionally omitted, so a client cannot induce a
+    live workspace read.
+    """
+    runtime = _require_runtime()
+    if isinstance(runtime, str):
+        return runtime
+    scopes = []
+    for scope in runtime.store.list_scopes():
+        members = []
+        for member in runtime.store.list_members(scope.id):
+            current = runtime.store.get_current_snapshot(member.id)
+            members.append({
+                "id": member.id,
+                "display_name": member.display_name,
+                "current_snapshot_id": current.id if current else None,
+            })
+        scopes.append({"id": scope.id, "name": scope.name, "members": members})
+    return _result({"scopes": scopes})
+
+
+@mcp.tool()
+def get_snapshot(snapshot_id: str) -> str:
+    """Get immutable metadata for a repository snapshot by ID."""
+    runtime = _require_runtime()
+    if isinstance(runtime, str):
+        return runtime
+    snapshot = runtime.store.get_snapshot(snapshot_id)
+    if snapshot is None:
+        return _result({"error": "Snapshot not found", "snapshot_id": snapshot_id})
+    metadata = asdict(snapshot)
+    metadata.pop("facts", None)
+    metadata.pop("facts_artifact_key", None)
+    return _result(metadata)
+
+
+@mcp.tool()
+def get_snapshot_facts(snapshot_id: str, section: str = "") -> str:
+    """Read immutable knowledge facts from a snapshot, optionally one section."""
+    queries = _require_queries()
+    if isinstance(queries, str):
+        return queries
+    try:
+        return _result(queries.knowledge(snapshot_id, section=section or None))
+    except KeyError:
+        return _result({"error": "Snapshot or knowledge section not found", "snapshot_id": snapshot_id})
+    except RuntimeError as error:
+        return _result({"error": str(error), "snapshot_id": snapshot_id})
+
+
+@mcp.tool()
+def search_snapshot_symbols(snapshot_id: str, query: str) -> str:
+    """Search frozen graph symbols in a repository snapshot."""
+    queries = _require_queries()
+    if isinstance(queries, str):
+        return queries
+    try:
+        with queries.open(snapshot_id) as handle:
+            return _result({"snapshot_id": snapshot_id, "query": query,
+                            "symbols": handle.graph.functions_named_like(query)})
+    except KeyError:
+        return _result({"error": "Snapshot not found", "snapshot_id": snapshot_id})
+    except RuntimeError as error:
+        return _result({"error": str(error), "snapshot_id": snapshot_id})
+
+
+@mcp.tool()
+def get_snapshot_call_tree(snapshot_id: str, node_id: str) -> str:
+    """Get one frozen call-tree expansion from a repository snapshot."""
+    queries = _require_queries()
+    if isinstance(queries, str):
+        return queries
+    try:
+        return _result(queries.call_tree_children(snapshot_id, node_id))
+    except KeyError:
+        return _result({"error": "Snapshot not found", "snapshot_id": snapshot_id})
+    except RuntimeError as error:
+        return _result({"error": str(error), "snapshot_id": snapshot_id})
+
+
+@mcp.tool()
+def get_snapshot_rule_context(snapshot_id: str, node_id: str) -> str:
+    """Get frozen source context for a node, suitable for rule explanations."""
+    queries = _require_queries()
+    if isinstance(queries, str):
+        return queries
+    try:
+        context = queries.node_rule_context(snapshot_id, node_id)
+        if context is None:
+            return _result({"error": "Node not found", "snapshot_id": snapshot_id, "node_id": node_id})
+        return _result(context)
+    except KeyError:
+        return _result({"error": "Snapshot not found", "snapshot_id": snapshot_id})
+    except RuntimeError as error:
+        return _result({"error": str(error), "snapshot_id": snapshot_id})
+
+
+def _topology_service() -> SnapshotTopologyService | str:
+    runtime = _require_runtime()
+    if isinstance(runtime, str):
+        return runtime
+    return SnapshotTopologyService(runtime.store, runtime.snapshot_queries)
+
+
+@mcp.tool()
+def get_view_topology(view_id: str) -> str:
+    """Project topology from the immutable snapshots in a Graph View."""
+    service = _topology_service()
+    if isinstance(service, str):
         return service
-    store = get_store()
-    return EvolutionQueryService(store) if store is not None else None
-
-
-def set_context(store: EvolutionStore | EvolutionQueryService, config: Config):
-    """Set the store and config for this MCP server instance."""
-    service = store if isinstance(store, EvolutionQueryService) else EvolutionQueryService(store)
-    mcp._store = service.store
-    mcp._service = service
-    mcp._config = config
-
-
-# --- Tools ---
+    try:
+        return _result(service.topology(view_id))
+    except KeyError:
+        return _result({"error": "Graph View not found", "view_id": view_id})
 
 
 @mcp.tool()
-def get_feature_timeline(feature_name: str) -> str:
-    """Get the full evolution timeline of a feature.
-
-    Returns all evolution events (BORN, GROWN, SHRUNK, DIED, etc.)
-    with commit info, ordered chronologically.
-
-    Args:
-        feature_name: Name or partial name of the feature to look up.
-                      Matches against canonical_name and entry_signature.
-    """
-    service = get_service()
-    if not service:
-        return json.dumps({"error": "No store configured"})
-
-    # Search by name (prefix match)
-    features = service.list_features()["features"]
-    matched = None
-    for f in features:
-        if feature_name.lower() in f["canonical_name"].lower():
-            matched = f
-            break
-        if feature_name.lower() in f["entry_signature"].lower():
-            matched = f
-            break
-
-    if not matched:
-        return json.dumps(
-            {
-                "error": f"Feature not found: {feature_name}",
-                "available_features": [f["canonical_name"] for f in features[:20]],
-            }
-        )
-
-    timeline = service.list_events(matched["stable_id"])
-    return json.dumps(
-        {
-            "feature": {
-                "stable_id": matched["stable_id"],
-                "canonical_name": matched["canonical_name"],
-                "entry_type": matched["entry_type"],
-                "status": matched["status"],
-            },
-            "timeline": timeline,
-        },
-        indent=2,
-        ensure_ascii=False,
-    )
+def get_view_impact(view_id: str, service: str) -> str:
+    """Compute impact using only a pinned snapshot membership."""
+    topology = _topology_service()
+    if isinstance(topology, str):
+        return topology
+    try:
+        return _result(topology.impact(view_id, service))
+    except KeyError:
+        return _result({"error": "Graph View not found", "view_id": view_id})
 
 
 @mcp.tool()
-def list_features() -> str:
-    """List all tracked features with their current status.
-
-    Returns each feature's name, type, status, and first/last seen info.
-    """
-    service = get_service()
-    if not service:
-        return json.dumps({"error": "No store configured"})
-
-    features = service.list_features(limit=10000)["features"]
-    return json.dumps(
-        {
-            "total": len(features),
-            "features": [
-                {
-                    "stable_id": f["stable_id"],
-                    "canonical_name": f["canonical_name"],
-                    "entry_type": f["entry_type"],
-                    "status": f["status"],
-                }
-                for f in features
-            ],
-        },
-        indent=2,
-        ensure_ascii=False,
-    )
+def get_view_flow(view_id: str, service: str, path: str = "") -> str:
+    """Trace a flow projection within a frozen Graph View."""
+    topology = _topology_service()
+    if isinstance(topology, str):
+        return topology
+    try:
+        return _result(topology.flow(view_id, service, path))
+    except KeyError:
+        return _result({"error": "Graph View not found", "view_id": view_id})
 
 
 @mcp.tool()
-def get_stats() -> str:
-    """Get overall evolution statistics for the analyzed repository.
-
-    Returns total commits, features, events, and active feature count.
-    """
-    service = get_service()
-    if not service:
-        return json.dumps({"error": "No store configured"})
-    return json.dumps(service.stats(), indent=2)
-
-
-@mcp.tool()
-def search_feature_history(query: str) -> str:
-    """Search for features whose evolution events match a keyword.
-
-    Searches commit messages, event types, and feature names.
-
-    Args:
-        query: Keyword to search for (e.g., "login", "auth", "GROWN").
-    """
-    service = get_service()
-    if not service:
-        return json.dumps({"error": "No store configured"})
-
-    # Search in features
-    features = service.list_features(search=query, limit=10000)["features"]
-    results = []
-    for f in features:
-        if (
-            query.lower() in f["canonical_name"].lower()
-            or query.lower() in f["entry_signature"].lower()
-        ):
-            timeline = service.list_events(f["stable_id"])
-            results.append(
-                {
-                    "stable_id": f["stable_id"],
-                    "canonical_name": f["canonical_name"],
-                    "entry_type": f["entry_type"],
-                    "status": f["status"],
-                    "event_count": len(timeline),
-                }
-            )
-
-    return json.dumps(
-        {
-            "query": query,
-            "results": results[:20],
-            "total": len(results),
-        },
-        indent=2,
-        ensure_ascii=False,
-    )
+def get_view_entities(view_id: str) -> str:
+    """Align entity facts across members of an immutable Graph View."""
+    topology = _topology_service()
+    if isinstance(topology, str):
+        return topology
+    try:
+        return _result(topology.entities(view_id))
+    except KeyError:
+        return _result({"error": "Graph View not found", "view_id": view_id})
 
 
-@mcp.tool()
-def get_feature_summary(feature_name: str) -> str:
-    """Get a human-readable summary of a feature's evolution.
-
-    Includes: birth, current status, growth trend, key events.
-
-    Args:
-        feature_name: Name or partial name of the feature.
-    """
-    service = get_service()
-    if not service:
-        return json.dumps({"error": "No store configured"})
-
-    features = service.list_features(search=feature_name, limit=10000)["features"]
-    matched = None
-    for f in features:
-        if feature_name.lower() in f["canonical_name"].lower():
-            matched = f
-            break
-
-    if not matched:
-        return json.dumps({"error": f"Feature not found: {feature_name}"})
-
-    timeline = service.list_events(matched["stable_id"])
-
-    # Summarize
-    event_types = {}
-    for ev in timeline:
-        event_types[ev["event_type"]] = event_types.get(ev["event_type"], 0) + 1
-
-    growth_events = sum(
-        v for k, v in event_types.items() if k in ("GROWN", "EXTENDED", "DEP_CREATED")
-    )
-    shrink_events = sum(
-        v for k, v in event_types.items() if k in ("SHRUNK", "CONTRACTED", "DEP_REMOVED")
-    )
-
-    trend = "stable"
-    if growth_events > shrink_events:
-        trend = "growing"
-    elif shrink_events > growth_events:
-        trend = "shrinking"
-
-    first_event = timeline[0] if timeline else None
-    last_event = timeline[-1] if timeline else None
-
-    return json.dumps(
-        {
-            "feature": matched["canonical_name"],
-            "stable_id": matched["stable_id"],
-            "type": matched["entry_type"],
-            "status": matched["status"],
-            "trend": trend,
-            "total_events": len(timeline),
-            "event_breakdown": event_types,
-            "first_event": first_event,
-            "last_event": last_event,
-        },
-        indent=2,
-        ensure_ascii=False,
-    )
-
-
-def run_server(
-    store: EvolutionStore | EvolutionQueryService, config: Config, transport: str = "stdio"
-):
-    """Start the MCP server."""
-    set_context(store, config)
+def run_server(runtime: SnapshotRuntime, transport: str = "stdio") -> None:
+    """Start MCP with the snapshot-only application facade."""
+    set_context(runtime)
     mcp.run(transport=transport)

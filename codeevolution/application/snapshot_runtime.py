@@ -12,6 +12,8 @@ from codeevolution.application.analysis_scheduler import AnalysisScheduler
 from codeevolution.application.repository_attempt_worker import RepositoryAttemptWorker
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
 from codeevolution.infrastructure.artifact_store_fs import FileSystemArtifactStore
+from codeevolution.infrastructure.snapshot_bundle_resolver import SnapshotBundleResolver
+from codeevolution.application.snapshot_query_service import SnapshotQueryService
 from codeevolution.infrastructure.registry_snapshot_migration import (
     legacy_registry_migrated,
     migrate_legacy_registry,
@@ -34,6 +36,7 @@ class SnapshotRuntime:
         if legacy_registry is not None and not legacy_registry_migrated(self.store):
             migrate_legacy_registry(legacy_registry, self.data_root, self.store)
         self.artifacts = FileSystemArtifactStore(self.data_root)
+        self.snapshot_queries = SnapshotQueryService(SnapshotBundleResolver(self.store, self.artifacts))
         self.catalog = RepositoryCatalogService(self.store)
         self.runs = AnalysisRunService(self.store)
         self.worker = worker or RepositoryAttemptWorker(self.store, self.artifacts)

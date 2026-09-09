@@ -57,6 +57,7 @@ class ExplanationGenerationService:
                 model_id=self.model_id,
                 prompt_version=PROMPT_VERSION,
                 schema_version=SCHEMA_VERSION,
+                repository_snapshot_id=str(spec.get("repository_snapshot_id", "")),
             )
         )
         return snapshot_id, frozen

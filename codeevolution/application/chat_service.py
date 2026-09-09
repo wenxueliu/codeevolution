@@ -17,6 +17,73 @@ ALLOWED_OPERATIONS = {
     "database.stats",
 }
 
+SNAPSHOT_ALLOWED_OPERATIONS = {
+    "snapshot.search_symbols", "snapshot.find_callers", "snapshot.facts",
+}
+
+
+class SnapshotChatService:
+    """Constrained chat operations over one immutable repository snapshot."""
+
+    def __init__(self, audit_store, snapshot_queries, llm_client=None):
+        self.audit_store = audit_store
+        self.snapshot_queries = snapshot_queries
+        self.llm_client = llm_client
+
+    def ask(self, snapshot_id: str, question: str) -> dict:
+        started = time.perf_counter()
+        plan = self._plan(question)
+        try:
+            results = [self._execute(snapshot_id, item) for item in plan]
+            count = sum(len(item["rows"]) for item in results)
+            audit_id = self.audit_store.record(
+                repository=snapshot_id, question=question, plan=plan, status="success",
+                result_count=count, duration_ms=(time.perf_counter() - started) * 1000,
+            )
+            return {"answer": ChatService._answer(question, results), "operations": results, "audit_id": audit_id,
+                    "repository_snapshot_id": snapshot_id}
+        except Exception as error:
+            self.audit_store.record(repository=snapshot_id, question=question, plan=plan, status="failed",
+                                    duration_ms=(time.perf_counter() - started) * 1000, error=str(error))
+            raise
+
+    @staticmethod
+    def _plan(question: str) -> list[dict]:
+        keyword = next((a or b for a, b in reversed(re.findall(r"`([^`]+)`|\\b([A-Za-z_$][\\w$.:/-]{2,})\\b", question))), "")[:100]
+        lowered = question.lower()
+        if any(word in lowered for word in ("知识", "报告", "facts", "概览")):
+            return [{"operation": "snapshot.facts", "args": {}}]
+        if any(word in lowered for word in ("调用", "caller", "谁调用")):
+            return [{"operation": "snapshot.find_callers", "args": {"symbol": keyword, "limit": 20}}]
+        return [{"operation": "snapshot.search_symbols", "args": {"keyword": keyword, "limit": 20}}]
+
+    def _execute(self, snapshot_id: str, item: dict) -> dict:
+        operation, args = item["operation"], item.get("args") or {}
+        if operation not in SNAPSHOT_ALLOWED_OPERATIONS:
+            raise ValueError(f"Unsupported snapshot operation: {operation}")
+        limit = max(1, min(int(args.get("limit", 20)), 100))
+        if operation == "snapshot.facts":
+            rows = [self.snapshot_queries.knowledge(snapshot_id)]
+        else:
+            value = str(args.get("keyword", args.get("symbol", "")))[:100]
+            with self.snapshot_queries.open(snapshot_id) as handle:
+                if operation == "snapshot.search_symbols":
+                    rows = handle.graph.query(
+                        """SELECT id,name,qualified_name,kind,file_path,start_line FROM nodes
+                           WHERE name LIKE ? OR qualified_name LIKE ? ORDER BY name LIMIT ?""",
+                        [f"%{value}%", f"%{value}%", limit],
+                    )
+                else:
+                    rows = handle.graph.query(
+                        """SELECT DISTINCT caller.id,caller.name,caller.qualified_name,caller.kind,
+                                  caller.file_path,caller.start_line FROM edges e
+                           JOIN nodes callee ON callee.id=e.target JOIN nodes caller ON caller.id=e.source
+                           WHERE e.kind='calls' AND (callee.name LIKE ? OR callee.qualified_name LIKE ?)
+                           ORDER BY caller.name LIMIT ?""",
+                        [f"%{value}%", f"%{value}%", limit],
+                    )
+        return {"operation": operation, "args": args, "source": "snapshot", "rows": rows}
+
 
 class ChatService:
     def __init__(self, audit_store, repository_resolver, store_resolver, llm_client=None):

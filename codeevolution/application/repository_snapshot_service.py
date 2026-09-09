@@ -21,6 +21,10 @@ class RepositorySnapshotService:
         snapshot = self.store.get_snapshot(snapshot_id)
         if snapshot is None:
             raise KeyError(snapshot_id)
+        if snapshot.deletion_state == "trashed":
+            raise RuntimeError("snapshot_gone")
+        if snapshot.deletion_state == "deletion_pending":
+            raise RuntimeError("snapshot_deletion_pending")
         return snapshot
 
     def update_metadata(
@@ -39,6 +43,12 @@ class RepositorySnapshotService:
             pinned=pinned,
             expected_version=expected_version,
         )
+
+    def deletion_preview(self, snapshot_id: str) -> dict:
+        snapshot = self.get_snapshot(snapshot_id)
+        refs = self.store.snapshot_references(snapshot_id)
+        return {"snapshot_id": snapshot_id, "protected": bool(refs), "references": refs,
+                "estimated_release_bytes": 0 if refs else self.store.get_evidence(snapshot.evidence_digest).byte_size}
 
 
 class GraphViewService:
@@ -64,3 +74,25 @@ class GraphViewService:
 
     def pin(self, view_id: str, *, label: str = "", note: str = "") -> GraphView:
         return self.store.pin_view(view_id, label=label, note=note)
+
+    def refresh(self, view_id: str) -> GraphView:
+        view = self.get(view_id)
+        selector = view.selector
+        return self.store.create_current_view(
+            scope_ids=selector.get("scope_ids") if selector.get("scope_ids") is not None else None,
+            member_ids=selector.get("member_ids") if selector.get("member_ids") is not None else None,
+        )
+
+    def export(self, view_id: str) -> dict:
+        view = self.get(view_id)
+        if view.lifecycle.value != "pinned":
+            raise ValueError("view_not_pinned")
+        return {
+            "schema": "codeevolution.graph-view.v1", "view_id": view.id,
+            "view_digest": view.digest, "created_at": view.created_at,
+            "members": [
+                {"member_id": item.member_id, "repository_snapshot_id": item.snapshot_id,
+                 "availability": item.availability.value}
+                for item in view.members
+            ],
+        }

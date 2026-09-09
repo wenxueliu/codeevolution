@@ -29,6 +29,7 @@ class ExplanationSnapshot:
     error: str = ""
     created_at: int = 0
     completed_at: int | None = None
+    repository_snapshot_id: str = ""
 
 
 @dataclass(frozen=True)

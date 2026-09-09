@@ -65,7 +65,7 @@
       <!-- 右侧：当前节点的业务规则解释 -->
       <aside class="ct-rail">
         <div class="ct-rail-title">业务规则解释</div>
-        <NodeRuleRail :repo="repo" :member="member" :mermaid="mermaid" :target="selected" />
+        <NodeRuleRail :repo="repo" :member="member" :snapshot-id="snapshotId" :mermaid="mermaid" :target="selected" />
       </aside>
     </div>
   </div>
@@ -79,6 +79,7 @@ import NodeRuleRail from './NodeRuleRail.vue'
 const props = defineProps({
   repo: { type: String, default: '' },
   member: { type: String, default: '' },
+  snapshotId: { type: String, default: '' },
   file: { type: String, default: '' },
   line: { type: [String, Number], default: null },
   label: { type: Object, default: () => ({}) },
@@ -122,7 +123,7 @@ function ancestryIds(node) {
 }
 
 function paramsFor(data) {
-  if (data.type === 'func') return { repo: props.repo, member: data.member, node_id: data.id }
+  if (data.type === 'func') return { repository_snapshot_id: props.snapshotId, node_id: data.id }
   if (data.type === 'cross') return { repo: data.target_service, handler: data.target_function }
   return null
 }
@@ -156,7 +157,7 @@ async function loadNode(node, resolve) {
     rootError.value = ''
     try {
       const payload = await apiClient.get('/api/call-tree/children', {
-        repo: props.repo, member: props.member, file: props.file, line: props.line,
+        repository_snapshot_id: props.snapshotId, node_id: props.label.node_id || props.label.handler || '',
       })
       rootLoaded.value = true
       rootEmpty.value = !payload || !(payload.children || []).length
@@ -170,6 +171,7 @@ async function loadNode(node, resolve) {
   }
 
   const params = paramsFor(node.data)
+  if (params && props.snapshotId) params.repository_snapshot_id = props.snapshotId
   if (!params) {
     resolve([])
     return

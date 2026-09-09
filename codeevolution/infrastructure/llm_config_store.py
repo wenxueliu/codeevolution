@@ -34,17 +34,18 @@ class LLMConfigStore:
         model = str(data.get("model") or "").strip()
         if not api_key or not model:
             return None
-        return {
+        result = {
             "api_key": api_key,
             "model": model,
             "api_base": str(data.get("api_base") or "").strip(),
-            # 推理模型会把 max_tokens 预算几乎全部花在 reasoning 上，
-            # 导致 content 为空。默认关闭 thinking，保证结构化抽取能产出结果。
-            "disable_thinking": bool(data.get("disable_thinking", True)),
-            # 可选：模型上下文窗口 / 单次最大输出（token）。留空 = 不约束。
-            "context_window": _optional_int(data.get("context_window")),
-            "max_output_tokens": _optional_int(data.get("max_output_tokens")),
         }
+        if "disable_thinking" in data:
+            result["disable_thinking"] = bool(data["disable_thinking"])
+        if "context_window" in data:
+            result["context_window"] = _optional_int(data["context_window"])
+        if "max_output_tokens" in data:
+            result["max_output_tokens"] = _optional_int(data["max_output_tokens"])
+        return result
 
     def save(self, config: dict) -> dict:
         api_key = str(config.get("api_key") or "").strip()
@@ -57,10 +58,10 @@ class LLMConfigStore:
             "api_key": api_key,
             "model": model,
             "api_base": str(config.get("api_base") or "").strip(),
-            "disable_thinking": bool(config.get("disable_thinking", True)),
-            "context_window": _optional_int(config.get("context_window")),
-            "max_output_tokens": _optional_int(config.get("max_output_tokens")),
         }
+        for key in ("disable_thinking", "context_window", "max_output_tokens"):
+            if key in config:
+                payload[key] = bool(config[key]) if key == "disable_thinking" else _optional_int(config[key])
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{self.path.name}.", dir=self.path.parent

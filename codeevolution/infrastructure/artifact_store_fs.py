@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import uuid
+import time
 from pathlib import Path
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -96,6 +97,50 @@ class FileSystemArtifactStore:
         self._fsync_dir(source.parent)
         self._fsync_dir(bucket)
         return target
+
+    def purge_trash(self, deletion_id: str) -> None:
+        """Permanently remove one previously isolated trash bucket."""
+        self._validate_component(deletion_id, "deletion id")
+        bucket = (self.trash_dir / deletion_id).resolve()
+        if not self._is_child(bucket, self.trash_dir) or not bucket.is_dir() or bucket.is_symlink():
+            raise ArtifactStoreError("trash bucket unavailable")
+        shutil.rmtree(bucket)
+        self._fsync_dir(self.trash_dir)
+
+    def scavenge_staging(self, *, max_age_seconds: int = 3600) -> list[str]:
+        """Remove abandoned staging directories older than the safety window."""
+        now = time.time()
+        removed: list[str] = []
+        for path in self.staging_dir.iterdir():
+            if not path.is_dir() or path.is_symlink():
+                continue
+            try:
+                age = now - path.stat().st_mtime
+                if age >= max_age_seconds:
+                    shutil.rmtree(path)
+                    removed.append(path.name)
+            except FileNotFoundError:
+                continue
+        if removed:
+            self._fsync_dir(self.staging_dir)
+        return removed
+
+    def scavenge_trash(self, *, max_age_seconds: int = 86400) -> list[str]:
+        """Purge trash buckets that have exceeded the recovery grace period."""
+        now = time.time()
+        removed: list[str] = []
+        for path in self.trash_dir.iterdir():
+            if not path.is_dir() or path.is_symlink():
+                continue
+            try:
+                if now - path.stat().st_mtime >= max_age_seconds:
+                    shutil.rmtree(path)
+                    removed.append(path.name)
+            except FileNotFoundError:
+                continue
+        if removed:
+            self._fsync_dir(self.trash_dir)
+        return removed
 
     @staticmethod
     def _validate_component(value: str, label: str) -> None:

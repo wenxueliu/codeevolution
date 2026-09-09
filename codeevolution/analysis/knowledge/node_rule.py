@@ -189,3 +189,32 @@ class NodeRuleService:
             return FileSystemSourceProvider(root).snippet(file_path, start, end) or ""
         except (OSError, UnicodeError):
             return ""
+
+
+class SnapshotNodeRuleService(NodeRuleService):
+    """Resolve rule input solely from a frozen ``RepositorySnapshotHandle``.
+
+    Kept separate from the legacy service while delivery callers migrate, so
+    snapshot code cannot accidentally use its registry/path helpers.
+    """
+
+    def resolve(self, handle, node_id: str) -> dict | None:  # type: ignore[override]
+        fn = handle.graph.get_function_by_id(node_id)
+        if fn is None:
+            return None
+        start = fn.start_line or 1
+        end = min(fn.end_line or start + SNIPPET_MAX_LINES - 1, start + SNIPPET_MAX_LINES - 1)
+        return {
+            "repository_snapshot_id": handle.snapshot.id,
+            "member_id": handle.snapshot.member_id,
+            "service": handle.snapshot.member_id,
+            "member": handle.snapshot.member_id,
+            "node_type": "func",
+            "node_key": f"{handle.snapshot.id}::{fn.node_id}",
+            "node_id": fn.node_id,
+            "qualified_name": fn.qualified_name or fn.name or node_id,
+            "name": fn.name or "",
+            "file": fn.file_path or "",
+            "line": start,
+            "snippet": handle.sources.snippet(fn.file_path or "", start, end) or "",
+        }

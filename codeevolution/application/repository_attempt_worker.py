@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from codeevolution.domain.analysis_snapshot import (
     RepositoryAnalysisSnapshot,
     RepositoryAttempt,
 )
-from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
+from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore, SnapshotStoreError
 from codeevolution.infrastructure.artifact_store_fs import (
     FileSystemArtifactStore,
     directory_digest,
@@ -77,17 +78,26 @@ class RepositoryAttemptWorker:
 
     def __call__(self, attempt: RepositoryAttempt) -> None:
         staging: Path | None = None
+        reserved = False
         try:
             staging = self.artifacts.create_staging(attempt.id)
             self._execute(attempt, staging)
+            reserved = True
         except AttemptCancelledError:
             self._finish_cancelled(attempt.id)
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+        except SnapshotStoreError as error:
+            self._finish_failed(attempt.id, "insufficient_storage", str(error))
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
         except AttemptExecutionError as error:
             self._finish_failed(attempt.id, error.code, str(error))
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+        finally:
+            # publish_snapshot or any terminal failure releases the reservation.
+            self.store.release_storage(attempt.id)
 
     def _execute(self, attempt: RepositoryAttempt, staging: Path) -> None:
         member = self.store.get_member(attempt.member_id)
@@ -105,6 +115,10 @@ class RepositoryAttemptWorker:
         self._stage(attempt.id, AttemptStage.DIGEST_BEFORE, 5)
         before = scanner.scan(self.scan_policy)
         self._record(attempt.id, "before_sync", before)
+        estimate = max(sum(item.size for item in before.entries) * 3, 64 * 1024 * 1024)
+        free = shutil.disk_usage(self.artifacts.data_dir).free
+        expires = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(timespec="seconds")
+        self.store.reserve_storage(attempt.id, estimate, free, expires)
 
         graph_db = root / ".codegraph" / "codegraph.db"
         command_stage = AttemptStage.CODEGRAPH_SYNC if graph_db.is_file() else AttemptStage.CODEGRAPH_INIT

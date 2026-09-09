@@ -96,7 +96,6 @@ export default {
   },
   async created() {
     await this.loadRepos()
-    this._pollTimer = setInterval(() => this._pollInitTasks(), INIT_POLL_MS)
   },
   beforeUnmount() {
     if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null }
@@ -174,20 +173,12 @@ export default {
     // ── one-click init ──
 
     async initRepo(repo) {
-      const task = this.initTasks[repo.name]
-      if (task && (task.status === 'pending' || task.status === 'running')) return
-      this.initTasks[repo.name] = { status: 'pending', progress: [], service: repo.name }
-      try {
-        await this.$api.request(`/api/repos/${encodeURIComponent(repo.name)}/init`, { method: 'POST' })
-        await this._fetchInitStatus(repo.name)
-      } catch (err) {
-        this.initTasks[repo.name] = { ...this.initTasks[repo.name], status: 'failed', error: (err.body && (err.body.detail || err.body.message)) || err.message || '请求失败' }
-      }
+      this.$router.push({ name: 'snapshots' })
     },
 
     initState(repo) {
       const task = this.initTasks[repo.name]
-      if (!task) return { busy: false, label: '一键初始化', title: '初始化索引并回溯全量历史', detail: false, steps: [], error: '', total: 0, done: 0, pct: 0, taskStatus: '' }
+      if (!task) return { busy: false, label: '查看 Snapshots', title: '在 Snapshot 管理页创建分析 Run', detail: false, steps: [], error: '', total: 0, done: 0, pct: 0, taskStatus: '' }
 
       const isBusy = task.status === 'pending' || task.status === 'running'
       const steps = task.progress || []
@@ -221,26 +212,6 @@ export default {
       return { busy: isBusy, label, title, detail: !!task.status, steps, error: task.error || '', total, done, pct, taskStatus: task.status || '' }
     },
 
-    async _fetchInitStatus(name) {
-      try {
-        const task = await this.$api.get(`/api/repos/${encodeURIComponent(name)}/init/status`)
-        this.initTasks[name] = task
-        if (task.status === 'completed' || task.status === 'partial') {
-          await this.loadRepos()
-        }
-      } catch {
-        // task not found — ignore
-      }
-    },
-
-    async _pollInitTasks() {
-      const running = Object.entries(this.initTasks).filter(
-        ([, t]) => t.status === 'pending' || t.status === 'running',
-      )
-      for (const [name] of running) {
-        await this._fetchInitStatus(name)
-      }
-    },
   },
 }
 </script>

@@ -1,11 +1,21 @@
 """Dependency-inversion ports shared by analysis and infrastructure."""
 
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 
 from .domain.knowledge import CallTarget, EntryPointDef, FunctionDef
 
 
 class SourceProvider(Protocol):
+    """A manifest-bounded source reader supplied to analysis code.
+
+    Implementations must not infer a workspace root from a graph database.
+    That would silently turn a snapshot query back into a live repository read.
+    """
+
+    def list_files(self, categories: Iterable[str] | None = None, globs: Iterable[str] | None = None) -> list[Any]: ...
+
+    def read_bytes(self, path: str) -> bytes | None: ...
+
     def read_text(self, path: str) -> str | None: ...
 
     def snippet(self, path: str, start: int, end: int) -> str | None: ...

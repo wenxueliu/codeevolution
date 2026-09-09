@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS explanation_snapshots (
     error TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     completed_at INTEGER
+    ,repository_snapshot_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_explanation_snapshots_endpoint
     ON explanation_snapshots(repo_name, member_name, api_key, created_at DESC);
@@ -128,6 +129,9 @@ class ExplanationSnapshotStore:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.executescript(SCHEMA)
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(explanation_snapshots)")}
+        if "repository_snapshot_id" not in columns:
+            self.connection.execute("ALTER TABLE explanation_snapshots ADD COLUMN repository_snapshot_id TEXT")
         self.connection.commit()
         self._lock = threading.RLock()
 
@@ -142,8 +146,8 @@ class ExplanationSnapshotStore:
                    (id, repo_name, member_name, api_key, method, path, handler,
                     entry_node_key, source_revision, source_digest, graph_digest,
                     model_id, prompt_version, schema_version, status, explanation,
-                    coverage, statistics, error, created_at, completed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    coverage, statistics, error, created_at, completed_at, repository_snapshot_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     stored.id, stored.repo_name, stored.member_name, stored.api_key,
                     stored.method, stored.path, stored.handler, stored.entry_node_key,
@@ -151,7 +155,7 @@ class ExplanationSnapshotStore:
                     stored.model_id, stored.prompt_version, stored.schema_version,
                     stored.status, _dump(stored.explanation), _dump(stored.coverage),
                     _dump(stored.statistics), stored.error, stored.created_at,
-                    stored.completed_at,
+                    stored.completed_at, stored.repository_snapshot_id or None,
                 ),
             )
         return stored
@@ -176,6 +180,17 @@ class ExplanationSnapshotStore:
             rows = self.connection.execute(sql, params).fetchall()
         return [self._snapshot(row) for row in rows]
 
+    def list_snapshots_for_repository_snapshot(self, repository_snapshot_id: str, api_key: str | None = None) -> list[ExplanationSnapshot]:
+        sql = "SELECT * FROM explanation_snapshots WHERE repository_snapshot_id = ?"
+        params: list[Any] = [repository_snapshot_id]
+        if api_key is not None:
+            sql += " AND api_key = ?"
+            params.append(api_key)
+        sql += " ORDER BY created_at DESC, id DESC"
+        with self._lock:
+            rows = self.connection.execute(sql, params).fetchall()
+        return [self._snapshot(row) for row in rows]
+
     def get_current(
         self, repo_name: str, member_name: str, api_key: str
     ) -> ExplanationSnapshot | None:
@@ -185,6 +200,16 @@ class ExplanationSnapshotStore:
                    JOIN explanation_snapshots s ON s.id = c.snapshot_id
                    WHERE c.repo_name = ? AND c.member_name = ? AND c.api_key = ?""",
                 (repo_name, member_name, api_key),
+            ).fetchone()
+        return self._snapshot(row) if row else None
+
+    def get_current_for_repository_snapshot(self, repository_snapshot_id: str, api_key: str) -> ExplanationSnapshot | None:
+        with self._lock:
+            row = self.connection.execute(
+                """SELECT s.* FROM current_explanation_snapshots c
+                   JOIN explanation_snapshots s ON s.id=c.snapshot_id
+                   WHERE s.repository_snapshot_id=? AND s.api_key=?""",
+                (repository_snapshot_id, api_key),
             ).fetchone()
         return self._snapshot(row) if row else None
 
@@ -406,6 +431,7 @@ class ExplanationSnapshotStore:
             status=row["status"], explanation=_load(row["explanation"]),
             coverage=_load(row["coverage"]), statistics=_load(row["statistics"]),
             error=row["error"], created_at=row["created_at"], completed_at=row["completed_at"],
+            repository_snapshot_id=row["repository_snapshot_id"] or "",
         )
 
     @staticmethod

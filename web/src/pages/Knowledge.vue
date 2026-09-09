@@ -6,7 +6,7 @@
     <div class="page-header">
       <div>
         <h1>知识中心</h1>
-        <p>基于当前 CodeGraph 索引实时推导。<span v-if="loadedAt"> 最近刷新：{{ loadedAt }} · {{ loadDuration }} ms</span></p>
+        <p>基于不可变 Repository Snapshot 推导。<code v-if="snapshotId">{{ snapshotId }}</code><span v-if="loadedAt"> · 最近读取：{{ loadedAt }} · {{ loadDuration }} ms</span></p>
       </div>
       <div class="actions">
         <button class="secondary" :disabled="loading" @click="load(false)">刷新结构知识</button>
@@ -81,7 +81,8 @@
                     :member="item.repository"
                     :file="item.file"
                     :line="item.line"
-                    :label="{ method: item.method, path: item.path, handler: item.handler }"
+                    :label="{ method: item.method, path: item.path, handler: item.handler, node_id: item.node_id || item.handler }"
+                    :snapshot-id="snapshotId"
                     :mermaid="item.call_chain_mermaid"
                   />
                   <p class="muted" v-else>未解析到处理函数（file/line 缺失），无法展示调用链树。</p>
@@ -319,7 +320,9 @@ export default {
   components: { UiState, CallChainTree },
   props: { repoName: String },
   data() {
+    const snapshotId = new URLSearchParams(window.location.search).get('snapshot_id') || ''
     return {
+      snapshotId,
       report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS,
       expandedKeys: new Set(), expandedEntityKeys: new Set(),
       endpointSearch: '', endpointMethod: '', endpointService: '', endpointPage: 1, endpointPageSize: 25,
@@ -367,8 +370,12 @@ export default {
   methods: {
     async load(includeLlm) {
       const started = performance.now()
+      if (!this.snapshotId) {
+        this.error = new Error('缺少 snapshot_id，请从 Snapshot 或 Graph View 页面进入知识中心')
+        return
+      }
       await this.$runAsync(async () => {
-        this.report = await this.$api.get('/api/knowledge', { repo: this.repoName || '', include_llm: includeLlm })
+        this.report = await this.$api.get('/api/knowledge', { repository_snapshot_id: this.snapshotId, include_llm: includeLlm })
         for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
         this.explanationPollTimers = {}
         this.apiExplanations = {}
@@ -417,7 +424,7 @@ export default {
       // trigger reactivity for Set
       this.expandedKeys = new Set(this.expandedKeys)
     },
-    explanationQuery(item) { return { repo: this.repoName || '', member: item.repository || '', api_key: this.apiKey(item) } },
+    explanationQuery(item) { return { repository_snapshot_id: this.snapshotId, api_key: this.apiKey(item) } },
     unwrapCurrent(data) {
       if (!data || data.status === 'missing') return null
       const snapshot = data.snapshot || data.current || data.current_snapshot || (data.id ? data : null)
@@ -452,7 +459,7 @@ export default {
       try {
         const response = await this.$api.request('/api/api-explanations/generate', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repo: this.repoName || '', member: item.repository || '', method: item.method || '', path: item.path || '', handler: item.handler || '', file: item.file || '', line: Number(item.line || 0) }),
+          body: JSON.stringify({ repository_snapshot_id: this.snapshotId, repo: this.repoName || '', member: item.repository || '', method: item.method || '', path: item.path || '', handler: item.handler || '', file: item.file || '', line: Number(item.line || 0) }),
         })
         const snapshot = response.snapshot || response
         const snapshots = snapshot?.id ? [snapshot, ...this.explanationState(item).snapshots.filter(existing => existing.id !== snapshot.id)] : this.explanationState(item).snapshots
@@ -567,7 +574,7 @@ export default {
 
     async loadBusinessRules() {
       try {
-        const data = await this.$api.get('/api/business-rules', { repo: this.repoName || '' })
+        const data = await this.$api.get('/api/business-rules', { repository_snapshot_id: this.snapshotId })
         const map = {}
         for (const r of data.rules || []) {
           map[[r.repo_name, r.handler, r.method, r.path].join('||')] = r
@@ -655,7 +662,7 @@ JSON:`
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            repo: this.repoName || '',
+            repository_snapshot_id: this.snapshotId,
             handler: item.handler || '',
             method: item.method || '',
             path: item.path || '',

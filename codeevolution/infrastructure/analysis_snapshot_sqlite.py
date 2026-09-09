@@ -36,7 +36,109 @@ from codeevolution.domain.analysis_snapshot import (
     aggregate_run_status,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
+
+_MIGRATION_2 = """
+CREATE TABLE IF NOT EXISTS snapshot_rule_candidates (
+    id TEXT PRIMARY KEY,
+    rule_kind TEXT NOT NULL CHECK(rule_kind IN ('node','business')),
+    repository_snapshot_id TEXT NOT NULL REFERENCES repository_analysis_snapshots(id) ON DELETE RESTRICT,
+    view_id TEXT,
+    subject_key TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    input_digest TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('running','completed','failed','cancelled')),
+    result TEXT, error TEXT, created_at TEXT NOT NULL, completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS snapshot_rule_current (
+    rule_kind TEXT NOT NULL, repository_snapshot_id TEXT NOT NULL,
+    view_id TEXT NOT NULL DEFAULT '', subject_key TEXT NOT NULL,
+    candidate_id TEXT NOT NULL REFERENCES snapshot_rule_candidates(id) ON DELETE RESTRICT,
+    PRIMARY KEY(rule_kind,repository_snapshot_id,view_id,subject_key)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshot_rule_candidates
+ON snapshot_rule_candidates(repository_snapshot_id,rule_kind,subject_key,created_at DESC);
+CREATE TABLE IF NOT EXISTS graph_view_artifact_jobs (
+    id TEXT PRIMARY KEY, view_id TEXT REFERENCES graph_views(id) ON DELETE SET NULL,
+    cache_key_digest TEXT NOT NULL, artifact_kind TEXT NOT NULL, status TEXT NOT NULL
+      CHECK(status IN ('pending','running','completed','failed','cancelled')),
+    payload_json TEXT, error_message TEXT, requested_at TEXT NOT NULL, completed_at TEXT,
+    UNIQUE(cache_key_digest)
+);
+CREATE INDEX IF NOT EXISTS idx_graph_artifact_jobs_view ON graph_view_artifact_jobs(view_id,status);
+CREATE TABLE IF NOT EXISTS deletion_jobs (
+    id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','trashed','completed','failed')),
+    requested_at TEXT NOT NULL, completed_at TEXT, trash_path TEXT, error_message TEXT
+);
+CREATE TABLE IF NOT EXISTS storage_reservations (
+    attempt_id TEXT PRIMARY KEY REFERENCES repository_attempts(id) ON DELETE CASCADE,
+    reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes >= 0),
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+"""
+
+_MIGRATION_3 = """
+CREATE TABLE IF NOT EXISTS graph_view_artifact_jobs (
+    id TEXT PRIMARY KEY, view_id TEXT REFERENCES graph_views(id) ON DELETE SET NULL,
+    cache_key_digest TEXT NOT NULL, artifact_kind TEXT NOT NULL, status TEXT NOT NULL,
+    payload_json TEXT, error_message TEXT, requested_at TEXT NOT NULL, completed_at TEXT,
+    UNIQUE(cache_key_digest)
+);
+CREATE TABLE IF NOT EXISTS graph_view_artifact_cache (
+    cache_key_digest TEXT PRIMARY KEY, view_digest TEXT NOT NULL,
+    artifact_kind TEXT NOT NULL, params_digest TEXT NOT NULL DEFAULT '',
+    analyzer_bundle_digest TEXT NOT NULL DEFAULT '', rules_digest TEXT NOT NULL DEFAULT '',
+    artifact_schema_version TEXT NOT NULL DEFAULT '1', semantic_identity_digest TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL, last_accessed_at TEXT NOT NULL,
+    payload_storage TEXT NOT NULL DEFAULT 'inline' CHECK(payload_storage IN ('inline','artifact')),
+    payload_json TEXT, artifact_key TEXT, payload_digest TEXT NOT NULL DEFAULT '', byte_size INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(view_digest, artifact_kind, params_digest, analyzer_bundle_digest, rules_digest, artifact_schema_version, semantic_identity_digest),
+    CHECK((payload_storage='inline' AND payload_json IS NOT NULL AND artifact_key IS NULL) OR
+          (payload_storage='artifact' AND payload_json IS NULL AND artifact_key IS NOT NULL))
+);
+CREATE TABLE graph_view_artifact_jobs_v3 (
+    id TEXT PRIMARY KEY, view_id TEXT REFERENCES graph_views(id) ON DELETE SET NULL,
+    cache_key_digest TEXT NOT NULL, artifact_kind TEXT NOT NULL, attempt_no INTEGER NOT NULL DEFAULT 1,
+    retry_of_job_id TEXT REFERENCES graph_view_artifact_jobs_v3(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled','interrupted')),
+    payload_json TEXT, error_code TEXT, error_message TEXT, requested_at TEXT NOT NULL,
+    started_at TEXT, completed_at TEXT, UNIQUE(cache_key_digest, attempt_no)
+);
+INSERT INTO graph_view_artifact_jobs_v3
+ (id,view_id,cache_key_digest,artifact_kind,attempt_no,status,payload_json,error_message,requested_at,completed_at)
+ SELECT id,view_id,cache_key_digest,artifact_kind,1,status,payload_json,error_message,requested_at,completed_at
+ FROM graph_view_artifact_jobs;
+DROP TABLE graph_view_artifact_jobs;
+ALTER TABLE graph_view_artifact_jobs_v3 RENAME TO graph_view_artifact_jobs;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_graph_artifact_job
+ ON graph_view_artifact_jobs(cache_key_digest) WHERE status IN ('pending','running');
+CREATE INDEX IF NOT EXISTS idx_graph_artifact_jobs_view ON graph_view_artifact_jobs(view_id,status);
+"""
+
+_REPAIR_DDL = """
+CREATE TABLE IF NOT EXISTS deletion_jobs (
+    id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','trashed','completed','failed')),
+    requested_at TEXT NOT NULL, completed_at TEXT, trash_path TEXT, error_message TEXT
+);
+CREATE TABLE IF NOT EXISTS storage_reservations (
+    attempt_id TEXT PRIMARY KEY REFERENCES repository_attempts(id) ON DELETE CASCADE,
+    reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes >= 0),
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+"""
+
+_ARTIFACT_JOB_V3_TABLE = """
+CREATE TABLE graph_view_artifact_jobs_v3 (
+    id TEXT PRIMARY KEY, view_id TEXT REFERENCES graph_views(id) ON DELETE SET NULL,
+    cache_key_digest TEXT NOT NULL, artifact_kind TEXT NOT NULL, attempt_no INTEGER NOT NULL DEFAULT 1,
+    retry_of_job_id TEXT REFERENCES graph_view_artifact_jobs_v3(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled','interrupted')),
+    payload_json TEXT, error_code TEXT, error_message TEXT, requested_at TEXT NOT NULL,
+    started_at TEXT, completed_at TEXT, UNIQUE(cache_key_digest, attempt_no)
+);
+"""
 
 _MIGRATION_1 = """
 CREATE TABLE analysis_scopes (
@@ -275,9 +377,44 @@ class AnalysisSnapshotSQLiteStore:
         finally:
             connection.close()
 
+    @staticmethod
+    def _repair_artifact_job_shape(connection: sqlite3.Connection) -> None:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_views'"
+        ).fetchone() is None:
+            return
+        row = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='graph_view_artifact_jobs'"
+        ).fetchone()
+        if row is None:
+            connection.executescript(_ARTIFACT_JOB_V3_TABLE.replace("graph_view_artifact_jobs_v3", "graph_view_artifact_jobs"))
+            return
+        columns = {item["name"] for item in connection.execute("PRAGMA table_info(graph_view_artifact_jobs)")}
+        if "attempt_no" in columns:
+            return
+        connection.execute("ALTER TABLE graph_view_artifact_jobs RENAME TO graph_view_artifact_jobs_legacy")
+        connection.executescript(_ARTIFACT_JOB_V3_TABLE)
+        connection.execute(
+            """INSERT INTO graph_view_artifact_jobs_v3
+               (id,view_id,cache_key_digest,artifact_kind,attempt_no,status,payload_json,error_message,requested_at,completed_at)
+               SELECT id,view_id,cache_key_digest,artifact_kind,1,status,payload_json,error_message,requested_at,completed_at
+               FROM graph_view_artifact_jobs_legacy"""
+        )
+        connection.execute("DROP TABLE graph_view_artifact_jobs_legacy")
+        connection.execute("ALTER TABLE graph_view_artifact_jobs_v3 RENAME TO graph_view_artifact_jobs")
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_graph_artifact_job ON graph_view_artifact_jobs(cache_key_digest) WHERE status IN ('pending','running')"
+        )
+
     def migrate(self) -> None:
         with self.connection() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
+            # Older v2 databases created before the lifecycle tables landed may
+            # already advertise the current user_version; repair those tables
+            # idempotently before serving requests.
+            connection.executescript(_REPAIR_DDL)
+            self._repair_artifact_job_shape(connection)
+            connection.commit()
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise RuntimeError(
@@ -286,7 +423,25 @@ class AnalysisSnapshotSQLiteStore:
             if version == 0:
                 try:
                     connection.executescript(
-                        f"BEGIN EXCLUSIVE;\n{_MIGRATION_1}\n"
+                        f"BEGIN EXCLUSIVE;\n{_MIGRATION_1}\n{_MIGRATION_2}\n{_MIGRATION_3}\n"
+                        f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
+                    )
+                except BaseException:
+                    connection.rollback()
+                    raise
+            elif version == 1:
+                try:
+                    connection.executescript(
+                        f"BEGIN EXCLUSIVE;\n{_MIGRATION_2}\n{_MIGRATION_3}\n"
+                        f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
+                    )
+                except BaseException:
+                    connection.rollback()
+                    raise
+            elif version == 2:
+                try:
+                    connection.executescript(
+                        f"BEGIN EXCLUSIVE;\n{_MIGRATION_3}\n"
                         f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
                     )
                 except BaseException:
@@ -851,6 +1006,376 @@ class AnalysisSnapshotSQLiteStore:
             ).fetchone()
         return self._snapshot(row) if row else None
 
+    def get_evidence(self, digest: str) -> EvidenceBundle | None:
+        """Return immutable evidence metadata for an already published snapshot."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM evidence_bundles WHERE digest=?", (digest,)
+            ).fetchone()
+        if row is None:
+            return None
+        return EvidenceBundle(
+            digest=row["digest"], artifact_key=row["artifact_key"],
+            manifest_schema_version=row["manifest_schema_version"],
+            source_digest=row["source_digest"], graph_digest=row["graph_digest"],
+            graph_blob_sha256=row["graph_blob_sha256"], byte_size=row["byte_size"],
+            capture_policy_digest=row["capture_policy_digest"],
+            capture_completeness=row["capture_completeness"], created_at=row["created_at"],
+            deletion_state=row["deletion_state"],
+        )
+
+    def add_snapshot_reference(
+        self, snapshot_id: str, owner_type: str, owner_id: str, *, state: str = "temporary"
+    ) -> None:
+        """Protect an active snapshot while a derived record is being created."""
+        if owner_type not in {"node_rule", "business_rule", "api_explanation", "artifact_job"}:
+            raise SnapshotStoreError("unsupported snapshot reference owner")
+        with self.connection() as connection, connection:
+            row = connection.execute(
+                "SELECT 1 FROM repository_analysis_snapshots WHERE id=? AND deletion_state='active'",
+                (snapshot_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(snapshot_id)
+            self._insert_reference(connection, snapshot_id, owner_type, owner_id, state, utc_now(), None)
+
+    def remove_snapshot_reference(self, snapshot_id: str, owner_type: str, owner_id: str) -> None:
+        with self.connection() as connection, connection:
+            connection.execute(
+                "DELETE FROM snapshot_references WHERE snapshot_id=? AND owner_type=? AND owner_id=?",
+                (snapshot_id, owner_type, owner_id),
+            )
+
+    def make_snapshot_reference_permanent(self, snapshot_id: str, owner_type: str, owner_id: str) -> None:
+        with self.connection() as connection, connection:
+            connection.execute(
+                "UPDATE snapshot_references SET state='permanent',expires_at=NULL WHERE snapshot_id=? AND owner_type=? AND owner_id=?",
+                (snapshot_id, owner_type, owner_id),
+            )
+
+    def create_rule_candidate(
+        self, *, rule_kind: str, snapshot_id: str, subject_key: str,
+        prompt: str, input_digest: str, now: str, view_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a candidate and its temporary protection in one transaction."""
+        if rule_kind not in {"node", "business"}:
+            raise SnapshotStoreError("invalid rule kind")
+        candidate_id = str(uuid4())
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if not connection.execute(
+                    "SELECT 1 FROM repository_analysis_snapshots WHERE id=? AND deletion_state='active'",
+                    (snapshot_id,),
+                ).fetchone():
+                    raise KeyError(snapshot_id)
+                connection.execute(
+                    """INSERT INTO snapshot_rule_candidates
+                       (id,rule_kind,repository_snapshot_id,view_id,subject_key,prompt,input_digest,status,created_at)
+                       VALUES(?,?,?,?,?,?,?,'running',?)""",
+                    (candidate_id, rule_kind, snapshot_id, view_id, subject_key, prompt, input_digest, now),
+                )
+                self._insert_reference(connection, snapshot_id, rule_kind + "_rule", candidate_id, "temporary", now, None)
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_rule_candidate(candidate_id)  # type: ignore[return-value]
+
+    def finish_rule_candidate(
+        self, candidate_id: str, *, status: str, now: str,
+        result: str | None = None, error: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in {"completed", "failed", "cancelled"}:
+            raise SnapshotStoreError("invalid terminal rule status")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute("SELECT * FROM snapshot_rule_candidates WHERE id=?", (candidate_id,)).fetchone()
+                if row is None:
+                    raise KeyError(candidate_id)
+                if row["status"] != "running":
+                    raise AttemptStateConflictError("rule candidate is already terminal")
+                connection.execute(
+                    "UPDATE snapshot_rule_candidates SET status=?,result=?,error=?,completed_at=? WHERE id=?",
+                    (status, result, error, now, candidate_id),
+                )
+                if status == "completed":
+                    connection.execute(
+                        """INSERT INTO snapshot_rule_current(rule_kind,repository_snapshot_id,view_id,subject_key,candidate_id)
+                           VALUES(?,?,?,?,?) ON CONFLICT(rule_kind,repository_snapshot_id,view_id,subject_key)
+                           DO UPDATE SET candidate_id=excluded.candidate_id""",
+                        (row["rule_kind"], row["repository_snapshot_id"], row["view_id"] or "", row["subject_key"], candidate_id),
+                    )
+                    connection.execute("UPDATE snapshot_references SET state='permanent',expires_at=NULL WHERE owner_id=? AND owner_type=?", (candidate_id, row["rule_kind"] + "_rule"))
+                else:
+                    connection.execute("DELETE FROM snapshot_references WHERE owner_id=? AND owner_type=?", (candidate_id, row["rule_kind"] + "_rule"))
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_rule_candidate(candidate_id)  # type: ignore[return-value]
+
+    def get_rule_candidate(self, candidate_id: str) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM snapshot_rule_candidates WHERE id=?", (candidate_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_current_rule(self, *, rule_kind: str, snapshot_id: str, subject_key: str, view_id: str | None = None) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """SELECT c.* FROM snapshot_rule_current p JOIN snapshot_rule_candidates c ON c.id=p.candidate_id
+                   WHERE p.rule_kind=? AND p.repository_snapshot_id=? AND p.view_id=? AND p.subject_key=?""",
+                (rule_kind, snapshot_id, view_id or "", subject_key),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_current_rules(self, *, rule_kind: str, snapshot_id: str, view_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT c.* FROM snapshot_rule_current p JOIN snapshot_rule_candidates c ON c.id=p.candidate_id
+                   WHERE p.rule_kind=? AND p.repository_snapshot_id=? AND p.view_id=? ORDER BY c.subject_key""",
+                (rule_kind, snapshot_id, view_id or ""),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_artifact_job(self, *, view_id: str, artifact_kind: str, cache_key: str) -> dict[str, Any]:
+        job_id = str(uuid4())
+        now = utc_now()
+        with self.connection() as connection, connection:
+            row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE cache_key_digest=? ORDER BY attempt_no DESC LIMIT 1", (cache_key,)).fetchone()
+            if row is None or row["status"] in ("failed", "cancelled", "interrupted"):
+                attempt = (int(row["attempt_no"]) + 1) if row is not None else 1
+                retry_of = row["id"] if row is not None else None
+                connection.execute(
+                    """INSERT INTO graph_view_artifact_jobs(id,view_id,cache_key_digest,artifact_kind,attempt_no,retry_of_job_id,status,requested_at)
+                       VALUES(?,?,?,?,?,?, 'pending',?)""",
+                    (job_id, view_id, cache_key, artifact_kind, attempt, retry_of, now),
+                )
+                row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+                # Protect every input snapshot while the job is active.
+                snapshots = connection.execute(
+                    "SELECT snapshot_id FROM graph_view_members WHERE view_id=? AND snapshot_id IS NOT NULL",
+                    (view_id,),
+                ).fetchall()
+                for item in snapshots:
+                    self._insert_reference(connection, item["snapshot_id"], "artifact_job", job_id, "temporary", now, None)
+        return dict(row)
+
+    def get_artifact_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_artifact_cache(self, cache_key: str) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM graph_view_artifact_cache WHERE cache_key_digest=?", (cache_key,)).fetchone()
+        return dict(row) if row else None
+
+    def snapshot_references(self, snapshot_id: str) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT id,owner_type,owner_id,state,created_at,expires_at FROM snapshot_references WHERE snapshot_id=? ORDER BY owner_type,owner_id",
+                (snapshot_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def request_snapshot_deletion(self, snapshot_id: str) -> dict[str, Any]:
+        job_id, now = str(uuid4()), utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                snapshot = connection.execute("SELECT * FROM repository_analysis_snapshots WHERE id=?", (snapshot_id,)).fetchone()
+                if snapshot is None:
+                    raise KeyError(snapshot_id)
+                if connection.execute("SELECT 1 FROM current_repository_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone():
+                    raise SnapshotStoreError("snapshot_protected")
+                refs = connection.execute("SELECT 1 FROM snapshot_references WHERE snapshot_id=? LIMIT 1", (snapshot_id,)).fetchone()
+                if refs:
+                    raise SnapshotStoreError("snapshot_protected")
+                connection.execute("UPDATE repository_analysis_snapshots SET deletion_state='deletion_pending' WHERE id=?", (snapshot_id,))
+                connection.execute("INSERT INTO deletion_jobs VALUES(?,?,?,'pending',?,NULL,NULL,NULL)", (job_id, "snapshot", snapshot_id, now))
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return {"id": job_id, "target_type": "snapshot", "target_id": snapshot_id, "status": "pending"}
+
+    def get_deletion_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM deletion_jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_deletion_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            if status:
+                rows = connection.execute(
+                    "SELECT * FROM deletion_jobs WHERE status=? ORDER BY requested_at,id", (status,)
+                ).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM deletion_jobs ORDER BY requested_at,id").fetchall()
+        return [dict(row) for row in rows]
+
+    def metrics(self) -> dict[str, Any]:
+        tables = {
+            "attempts": "repository_attempts",
+            "snapshots": "repository_analysis_snapshots",
+            "views": "graph_views",
+            "artifact_jobs": "graph_view_artifact_jobs",
+            "deletion_jobs": "deletion_jobs",
+            "storage_reservations": "storage_reservations",
+        }
+        result: dict[str, Any] = {}
+        with self.connection() as connection:
+            for name, table in tables.items():
+                columns = {item["name"] for item in connection.execute(f"PRAGMA table_info({table})")}
+                if "status" not in columns:
+                    rows = connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchall()
+                    result[name] = int(rows[0]["count"])
+                else:
+                    rows = connection.execute(f"SELECT status,COUNT(*) AS count FROM {table} GROUP BY status").fetchall()
+                    result[name] = {row["status"]: int(row["count"]) for row in rows}
+            result["active_attempts"] = int(connection.execute("SELECT COUNT(*) FROM repository_attempts WHERE status IN ('pending','running')").fetchone()[0])
+        return result
+
+    def mark_deletion_trashed(self, job_id: str, trash_path: str) -> None:
+        with self.connection() as connection, connection:
+            row = connection.execute("SELECT target_id FROM deletion_jobs WHERE id=? AND status='pending'", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            connection.execute("UPDATE repository_analysis_snapshots SET deletion_state='trashed' WHERE id=?", (row["target_id"],))
+            connection.execute("UPDATE deletion_jobs SET status='trashed',trash_path=? WHERE id=?", (trash_path, job_id))
+
+    def complete_deletion(self, job_id: str) -> dict[str, Any]:
+        with self.connection() as connection, connection:
+            updated = connection.execute(
+                "UPDATE deletion_jobs SET status='completed',completed_at=? WHERE id=? AND status IN ('pending','trashed')",
+                (utc_now(), job_id),
+            )
+            if updated.rowcount != 1:
+                raise SnapshotStoreError("deletion job is not in trashed state")
+            row = connection.execute("SELECT * FROM deletion_jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row)
+
+    def complete_artifact_job(self, job_id: str, payload: dict[str, Any], artifact_key: str | None = None) -> dict[str, Any]:
+        with self.connection() as connection, connection:
+            existing = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+            if existing is None:
+                raise KeyError(job_id)
+            updated = connection.execute(
+                "UPDATE graph_view_artifact_jobs SET status='completed',payload_json=?,completed_at=? WHERE id=? AND status IN ('pending','running')",
+                (_canonical_json(payload), utc_now(), job_id),
+            )
+            if updated.rowcount != 1:
+                raise SnapshotStoreError("artifact job is not active")
+            now = utc_now()
+            payload_json = _canonical_json(payload)
+            payload_digest = sha256(payload_json.encode()).hexdigest()
+            storage = "artifact" if artifact_key else "inline"
+            connection.execute(
+                """INSERT OR REPLACE INTO graph_view_artifact_cache
+                   (cache_key_digest,view_digest,artifact_kind,created_at,last_accessed_at,payload_storage,payload_json,artifact_key,payload_digest,byte_size)
+                   SELECT j.cache_key_digest, v.digest, j.artifact_kind, ?, ?, ?, ?, ?, ?, ?, ?
+                   FROM graph_view_artifact_jobs j JOIN graph_views v ON v.id=j.view_id WHERE j.id=?""",
+                (now, now, storage, None if artifact_key else payload_json, artifact_key,
+                 payload_digest, len(payload_json.encode()), job_id),
+            )
+            connection.execute("UPDATE snapshot_references SET state='permanent',expires_at=NULL WHERE owner_type='artifact_job' AND owner_id=?", (job_id,))
+            row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row)
+
+    def start_artifact_job(self, job_id: str) -> dict[str, Any]:
+        with self.connection() as connection, connection:
+            connection.execute(
+                "UPDATE graph_view_artifact_jobs SET status='running',started_at=? WHERE id=? AND status='pending'",
+                (utc_now(), job_id),
+            )
+            row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return dict(row)
+
+    def cancel_artifact_job(self, job_id: str) -> dict[str, Any]:
+        with self.connection() as connection, connection:
+            connection.execute("UPDATE graph_view_artifact_jobs SET status='cancelled',completed_at=? WHERE id=? AND status IN ('pending','running')", (utc_now(), job_id))
+            connection.execute("DELETE FROM snapshot_references WHERE owner_type='artifact_job' AND owner_id=?", (job_id,))
+            row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return dict(row)
+
+    def fail_artifact_job(self, job_id: str, error: str, *, code: str = "artifact_failed") -> dict[str, Any]:
+        with self.connection() as connection, connection:
+            updated = connection.execute(
+                "UPDATE graph_view_artifact_jobs SET status='failed',error_code=?,error_message=?,completed_at=? WHERE id=? AND status IN ('pending','running')",
+                (code, error[:2000], utc_now(), job_id),
+            )
+            if updated.rowcount != 1:
+                raise SnapshotStoreError("artifact job is not active")
+            connection.execute("DELETE FROM snapshot_references WHERE owner_type='artifact_job' AND owner_id=?", (job_id,))
+            row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row)
+
+    def retry_artifact_job(self, job_id: str) -> dict[str, Any]:
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["status"] not in ("failed", "cancelled", "interrupted"):
+                return dict(row)
+            new_id, now = str(uuid4()), utc_now()
+            with connection:
+                connection.execute(
+                    """INSERT INTO graph_view_artifact_jobs
+                       (id,view_id,cache_key_digest,artifact_kind,attempt_no,retry_of_job_id,status,requested_at)
+                       VALUES(?,?,?,?,?,?, 'pending',?)""",
+                    (new_id, row["view_id"], row["cache_key_digest"], row["artifact_kind"], int(row["attempt_no"])+1, job_id, now),
+                )
+                snapshots = connection.execute(
+                    "SELECT snapshot_id FROM graph_view_members WHERE view_id=? AND snapshot_id IS NOT NULL",
+                    (row["view_id"],),
+                ).fetchall()
+                for item in snapshots:
+                    self._insert_reference(connection, item["snapshot_id"], "artifact_job", new_id, "temporary", now, None)
+                created = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (new_id,)).fetchone()
+        return dict(created)
+
+    def reserve_storage(self, attempt_id: str, bytes_needed: int, available_bytes: int, expires_at: str) -> None:
+        if bytes_needed < 0:
+            raise SnapshotStoreError("insufficient_storage")
+        with self.connection() as connection, connection:
+            reserved = connection.execute(
+                "SELECT COALESCE(SUM(reserved_bytes),0) FROM storage_reservations WHERE expires_at>? AND attempt_id<>?",
+                (utc_now(), attempt_id),
+            ).fetchone()[0]
+            if bytes_needed > max(0, available_bytes - int(reserved)):
+                raise SnapshotStoreError("insufficient_storage")
+            connection.execute("DELETE FROM storage_reservations WHERE attempt_id=?", (attempt_id,))
+            connection.execute(
+                "INSERT INTO storage_reservations(attempt_id,reserved_bytes,created_at,expires_at) VALUES(?,?,?,?)",
+                (attempt_id, bytes_needed, utc_now(), expires_at),
+            )
+
+    def release_storage(self, attempt_id: str) -> None:
+        with self.connection() as connection, connection:
+            connection.execute("DELETE FROM storage_reservations WHERE attempt_id=?", (attempt_id,))
+
+    def set_snapshot_reference_state(
+        self, snapshot_id: str, owner_type: str, owner_id: str, *, state: str | None
+    ) -> None:
+        """Promote a successful derived record or release a failed candidate."""
+        with self.connection() as connection, connection:
+            if state is None:
+                connection.execute(
+                    "DELETE FROM snapshot_references WHERE snapshot_id=? AND owner_type=? AND owner_id=?",
+                    (snapshot_id, owner_type, owner_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE snapshot_references SET state=?,expires_at=NULL WHERE snapshot_id=? AND owner_type=? AND owner_id=?",
+                    (state, snapshot_id, owner_type, owner_id),
+                )
+
     def list_snapshots(self, member_id: str) -> list[RepositoryAnalysisSnapshot]:
         with self.connection() as connection:
             rows = connection.execute(
@@ -861,6 +1386,21 @@ class AnalysisSnapshotSQLiteStore:
                 (member_id,),
             ).fetchall()
         return [self._snapshot(row) for row in rows]
+
+    def retention_candidates(self, member_id: str, keep: int = 10) -> list[str]:
+        """Return old successful snapshots that are safe to enqueue for deletion."""
+        if keep < 0:
+            raise ValueError("keep must be non-negative")
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT s.id FROM repository_analysis_snapshots s
+                   WHERE s.member_id=? AND s.analysis_completeness='complete'
+                     AND s.deletion_state='active'
+                     AND s.id NOT IN (SELECT snapshot_id FROM current_repository_snapshots)
+                     AND s.id NOT IN (SELECT snapshot_id FROM snapshot_references)
+                   ORDER BY s.captured_at DESC,s.id DESC""", (member_id,)
+            ).fetchall()
+        return [row["id"] for row in rows[keep:]]
 
     def get_current_snapshot(self, member_id: str) -> RepositoryAnalysisSnapshot | None:
         with self.connection() as connection:

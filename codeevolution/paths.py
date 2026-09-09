@@ -26,7 +26,21 @@ def data_dir() -> Path:
 def analysis_data_dir() -> Path:
     """Return the snapshot data root without falling back to legacy storage."""
     configured = os.environ.get("CODEEVOLUTION_DATA_DIR")
-    return Path(configured) if configured else Path.home() / ".codeevolution"
+    if configured:
+        return Path(configured)
+    current = Path.home() / ".codeevolution"
+    # Some managed runtimes expose the home directory read-only after a cleanup.
+    # Keep the snapshot store usable in that case without resurrecting legacy data.
+    try:
+        current.mkdir(parents=True, exist_ok=True)
+        probe = current / ".write-probe"
+        probe.touch(exist_ok=False)
+        probe.unlink()
+        return current
+    except OSError:
+        fallback = Path(__file__).resolve().parents[1] / "data" / ".codeevolution"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 def shared_data_file(filename: str) -> Path:

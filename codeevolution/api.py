@@ -1,6 +1,7 @@
 """FastAPI backend for the CodeEvolution web dashboard — multi-repo support."""
 
 import json
+import hashlib
 import os
 import subprocess
 import threading
@@ -12,16 +13,17 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .analysis.knowledge.call_tree import CallTreeService
 from .analysis.knowledge.node_rule import NodeRuleService
-from .application.chat_service import ChatService
+from .application.chat_service import ChatService, SnapshotChatService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
 from .application.snapshot_runtime import SnapshotRuntime
+from .application.snapshot_query_service import SnapshotQueryService
 from .application.ui_recording_service import UiRecordingService
 from .infrastructure.audit_store import AuditStore
 from .infrastructure.business_rule_store import BusinessRuleStore
@@ -31,6 +33,7 @@ from .infrastructure.explanation_snapshot_store import (
 )
 from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.node_rule_store import NodeRuleStore
+from .infrastructure.analysis_snapshot_sqlite import utc_now
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
 from .paths import analysis_data_dir, data_dir, repo_data_file
@@ -69,6 +72,7 @@ _explanation_generation_lock = threading.Lock()
 
 class ChatRequest(BaseModel):
     repo: str = ""
+    snapshot_id: str = Field(default="", max_length=200)
     question: str = Field(min_length=1, max_length=2000)
 
 
@@ -103,6 +107,8 @@ class LLMConfigRequest(BaseModel):
 
 
 class BusinessRuleGenerateRequest(BaseModel):
+    repository_snapshot_id: str = Field(default="", max_length=200)
+    view_id: str = Field(default="", max_length=200)
     repo: str = Field(min_length=1, max_length=200)
     handler: str = Field(min_length=1, max_length=500)
     method: str = Field(min_length=1, max_length=10)
@@ -116,6 +122,8 @@ class BusinessRulePromptRequest(BaseModel):
 
 
 class NodeRuleGenerateRequest(BaseModel):
+    repository_snapshot_id: str = Field(default="", max_length=200)
+    view_id: str = Field(default="", max_length=200)
     repo: str = Field(min_length=1, max_length=200)
     member: str = Field(default="", max_length=200)
     node_type: str = Field(default="func", pattern="^(func|cross)$")
@@ -125,6 +133,7 @@ class NodeRuleGenerateRequest(BaseModel):
 
 
 class ApiExplanationGenerateRequest(BaseModel):
+    repository_snapshot_id: str = Field(default="", max_length=200)
     repo: str = Field(min_length=1, max_length=200)
     member: str = Field(default="", max_length=200)
     method: str = Field(min_length=1, max_length=16)
@@ -143,6 +152,10 @@ class AnalysisRunCreateRequest(BaseModel):
 
 class AnalysisRunRetryRequest(BaseModel):
     member_ids: list[str] | None = None
+
+
+class RepositoryMembersCheckRequest(BaseModel):
+    member_ids: list[str] = Field(min_length=1)
 
 
 class ScopeCreateRequest(BaseModel):
@@ -244,6 +257,13 @@ def get_chat_service() -> ChatService:
     return ChatService(get_audit_store(), resolve_members, get_store, llm_client)
 
 
+def get_snapshot_chat_service() -> SnapshotChatService:
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("snapshot_chat_service"):
+        return injected
+    return SnapshotChatService(get_audit_store(), get_snapshot_query_service(), dependencies.get("llm_client"))
+
+
 def get_ui_recording_service() -> UiRecordingService:
     global _ui_test_store
     dependencies = _request_dependencies.get()
@@ -299,6 +319,40 @@ def get_graph_view_service():
     from .application.repository_snapshot_service import GraphViewService
 
     return GraphViewService(get_snapshot_runtime().store)
+
+
+def get_graph_artifact_service():
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("graph_artifact_service"):
+        return injected
+    from .application.graph_artifact_service import GraphArtifactService
+    runtime = get_snapshot_runtime()
+    return GraphArtifactService(runtime.store, get_snapshot_query_service(), runtime.artifacts)
+
+
+def get_snapshot_topology_service():
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("snapshot_topology_service"):
+        return injected
+    from .application.snapshot_topology_service import SnapshotTopologyService
+    runtime = get_snapshot_runtime()
+    return SnapshotTopologyService(runtime.store, get_snapshot_query_service())
+
+
+def get_snapshot_query_service() -> SnapshotQueryService:
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("snapshot_query_service"):
+        return injected
+    return get_snapshot_runtime().snapshot_queries
+
+
+def get_snapshot_retention_service():
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("snapshot_retention_service"):
+        return injected
+    from .application.snapshot_retention_service import SnapshotRetentionService
+    runtime = get_snapshot_runtime()
+    return SnapshotRetentionService(runtime.store, runtime.artifacts)
 
 
 def _jsonable(value):
@@ -402,6 +456,37 @@ def update_repository_member(member_id: str, request: RepositoryMemberUpdateRequ
         raise HTTPException(422, str(error)) from error
 
 
+@app.post("/api/repository-members/check", include_in_schema=False)
+def check_repository_members(request: RepositoryMembersCheckRequest):
+    """Check selected workspaces without syncing or creating a Snapshot."""
+    from .infrastructure.workspace_input_scanner import WorkspaceInputScanner
+
+    store = get_snapshot_runtime().store
+    results = []
+    for member_id in request.member_ids:
+        member = store.get_member(member_id)
+        if member is None:
+            raise HTTPException(404, f"repository member not found: {member_id}")
+        current = store.get_current_snapshot(member_id)
+        if current is None:
+            results.append({"member_id": member_id, "status": "unparsed", "source_changed": False,
+                            "version_drift": False})
+            continue
+        try:
+            observed = WorkspaceInputScanner(member.registered_path).scan()
+            evidence = store.get_evidence(current.evidence_digest)
+            changed = evidence is None or observed.source_digest != evidence.source_digest
+            status = "source_changed" if changed else "unchanged"
+            results.append({"member_id": member_id, "status": status, "source_changed": changed,
+                            "version_drift": False, "snapshot_id": current.id,
+                            "input_digest": observed.source_digest})
+        except Exception as error:
+            results.append({"member_id": member_id, "status": "check_failed",
+                            "source_changed": False, "version_drift": False,
+                            "error_code": type(error).__name__, "error_message": str(error)[:500]})
+    return {"items": results}
+
+
 @app.delete("/api/repository-members/{member_id}")
 def retire_repository_member(member_id: str):
     try:
@@ -470,12 +555,18 @@ def cancel_analysis_run_member(run_id: str, member_id: str):
 
 
 @app.get("/api/repository-members/{member_id}/snapshots")
-def list_repository_snapshots(member_id: str):
+def list_repository_snapshots(member_id: str, cursor: str = Query(""), limit: int = Query(50, ge=1, le=200)):
     try:
         items = get_repository_snapshot_service().list_snapshots(member_id)
     except KeyError as error:
         raise HTTPException(404, "repository member not found") from error
-    return {"items": [_resource(item) for item in items], "next_cursor": None}
+    try:
+        offset = int(cursor) if cursor else 0
+    except ValueError as error:
+        raise HTTPException(400, "invalid cursor") from error
+    page = items[offset:offset + limit]
+    next_cursor = str(offset + limit) if offset + limit < len(items) else None
+    return {"items": [_resource(item) for item in page], "next_cursor": next_cursor}
 
 
 @app.get("/api/repository-snapshots/{snapshot_id}")
@@ -484,6 +575,8 @@ def get_repository_snapshot(snapshot_id: str, include: str = Query(default="")):
         item = _resource(get_repository_snapshot_service().get_snapshot(snapshot_id))
     except KeyError as error:
         raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(410 if str(error) == "snapshot_gone" else 409, str(error)) from error
     if include != "facts":
         item.pop("facts", None)
     return {"snapshot": item}
@@ -504,6 +597,37 @@ def update_repository_snapshot_metadata(snapshot_id: str, request: SnapshotMetad
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     return {"snapshot": _resource(item)}
+
+
+@app.post("/api/repository-snapshots/{snapshot_id}/deletion-preview", include_in_schema=False)
+def preview_repository_snapshot_deletion(snapshot_id: str):
+    try:
+        return get_snapshot_retention_service().preview(snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+
+
+@app.delete("/api/repository-snapshots/{snapshot_id}", status_code=202, include_in_schema=False)
+def delete_repository_snapshot(
+    snapshot_id: str,
+    response: Response,
+    deletion_confirmation: str = Query(""),
+    deletion_header: str = Header("", alias="X-Deletion-Confirmation"),
+):
+    try:
+        result = get_snapshot_retention_service().delete(snapshot_id, deletion_header or deletion_confirmation)
+        response.headers["Location"] = f"/api/repository-snapshots/{snapshot_id}/deletion"
+        return {"job": result}
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except ValueError as error:
+        status = 409 if str(error) in {"snapshot_protected", "invalid_deletion_confirmation"} else 400
+        raise HTTPException(status, str(error)) from error
+
+
+@app.post("/api/snapshot-retention/scavenge", include_in_schema=False)
+def scavenge_snapshot_retention():
+    return get_snapshot_retention_service().scavenge_orphans()
 
 
 @app.post("/api/graph-views/current", status_code=201)
@@ -551,13 +675,128 @@ def get_graph_view(view_id: str):
 
 @app.post("/api/graph-views/{view_id}/pin")
 def pin_graph_view(view_id: str, request: GraphViewPinRequest):
+    from .infrastructure.analysis_snapshot_sqlite import ViewExpiredError
     try:
         view = get_graph_view_service().pin(view_id, label=request.label, note=request.note)
+    except ViewExpiredError as error:
+        raise HTTPException(410, "graph view expired") from error
     except KeyError as error:
         raise HTTPException(404, "graph view not found") from error
     except ValueError as error:
         raise HTTPException(410, str(error)) from error
     return {"view": _resource(view)}
+
+
+@app.post("/api/graph-views/{view_id}/refresh", status_code=201, include_in_schema=False)
+def refresh_graph_view(view_id: str):
+    from .infrastructure.analysis_snapshot_sqlite import ViewExpiredError
+    try:
+        return {"view": _resource(get_graph_view_service().refresh(view_id))}
+    except ViewExpiredError as error:
+        raise HTTPException(410, "graph view expired") from error
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+
+
+@app.get("/api/graph-views/{view_id}/export", include_in_schema=False)
+def export_graph_view(view_id: str):
+    from .infrastructure.analysis_snapshot_sqlite import ViewExpiredError
+    try:
+        return get_graph_view_service().export(view_id)
+    except ViewExpiredError as error:
+        raise HTTPException(410, "graph view expired") from error
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.post("/api/graph-views/{view_id}/artifacts/{artifact_kind}/generate", status_code=202, include_in_schema=False)
+def generate_graph_artifact(view_id: str, artifact_kind: str):
+    try:
+        job = get_graph_artifact_service().generate(view_id, artifact_kind)
+        return {"job": job}
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+
+
+@app.get("/api/graph-views/{view_id}/artifacts/{artifact_kind}", include_in_schema=False)
+def get_graph_artifact(view_id: str, artifact_kind: str):
+    try:
+        job = get_graph_artifact_service().get(view_id, artifact_kind)
+        if job is None or job.get("status") != "completed":
+            return Response(
+                status_code=202,
+                content=json.dumps({"status": job.get("status", "pending") if job else "pending",
+                                     "job": job}, ensure_ascii=False),
+                media_type="application/json",
+            )
+        payload_json = job.get("payload_json")
+        if not payload_json:
+            cached = get_snapshot_runtime().store.get_artifact_cache(job["cache_key_digest"])
+            if cached and cached.get("payload_storage") == "artifact":
+                artifact = get_snapshot_runtime().artifacts.open(cached["artifact_key"])
+                payload_json = (artifact / "payload.json").read_text(encoding="utf-8")
+        payload = json.loads(payload_json) if payload_json else job
+        return payload
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+
+
+@app.get("/api/graph-artifact-jobs/{job_id}", include_in_schema=False)
+def get_graph_artifact_job(job_id: str):
+    job = get_snapshot_runtime().store.get_artifact_job(job_id)
+    if job is None:
+        raise HTTPException(404, "artifact job not found")
+    return {"job": job}
+
+
+@app.post("/api/graph-artifact-jobs/{job_id}/cancel", include_in_schema=False)
+def cancel_graph_artifact_job(job_id: str):
+    try:
+        return {"job": get_snapshot_runtime().store.cancel_artifact_job(job_id)}
+    except KeyError as error:
+        raise HTTPException(404, "artifact job not found") from error
+
+
+@app.post("/api/graph-artifact-jobs/{job_id}/retry", status_code=202, include_in_schema=False)
+def retry_graph_artifact_job(job_id: str):
+    try:
+        return {"job": get_snapshot_runtime().store.retry_artifact_job(job_id)}
+    except KeyError as error:
+        raise HTTPException(404, "artifact job not found") from error
+
+
+@app.get("/api/topology", include_in_schema=False)
+def snapshot_topology(view_id: str = Query(...)):
+    try:
+        return get_snapshot_topology_service().topology(view_id)
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+
+
+@app.get("/api/impact", include_in_schema=False)
+def snapshot_impact(view_id: str = Query(...), service: str = Query(...)):
+    try:
+        return get_snapshot_topology_service().impact(view_id, service)
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+
+
+@app.get("/api/flow", include_in_schema=False)
+def snapshot_flow(view_id: str = Query(...), service: str = Query(...), path: str = Query("")):
+    try:
+        return get_snapshot_topology_service().flow(view_id, service, path)
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+
+
+@app.get("/api/entities", include_in_schema=False)
+def snapshot_entities(view_id: str = Query(...)):
+    try:
+        return get_snapshot_topology_service().entities(view_id)
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
 
 
 def get_llm_config_store() -> LLMConfigStore:
@@ -610,6 +849,8 @@ def get_knowledge_service(repo: str = "") -> tuple[KnowledgeService, bool]:
         return factory(repo), True
     if injected := dependencies.get("knowledge_service"):
         return injected, False
+
+    raise HTTPException(400, "snapshot_id or view_id is required")
 
     if not repo:
         repos = list_repos()
@@ -729,6 +970,7 @@ def api_remove_member(name: str, path: str = Query(..., min_length=1)):
 @app.post("/api/repos/{name}/init")
 def api_init_repo(name: str):
     """Start one-click init: codegraph init + backfill for all member repos."""
+    raise HTTPException(410, "legacy init removed; create an analysis run for repository members")
     entry = get_repo(name)
     if not entry:
         raise HTTPException(404, f"Repo '{name}' not found")
@@ -839,6 +1081,7 @@ def api_init_repo(name: str):
 @app.get("/api/repos/{name}/init/status")
 def api_init_repo_status(name: str):
     """Poll the status of an init task."""
+    raise HTTPException(410, "legacy init removed; query /api/analysis-runs/{run_id}")
     with _init_lock:
         task = _init_tasks.get(name)
     if not task:
@@ -890,22 +1133,15 @@ def save_llm_settings(request: LLMConfigRequest):
         return getattr(request, field) if field in provided else fallback
 
     try:
-        store.save(
-            {
+        payload = {
                 "model": request.model,
                 "api_base": request.api_base,
                 "api_key": api_key,
-                "disable_thinking": keep_or_take(
-                    "disable_thinking", current.get("disable_thinking", True)
-                ),
-                "context_window": keep_or_take(
-                    "context_window", current.get("context_window")
-                ),
-                "max_output_tokens": keep_or_take(
-                    "max_output_tokens", current.get("max_output_tokens")
-                ),
-            }
-        )
+        }
+        for field in ("disable_thinking", "context_window", "max_output_tokens"):
+            if field in provided or field in current:
+                payload[field] = keep_or_take(field, current.get(field))
+        store.save(payload)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     return {"ok": True, "api_key_configured": True}
@@ -941,16 +1177,35 @@ def test_llm_settings():
 
 @app.get("/api/knowledge")
 def get_knowledge_report(
+    snapshot_id: str = Query("", min_length=0),
+    view_id: str = Query("", min_length=0),
+    section: str | None = Query(None),
+    # Compatibility is deliberately limited to an explicitly injected test/
+    # embedding service; production never falls back to a live repo.
     repo: str = Query(""),
     include_llm: bool = Query(False),
 ):
-    """Extract the current knowledge report directly from the repo's CodeGraph index."""
-    service, owned = get_knowledge_service(repo)
+    """Project immutable knowledge facts; never access a registered checkout."""
+    if not isinstance(snapshot_id, str):  # direct Python compatibility calls
+        snapshot_id = ""
+    injected = _request_dependencies.get().get("knowledge_service")
+    if not snapshot_id and injected is not None:
+        return injected.report(include_llm=include_llm)
+    if not snapshot_id:
+        if view_id:
+            try:
+                return get_snapshot_query_service().view_knowledge(view_id)
+            except KeyError as error:
+                raise HTTPException(404, "graph view not found") from error
+            except ValueError as error:
+                raise HTTPException(409, str(error)) from error
+        raise HTTPException(400, "snapshot_id is required")
     try:
-        return service.report(include_llm=include_llm)
-    finally:
-        if owned:
-            service.close()
+        return get_snapshot_query_service().knowledge(snapshot_id, section=section)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
 
 
 # ── Call-chain tree (lazy per-node expansion) ──
@@ -958,42 +1213,19 @@ def get_knowledge_report(
 
 @app.get("/api/call-tree/children")
 def call_tree_children(
-    repo: str = Query(""),
-    member: str | None = Query(None),
-    file: str | None = Query(None),
-    line: int | None = Query(None),
-    node_id: str | None = Query(None),
-    handler: str | None = Query(None),
+    snapshot_id: str = Query(..., min_length=1),
+    node_id: str = Query(..., min_length=1),
+    view_id: str = Query("", min_length=0),
 ):
-    """Return the direct children of one call-chain-tree node.
-
-    Exactly one node descriptor must be supplied:
-      * ``file``+``line`` — endpoint handler root (resolved by location)
-      * ``node_id``       — intra-repo function node
-      * ``handler``       — cross-service expansion by downstream handler qname
-    ``repo`` is the logical service to expand within; empty selects the first
-    registered service. ``member`` pins a physical member (optional when the
-    service has a single member).
-    """
-    dependencies = _request_dependencies.get()
-    if injected := dependencies.get("call_tree_service"):
-        return injected.expand(
-            repo, member, file=file, line=line, node_id=node_id, handler=handler
-        )
-
-    if not repo:
-        repos = list_repos()
-        if not repos:
-            raise HTTPException(400, "No repos registered. Register a repo first.")
-        repo = repos[0]["name"]
-    entry = get_repo(repo)
-    if not entry:
-        raise HTTPException(404, f"Repo '{repo}' not found")
-    if not (file or node_id or handler):
-        raise HTTPException(400, "Pass one of file+line, node_id, or handler")
-
-    svc = CallTreeService()
-    return svc.expand(repo, member, file=file, line=line, node_id=node_id, handler=handler)
+    """Expand one frozen graph node from the selected repository snapshot."""
+    try:
+        if view_id:
+            get_snapshot_query_service().view_snapshot(view_id, snapshot_id)
+        return get_snapshot_query_service().call_tree_children(snapshot_id, node_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
 
 
 # ── Business Rules (LLM-generated API business explanations) ──
@@ -1029,8 +1261,18 @@ JSON:"""
 
 
 @app.get("/api/business-rules")
-def list_business_rules(repo: str = Query("")):
+def list_business_rules(repo: str = Query(""), repository_snapshot_id: str = Query("")):
     """List all saved business rules, optionally filtered by repo."""
+    if repository_snapshot_id:
+        try:
+            runtime = get_snapshot_runtime()
+            if runtime.store.get_snapshot(repository_snapshot_id) is None:
+                raise HTTPException(404, "repository snapshot not found")
+            return {"rules": runtime.store.list_current_rules(
+                rule_kind="business", snapshot_id=repository_snapshot_id
+            )}
+        except HTTPException:
+            raise
     store = get_business_rule_store()
     if repo:
         return {"rules": store.list_by_repo(repo)}
@@ -1051,6 +1293,44 @@ def generate_business_rule(request: BusinessRuleGenerateRequest):
     config = get_llm_config()
     if not config:
         raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
+
+    if request.repository_snapshot_id:
+        try:
+            if request.view_id:
+                get_snapshot_query_service().view_snapshot(request.view_id, request.repository_snapshot_id)
+            facts = get_snapshot_query_service().knowledge(request.repository_snapshot_id)
+        except (KeyError, RuntimeError) as error:
+            raise HTTPException(424, str(error)) from error
+        endpoint = next((item for item in facts.get("api_contract", {}).get("endpoints", [])
+                         if item.get("handler") == request.handler and item.get("method", "").upper() == request.method.upper()), None)
+        if endpoint is None:
+            raise HTTPException(404, "endpoint not found in snapshot facts")
+        prompt = request.custom_prompt or DEFAULT_BUSINESS_RULE_PROMPT.format(
+            flowchart="sequenceDiagram\n    participant API as " + request.handler,
+            method=endpoint.get("method", request.method), path=endpoint.get("path", request.path), handler=request.handler,
+        )
+        snapshot_store = get_snapshot_runtime().store
+        subject_key = f"{endpoint.get('method', request.method).upper()} {endpoint.get('path', request.path)} {request.handler}"
+        candidate = snapshot_store.create_rule_candidate(
+            rule_kind="business", snapshot_id=request.repository_snapshot_id, subject_key=subject_key,
+            prompt=prompt, input_digest=hashlib.sha256((request.repository_snapshot_id + request.view_id + subject_key + prompt).encode()).hexdigest(), now=utc_now(), view_id=request.view_id or None,
+        )
+        try:
+            content = OpenAILLMClient(config).complete(prompt, max_tokens=1200, temperature=0.3)
+            if not content:
+                raise RuntimeError("LLM returned empty response")
+            parsed = parse_json(content)
+            if parsed is not None and parsed.get("error"):
+                raise RuntimeError(parsed["error"])
+            result = json.dumps(parsed, ensure_ascii=False) if isinstance(parsed, dict) else content
+            completed = snapshot_store.finish_rule_candidate(candidate["id"], status="completed", result=result, now=utc_now())
+            return {"id": completed["id"], "status": "completed", "result": result, "prompt": prompt,
+                    "repository_snapshot_id": request.repository_snapshot_id}
+        except Exception as exc:
+            snapshot_store.finish_rule_candidate(candidate["id"], status="failed", error=str(exc)[:1000], now=utc_now())
+            raise HTTPException(502, f"LLM 生成失败：{exc}") from exc
+
+    raise HTTPException(400, "repository_snapshot_id is required")
 
     store = get_business_rule_store()
     prompt = request.custom_prompt or DEFAULT_BUSINESS_RULE_PROMPT.format(
@@ -1143,23 +1423,33 @@ def _resolve_node_rule(repo: str, member: str, node_type: str, node_id: str, han
 
 @app.get("/api/call-tree/rule")
 def call_tree_node_rule(
-    repo: str = Query(""),
-    member: str = Query(""),
-    node_type: str = Query("func"),
-    node_id: str = Query(""),
-    handler: str = Query(""),
+    snapshot_id: str = Query(..., min_length=1),
+    node_id: str = Query(..., min_length=1),
+    view_id: str = Query("", min_length=0),
 ):
-    """Describe one call-chain node: its stored business rule (if any) and the
-    default LLM prompt built from its source snippet."""
-    ctx = _resolve_node_rule(repo, member, node_type, node_id, handler)
+    """Describe a node using only graph/source content frozen in its snapshot."""
+    try:
+        if view_id:
+            get_snapshot_query_service().view_snapshot(view_id, snapshot_id)
+        ctx = get_snapshot_query_service().node_rule_context(snapshot_id, node_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    if ctx is None:
+        raise HTTPException(404, "snapshot node not found")
     svc = NodeRuleService()
-    store = get_node_rule_store()
-    rule = store.get(ctx["service"], ctx["member"], ctx["node_type"], ctx["node_key"])
+    rule = get_snapshot_runtime().store.get_current_rule(
+        rule_kind="node", snapshot_id=snapshot_id, subject_key=ctx["node_key"], view_id=view_id or None
+    )
     return {
         "node": {
             "type": ctx["node_type"],
-            "service": ctx["service"],
-            "member": ctx["member"],
+            "repository_snapshot_id": snapshot_id,
+            "member_id": ctx["member_id"],
+            "node_id": ctx["node_id"],
             "qualified_name": ctx["qualified_name"],
             "name": ctx["name"],
             "file": ctx["file"],
@@ -1180,6 +1470,44 @@ def generate_call_tree_node_rule(request: NodeRuleGenerateRequest):
     config = get_llm_config()
     if not config:
         raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
+
+    if request.repository_snapshot_id:
+        try:
+            if request.view_id:
+                get_snapshot_query_service().view_snapshot(request.view_id, request.repository_snapshot_id)
+            ctx = get_snapshot_query_service().node_rule_context(
+                request.repository_snapshot_id, request.node_id
+            )
+        except KeyError as error:
+            raise HTTPException(404, "repository snapshot not found") from error
+        if ctx is None:
+            raise HTTPException(404, "snapshot node not found")
+        prompt = request.custom_prompt or NodeRuleService().default_prompt(ctx)
+        subject_key = ctx["node_key"]
+        digest = hashlib.sha256((request.repository_snapshot_id + request.view_id + subject_key + prompt).encode()).hexdigest()
+        snapshot_store = get_snapshot_runtime().store
+        candidate = snapshot_store.create_rule_candidate(
+            rule_kind="node", snapshot_id=request.repository_snapshot_id,
+            subject_key=subject_key, prompt=prompt, input_digest=digest, now=utc_now(), view_id=request.view_id or None,
+        )
+        try:
+            content = OpenAILLMClient(config).complete(prompt, max_tokens=1200, temperature=0.3)
+            if not content:
+                raise RuntimeError("LLM returned empty response")
+            parsed = parse_json(content)
+            if parsed is not None and parsed.get("error"):
+                raise RuntimeError(parsed["error"])
+            result = json.dumps(parsed, ensure_ascii=False) if isinstance(parsed, dict) else content
+            completed = snapshot_store.finish_rule_candidate(
+                candidate["id"], status="completed", result=result, now=utc_now()
+            )
+            return {"id": completed["id"], "status": "completed", "result": result,
+                    "prompt": prompt, "repository_snapshot_id": request.repository_snapshot_id}
+        except Exception as exc:
+            snapshot_store.finish_rule_candidate(candidate["id"], status="failed", error=str(exc)[:1000], now=utc_now())
+            raise HTTPException(502, f"LLM 生成失败：{exc}") from exc
+
+    raise HTTPException(400, "repository_snapshot_id is required")
 
     ctx = _resolve_node_rule(request.repo, request.member, request.node_type, request.node_id, request.handler)
     svc = NodeRuleService()
@@ -1244,7 +1572,7 @@ def _build_explanation_service():
     if factory := dependencies.get("explanation_generation_service_factory"):
         return factory()
     from .application.explanation_generation_service import ExplanationGenerationService
-    from .infrastructure.explanation_source import RepositoryExplanationSource
+    from .infrastructure.explanation_source import SnapshotExplanationSource
     from .semantic.client import OpenAILLMClient
     from .semantic.config import get_llm_config
     from .semantic.explanation_service import ExplanationSemanticService
@@ -1254,20 +1582,32 @@ def _build_explanation_service():
         raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
     return ExplanationGenerationService(
         get_explanation_snapshot_store(),
-        RepositoryExplanationSource(),
+        SnapshotExplanationSource(get_snapshot_query_service()),
         ExplanationSemanticService(OpenAILLMClient(config)),
         config["model"],
     )
 
 
 def _submit_explanation_generation(service, snapshot_id: str, frozen: dict) -> None:
+    def run_and_finalize() -> None:
+        try:
+            service.generate(snapshot_id, frozen)
+        finally:
+            source_snapshot_id = frozen.get("_generation_spec", {}).get("repository_snapshot_id")
+            if source_snapshot_id:
+                central = get_snapshot_runtime().store
+                generated = get_explanation_snapshot_store().get_snapshot(snapshot_id)
+                if generated and generated.status in {"completed", "partial"}:
+                    central.make_snapshot_reference_permanent(source_snapshot_id, "api_explanation", snapshot_id)
+                else:
+                    central.remove_snapshot_reference(source_snapshot_id, "api_explanation", snapshot_id)
+
     submit = _request_dependencies.get().get("background_submit")
     if submit:
-        submit(service.generate, snapshot_id, frozen)
+        submit(run_and_finalize)
         return
     threading.Thread(
-        target=service.generate,
-        args=(snapshot_id, frozen),
+        target=run_and_finalize,
         name=f"api-explanation-{snapshot_id[:8]}",
         daemon=True,
     ).start()
@@ -1279,7 +1619,19 @@ def generate_api_explanation(request: ApiExplanationGenerateRequest):
     from .infrastructure.explanation_source import api_key
 
     store = get_explanation_snapshot_store()
-    member = _explanation_member(request.repo, request.member)
+    if request.repository_snapshot_id:
+        try:
+            with get_snapshot_query_service().open(request.repository_snapshot_id) as handle:
+                member = handle.snapshot.member_id
+        except KeyError as error:
+            raise HTTPException(404, "repository snapshot not found") from error
+        except RuntimeError as error:
+            raise HTTPException(424, str(error)) from error
+    elif _request_dependencies.get().get("explanation_generation_service_factory"):
+        # Compatibility for an explicitly injected embedding/test generator.
+        member = _explanation_member(request.repo, request.member)
+    else:
+        raise HTTPException(400, "repository_snapshot_id is required")
     key = api_key(request.method, request.path, request.handler)
     with _explanation_generation_lock:
         active = next(
@@ -1296,41 +1648,63 @@ def generate_api_explanation(request: ApiExplanationGenerateRequest):
         try:
             spec = request.model_dump()
             spec["member"] = member
+            # Never permit a caller-selected live repository identity to affect
+            # frozen evidence resolution.
+            if request.repository_snapshot_id:
+                spec["repo"] = member
             snapshot_id, frozen = service.prepare(spec)
         except ValueError as error:
             message = str(error)
             status = 409 if "CodeGraph" in message else 404
             raise HTTPException(status, message) from error
         snapshot = store.get_snapshot(snapshot_id)
+        if request.repository_snapshot_id:
+            get_snapshot_runtime().store.add_snapshot_reference(
+                request.repository_snapshot_id, "api_explanation", snapshot_id
+            )
         _submit_explanation_generation(service, snapshot_id, frozen)
     return {"snapshot": _snapshot_payload(snapshot)}
 
 
 @app.get("/api/api-explanations/current")
 def current_api_explanation(
-    repo: str = Query(...), member: str = Query(""), api_key: str = Query(...)
+    repo: str = Query(""), member: str = Query(""), api_key: str = Query(...),
+    repository_snapshot_id: str = Query(""),
 ):
-    member = _explanation_member(repo, member)
-    snapshot = get_explanation_snapshot_store().get_current(repo, member, api_key)
+    if repository_snapshot_id:
+        try:
+            with get_snapshot_query_service().open(repository_snapshot_id) as handle:
+                repo = handle.snapshot.member_id
+                member = handle.snapshot.member_id
+        except (KeyError, RuntimeError) as error:
+            raise HTTPException(404, "repository snapshot not found") from error
+    elif not (_request_dependencies.get().get("explanation_source_loader")
+               or _request_dependencies.get().get("explanation_generation_service_factory")):
+        raise HTTPException(400, "repository_snapshot_id is required")
+    else:
+        member = _explanation_member(repo, member)
+    explanation_store = get_explanation_snapshot_store()
+    snapshot = (
+        explanation_store.get_current_for_repository_snapshot(repository_snapshot_id, api_key)
+        if repository_snapshot_id
+        else explanation_store.get_current(repo, member, api_key)
+    )
     if snapshot is None:
         return {"status": "missing", "snapshot": None}
     freshness = "unknown"
     try:
         dependencies = _request_dependencies.get()
         source = dependencies.get("explanation_source_loader")
+        if source is None and repository_snapshot_id:
+            from .infrastructure.explanation_source import SnapshotExplanationSource
+            source = SnapshotExplanationSource(get_snapshot_query_service())
         if source is None:
-            from .infrastructure.explanation_source import RepositoryExplanationSource
-
-            source = RepositoryExplanationSource()
-        current = source.load(
-            {
-                "repo": snapshot.repo_name,
-                "member": snapshot.member_name,
-                "method": snapshot.method,
-                "path": snapshot.path,
-                "handler": snapshot.handler,
-            }
-        )
+            raise ValueError("snapshot source loader is unavailable")
+        spec = {"repo": snapshot.repo_name, "member": snapshot.member_name,
+                "method": snapshot.method, "path": snapshot.path, "handler": snapshot.handler}
+        if repository_snapshot_id:
+            spec["repository_snapshot_id"] = repository_snapshot_id
+        current = source.load(spec)
         freshness = (
             "current"
             if current["source_digest"] == snapshot.source_digest
@@ -1347,10 +1721,21 @@ def current_api_explanation(
 
 @app.get("/api/api-explanations/snapshots")
 def list_api_explanation_snapshots(
-    repo: str = Query(...), member: str = Query(""), api_key: str = Query(...)
+    repo: str = Query(""), member: str = Query(""), api_key: str = Query(...),
+    repository_snapshot_id: str = Query("")
 ):
-    member = _explanation_member(repo, member)
-    snapshots = get_explanation_snapshot_store().list_snapshots(repo, member, api_key)
+    if repository_snapshot_id:
+        if get_snapshot_runtime().store.get_snapshot(repository_snapshot_id) is None:
+            raise HTTPException(404, "repository snapshot not found")
+        snapshots = get_explanation_snapshot_store().list_snapshots_for_repository_snapshot(
+            repository_snapshot_id, api_key
+        )
+    elif (_request_dependencies.get().get("explanation_source_loader")
+          or _request_dependencies.get().get("explanation_generation_service_factory")):
+        member = _explanation_member(repo, member)
+        snapshots = get_explanation_snapshot_store().list_snapshots(repo, member, api_key)
+    else:
+        raise HTTPException(400, "repository_snapshot_id is required")
     return {"snapshots": [_snapshot_payload(item) for item in snapshots]}
 
 
@@ -1419,8 +1804,12 @@ def ask_repository(request: ChatRequest):
     question = request.question.strip()
     if not question:
         raise HTTPException(400, "Question must not be empty")
-    try:
+    if not request.snapshot_id and _request_dependencies.get().get("chat_service"):
         return get_chat_service().ask(request.repo, question)
+    if not request.snapshot_id:
+        raise HTTPException(400, "snapshot_id is required")
+    try:
+        return get_snapshot_chat_service().ask(request.snapshot_id, question)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
 
@@ -1428,6 +1817,11 @@ def ask_repository(request: ChatRequest):
 @app.get("/api/audit-logs")
 def list_assistant_audit_logs(repo: str = Query(""), limit: int = Query(50, ge=1, le=200)):
     return {"logs": get_audit_store().list(repo, limit)}
+
+
+@app.get("/api/metrics/snapshots", include_in_schema=False)
+def snapshot_metrics():
+    return get_snapshot_runtime().store.metrics()
 
 
 @app.post("/api/ui-test-targets")

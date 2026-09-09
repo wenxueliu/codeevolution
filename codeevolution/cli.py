@@ -7,26 +7,15 @@ import os
 import sys
 from pathlib import Path
 
-from .analysis.topology.flow import FlowTracer
-from .analysis.topology.impact import ImpactAnalyzer
-from .application.advanced_topology_service import AdvancedTopologyService
-from .application.evolution_command_service import EvolutionCommandService
-from .application.evolution_service import EvolutionQueryService
-from .application.knowledge_service import KnowledgeService
-from .application.topology_service import TopologyService
+from .application.snapshot_runtime import SnapshotRuntime
+from .application.snapshot_topology_service import SnapshotTopologyService
 from .config import Config
-from .delivery.renderers import AdvancedTopologyRenderer, TopologyRenderer
 from .mcp_server import run_server
+from .paths import analysis_data_dir
 from .registry import (
-    build_topology_cache,
     check_services,
     discover_repos,
-    get_cached_impact,
-    get_cached_trace,
-    get_repo,
-    is_topology_cache_stale,
     list_repos,
-    load_topology_cache,
     refresh_meta,
     register_repo,
     repository_members,
@@ -44,6 +33,7 @@ def setup_logging(verbose: bool = False):
 
 def cmd_backfill(args):
     """Run a full backfill analysis from git history."""
+    raise SystemExit("backfill was removed; use `codeevolution analyze --member-id ...`")
     config = Config(repo_path=args.repo, db_path=args.db)
     service = EvolutionCommandService.from_config(config)
     logger = logging.getLogger("codeevolution")
@@ -66,6 +56,7 @@ def cmd_backfill(args):
 
 def cmd_update(args):
     """Process new commits since last analysis."""
+    raise SystemExit("update was removed; use `codeevolution analyze --member-id ...`")
     config = Config(repo_path=args.repo, db_path=args.db)
     service = EvolutionCommandService.from_config(config)
     try:
@@ -76,15 +67,13 @@ def cmd_update(args):
 
 
 def cmd_serve(args):
-    """Start the MCP server."""
-    config = Config(repo_path=args.repo, db_path=args.db)
-    service = EvolutionQueryService.from_database(config.db_path)
-    stats = service.stats()
-    print(f"Serving MCP on stdio. DB stats: {stats}")
+    """Start the snapshot-only MCP server."""
+    runtime = SnapshotRuntime(analysis_data_dir())
+    print("Serving snapshot MCP on stdio.")
     try:
-        run_server(service, config, transport=args.transport)
+        run_server(runtime, transport=args.transport)
     finally:
-        service.close()
+        runtime.close()
 
 
 def cmd_web(args):
@@ -126,6 +115,7 @@ def cmd_repos(args):
 
 def cmd_status(args):
     """Show current analysis status."""
+    raise SystemExit("status was removed; use `codeevolution runs` or `snapshots`")
     config = Config(
         repo_path=args.repo,
         db_path=args.db,
@@ -155,6 +145,46 @@ def cmd_status(args):
 
 
 def cmd_knowledge(args):
+    """Project knowledge facts from one immutable repository snapshot."""
+    runtime = SnapshotRuntime(analysis_data_dir())
+    try:
+        result = runtime.snapshot_queries.knowledge(
+            args.snapshot_id, section=None if args.section == "all" else args.section
+        )
+        rendered = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+            print(f"Knowledge report written to {args.output}")
+        else:
+            print(rendered)
+    except KeyError:
+        print(f"Error: snapshot or section not found: {args.snapshot_id}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        runtime.close()
+
+
+def _snapshot_topology_service():
+    runtime = SnapshotRuntime(analysis_data_dir())
+    return runtime, SnapshotTopologyService(runtime.store, runtime.snapshot_queries)
+
+
+def cmd_snapshot_topology(args):
+    runtime, service = _snapshot_topology_service()
+    try:
+        if args.command == "topology": result = service.topology(args.view_id)
+        elif args.command == "impact": result = service.impact(args.view_id, args.service)
+        elif args.command in {"flow", "trace"}: result = service.flow(args.view_id, args.service, getattr(args, "path", ""))
+        else: result = service.entities(args.view_id)
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    finally:
+        runtime.close()
+
+
+def _cmd_legacy_knowledge(args):
     """Extract business knowledge from code via CodeGraph."""
     config = Config(repo_path=args.repo)
 
@@ -376,9 +406,7 @@ def main():
     p.set_defaults(handler=cmd_update)
 
     # serve
-    p = subparsers.add_parser("serve", help="Start MCP server")
-    p.add_argument("--repo", "-r", required=True, help="Path to git repository")
-    p.add_argument("--db", "-d", default="", help="Path to database")
+    p = subparsers.add_parser("serve", help="Start snapshot-only MCP server")
     p.add_argument(
         "--transport",
         "-t",
@@ -417,10 +445,8 @@ def main():
     p.set_defaults(handler=cmd_status)
 
     # knowledge
-    p = subparsers.add_parser("knowledge", help="Extract business knowledge from code (Phase 1)")
-    p.add_argument(
-        "--repo", "-r", required=True, help="Path to git repository with CodeGraph initialized"
-    )
+    p = subparsers.add_parser("knowledge", help="Read knowledge from an immutable snapshot")
+    p.add_argument("--snapshot-id", required=True, help="Published repository snapshot ID")
     p.add_argument("--output", "-o", default="", help="Output JSON file path (default: stdout)")
     p.add_argument(
         "--section",
@@ -444,7 +470,6 @@ def main():
         ],
         help="Which knowledge section to extract (default: all)",
     )
-    p.add_argument("--llm", action="store_true", help="Enable LLM-powered Phase 3 analysis")
     p.set_defaults(handler=cmd_knowledge)
 
     # cross-repo topology
@@ -460,6 +485,7 @@ def main():
     p.add_argument(
         "--no-cache", action="store_true", help="Force rebuild topology (don't use cache)"
     )
+    p.add_argument("--view-id", default="", help="Immutable Graph View selector")
     p.set_defaults(handler=cmd_topology)
 
     # cross-repo impact
@@ -468,6 +494,7 @@ def main():
     p.add_argument(
         "--no-cache", action="store_true", help="Force rebuild topology (don't use cache)"
     )
+    p.add_argument("--view-id", default="", help="Immutable Graph View selector")
     p.set_defaults(handler=cmd_impact)
 
     # cross-repo trace
@@ -477,6 +504,7 @@ def main():
     p.add_argument(
         "--no-cache", action="store_true", help="Force rebuild topology (don't use cache)"
     )
+    p.add_argument("--view-id", default="", help="Immutable Graph View selector")
     p.set_defaults(handler=cmd_trace)
 
     # discover
@@ -501,6 +529,7 @@ def main():
     p.add_argument("--service", "-s", required=True, help="Starting service name")
     p.add_argument("--path", "-p", default="", help="Starting API path (optional)")
     p.add_argument("--no-cache", action="store_true", help="Force rebuild topology")
+    p.add_argument("--view-id", default="", help="Immutable Graph View selector")
     p.set_defaults(handler=cmd_flow)
 
     # P2: entity alignment
@@ -510,6 +539,7 @@ def main():
     p.add_argument(
         "--llm", action="store_true", help="Use LLM to verify and explain entity mappings"
     )
+    p.add_argument("--view-id", default="", help="Immutable Graph View selector")
     p.set_defaults(handler=cmd_entities)
 
     args = parser.parse_args()
@@ -525,84 +555,23 @@ def main():
 
 def cmd_topology(args):
     """Build and display unified multi-service topology."""
-    entries = _get_services(args)
-
-    if not entries:
-        print("No repos registered. Use 'codeevolution register' first.")
-        sys.exit(1)
-
-    # Check prerequisites
-    for e in entries:
-        for member in repository_members(e):
-            cg_db = Path(member["path"]) / ".codegraph" / "codegraph.db"
-            if not cg_db.exists():
-                print(f"  [!] {e['name']}/{member['name']}: run codegraph init")
-
-    # Use cache if available
-    if not args.no_cache and not is_topology_cache_stale(entries):
-        cached = load_topology_cache()
-        if cached:
-            print(f"[from cache, built {_format_age(cached.get('_built_at', 0))}]")
-            _print_cached_topology(cached)
-            return
-
-    print(f"Analyzing {len(entries)} services...")
-    service = TopologyService.from_repositories(entries)
-    topology = service.get_or_build(force=True)
-    build_topology_cache()  # update cache
-    print(TopologyRenderer(service.analyzer).topology(topology))
+    if args.view_id:
+        return cmd_snapshot_topology(args)
+    raise SystemExit("topology requires --view-id")
 
 
 def cmd_impact(args):
     """Cross-service change impact analysis."""
-    entries = list_repos()
-    if not entries:
-        print("No repos registered.")
-        sys.exit(1)
-
-    # Use cache if available
-    if not args.no_cache and not is_topology_cache_stale(entries):
-        impact = get_cached_impact(args.service)
-        if impact:
-            print("[from cache]")
-            print(f"  Upstream (who calls us):   {impact['upstream_impact']}")
-            print(f"  Downstream (who we call):  {impact['downstream_impact']}")
-            print(f"  Affected cross-edges: {len(impact['affected_cross_edges'])}")
-            for e in impact["affected_cross_edges"][:15]:
-                print(
-                    f"    {e['source_service']} → {e['target_service']}: {e['http_method']} {e['url_pattern']}"
-                )
-            return
-
-    service = TopologyService.from_repositories(entries)
-    impact = service.impact(ImpactAnalyzer(service.analyzer), args.service, force=True)
-    build_topology_cache()
-    print(TopologyRenderer(service.analyzer).impact(impact))
+    if args.view_id:
+        return cmd_snapshot_topology(args)
+    raise SystemExit("impact requires --view-id")
 
 
 def cmd_trace(args):
     """Trace end-to-end flow across services."""
-    entries = list_repos()
-    if not entries:
-        print("No repos registered.")
-        sys.exit(1)
-
-    if not args.no_cache and not is_topology_cache_stale(entries):
-        chain = get_cached_trace(args.service, args.path or None)
-        if chain is not None:
-            print("[from cache]")
-            for step in chain:
-                indent = "  " * step.get("depth", 0)
-                print(f"{indent}[{step['http_method']} {step['url_pattern']}]")
-                print(f"{indent}  {step['source_service']} → {step['target_service']}")
-            return
-
-    service = TopologyService.from_repositories(entries)
-    chain = service.trace(
-        FlowTracer(service.analyzer), args.service, args.path or None, force=True
-    )
-    build_topology_cache()
-    print(TopologyRenderer(service.analyzer).trace(chain))
+    if args.view_id:
+        return cmd_snapshot_topology(args)
+    raise SystemExit("trace requires --view-id")
 
 
 def cmd_discover(args):
@@ -650,70 +619,8 @@ def cmd_check(args):
     print()
 
 
-def _get_services(args):
-    """Get service entries from args or registry."""
-    if getattr(args, "service", ""):
-        entry = get_repo(args.service)
-        return [entry] if entry else []
-    return list_repos()
-
-
-def _format_age(timestamp: float) -> str:
-    """Format a timestamp as human-readable age."""
-    import time
-
-    age = time.time() - timestamp
-    if age < 60:
-        return f"{int(age)}s ago"
-    if age < 3600:
-        return f"{int(age / 60)}m ago"
-    if age < 86400:
-        return f"{int(age / 3600)}h ago"
-    return f"{int(age / 86400)}d ago"
-
-
-def _print_cached_topology(cached: dict):
-    """Print cached topology in the same format as format_topology."""
-    print(f"\nServices ({cached['_service_count']}):")
-    for s in cached["services"]:
-        db_str = f" DB={s['db_types']}" if s.get("db_types") else ""
-        mq_str = f" MQ={s['mq_types']}" if s.get("mq_types") else ""
-        print(
-            f"  [{s['language']:6s}] {s['name']:20s} ({s['role']})"
-            f"  APIs={s['api_count']} deps={s['dependencies']}{db_str}{mq_str}"
-        )
-
-    if cached.get("dependency_graph"):
-        print("\nDependency Graph:")
-        for svc, deps in sorted(cached["dependency_graph"].items()):
-            for d in deps:
-                print(f"  {svc} → {d}")
-
-    if cached.get("cross_edges"):
-        print(f"\nHTTP Cross-Service Edges ({len(cached['cross_edges'])}):")
-        for e in cached["cross_edges"][:20]:
-            print(
-                f"  {e['source_service']} ──[{e['http_method']} {e['url_pattern']}]──→ {e['target_service']}"
-            )
-
-    if cached.get("message_edges"):
-        print(f"\nMessage Edges ({len(cached['message_edges'])}):")
-        for e in cached["message_edges"][:20]:
-            print(
-                f"  {e['source_service']} ──[{e['broker_type']}:{e['channel']}]──→ "
-                f"{e['target_service']}"
-            )
-
-    if cached.get("resource_edges"):
-        print(f"\nResource Edges ({len(cached['resource_edges'])}):")
-        for e in cached["resource_edges"][:20]:
-            print(
-                f"  {e['source_service']} ──[{e['operation']} {e['resource_key']}]──→ "
-                f"{e['resource_id']}"
-            )
-
-
 def cmd_init_all(args):
+    raise SystemExit("init-all was removed; create an analysis run for selected members")
     """Initialize CodeGraph on all registered services."""
     import subprocess as sp
 
@@ -762,31 +669,15 @@ def cmd_init_all(args):
 
 
 def cmd_flow(args):
-    """End-to-end flow trace across all channels."""
-    entries = list_repos()
-    if not entries:
-        print("No repos registered.")
-        sys.exit(1)
-
-    # Ensure topology is built (for HTTP edges)
-    if not args.no_cache and not is_topology_cache_stale(entries):
-        print("[using cached topology]")
-
-    service = AdvancedTopologyService.from_repositories(entries)
-    flow = service.trace_flow(args.service, args.path or "")
-    print(AdvancedTopologyRenderer(service.analyzer).flow(flow))
+    if args.view_id:
+        return cmd_snapshot_topology(args)
+    raise SystemExit("flow requires --view-id")
 
 
 def cmd_entities(args):
-    """Cross-service entity alignment."""
-    entries = list_repos()
-    if not entries:
-        print("No repos registered.")
-        sys.exit(1)
-
-    service = AdvancedTopologyService.from_repositories(entries)
-    entities = service.align_entities(use_llm=args.llm)
-    print(AdvancedTopologyRenderer(service.analyzer).entities(entities))
+    if args.view_id:
+        return cmd_snapshot_topology(args)
+    raise SystemExit("entities requires --view-id")
 
 
 if __name__ == "__main__":

@@ -81,6 +81,7 @@ import { apiClient } from '../api/apiClient.js'
 const props = defineProps({
   repo: { type: String, default: '' },
   member: { type: String, default: '' },
+  snapshotId: { type: String, default: '' },
   mermaid: { type: String, default: '' },
   target: { type: Object, default: null },
 })
@@ -143,8 +144,8 @@ async function loadGraphNode() {
   try {
     const d = props.target.descriptor || {}
     const resp = await apiClient.get('/api/call-tree/rule', {
-      repo: d.repo || props.repo,
-      member: d.member || props.member,
+      repository_snapshot_id: props.snapshotId,
+      view_id: '',
       node_type: props.target.node_type || 'func',
       node_id: d.node_id,
       handler: d.handler,
@@ -161,9 +162,8 @@ async function loadGraphNode() {
 async function loadRoot() {
   loading.value = true
   try {
-    const repo = props.target.descriptor?.repo || props.repo
     const meta = props.target.rootMeta || {}
-    const data = await apiClient.get('/api/business-rules', { repo })
+    const data = await apiClient.get('/api/business-rules', { repository_snapshot_id: props.snapshotId })
     const found = (data.rules || []).find(
       (r) => r.handler === meta.handler && r.method === meta.method && r.path === meta.path,
     )
@@ -201,7 +201,7 @@ async function generate() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          repo: props.target.descriptor?.repo || props.repo,
+          repository_snapshot_id: props.snapshotId,
           handler: meta.handler || '',
           method: meta.method || '',
           path: meta.path || '',
@@ -212,8 +212,7 @@ async function generate() {
     } else {
       const d = props.target.descriptor || {}
       const body = {
-        repo: d.repo || props.repo,
-        member: d.member || props.member,
+        repository_snapshot_id: props.snapshotId,
         node_type: props.target.node_type || 'func',
         custom_prompt: editPrompt.value,
       }

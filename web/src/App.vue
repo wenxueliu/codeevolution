@@ -5,8 +5,9 @@
         <router-link to="/">CodeEvolution</router-link>
         <span class="nav-subtitle">代码仓功能演进分析</span>
       </div>
-      <div class="nav-links" v-if="repoName">
-        <router-link :to="'/repo/' + repoName">知识中心</router-link>
+      <div class="nav-links">
+        <router-link v-if="repoName" :to="'/repo/' + repoName">知识中心</router-link>
+        <router-link to="/snapshots">Snapshots</router-link>
       </div>
       <div class="nav-right">
         <span v-if="repoName" class="nav-repo">{{ repoName }}</span>

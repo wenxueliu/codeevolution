@@ -154,6 +154,7 @@ class EvidenceBundle:
     capture_policy_digest: str
     capture_completeness: str
     created_at: str = ""
+    deletion_state: str = "active"
 
 
 @dataclass(frozen=True)
