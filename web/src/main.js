@@ -8,10 +8,12 @@ import { runAsync } from './composables/useAsync.js'
 const Home = () => import('./pages/Home.vue')
 const Knowledge = () => import('./pages/Knowledge.vue')
 const Snapshots = () => import('./pages/Snapshots.vue')
+const GraphView = () => import('./pages/GraphView.vue')
 
 const routes = [
   { path: '/', name: 'home', component: Home },
   { path: '/snapshots', name: 'snapshots', component: Snapshots },
+  { path: '/graph-views/:viewId', name: 'graph-view', component: GraphView, props: true },
   { path: '/repo/:repoName', name: 'knowledge', component: Knowledge, props: true },
 ]
 

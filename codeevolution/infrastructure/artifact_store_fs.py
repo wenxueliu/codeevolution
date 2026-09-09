@@ -107,12 +107,21 @@ class FileSystemArtifactStore:
         shutil.rmtree(bucket)
         self._fsync_dir(self.trash_dir)
 
-    def scavenge_staging(self, *, max_age_seconds: int = 3600) -> list[str]:
-        """Remove abandoned staging directories older than the safety window."""
+    def scavenge_staging(
+        self, *, max_age_seconds: int = 3600, protected_names: set[str] | frozenset[str] = frozenset()
+    ) -> list[str]:
+        """Remove abandoned staging directories older than the safety window.
+
+        Active analysis attempts retain their staging directory while they are
+        running.  The caller supplies those attempt IDs so an administrative
+        scavenger cannot race a worker and remove its input tree.
+        """
         now = time.time()
         removed: list[str] = []
         for path in self.staging_dir.iterdir():
             if not path.is_dir() or path.is_symlink():
+                continue
+            if path.name in protected_names:
                 continue
             try:
                 age = now - path.stat().st_mtime

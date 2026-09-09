@@ -699,6 +699,14 @@ class AnalysisSnapshotSQLiteStore:
             ).fetchall()
         return [self._attempt(row) for row in rows]
 
+    def active_attempt_ids(self) -> set[str]:
+        """Return attempt IDs whose workers may still own staging trees."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT id FROM repository_attempts WHERE status IN ('pending','running')"
+            ).fetchall()
+        return {str(row["id"]) for row in rows}
+
     def record_observation(
         self,
         attempt_id: str,

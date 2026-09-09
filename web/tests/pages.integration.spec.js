@@ -3,13 +3,28 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import Home from '../src/pages/Home.vue'
 import Knowledge from '../src/pages/Knowledge.vue'
+import Snapshots from '../src/pages/Snapshots.vue'
+import GraphView from '../src/pages/GraphView.vue'
 import RepositoryAssistant from '../src/components/RepositoryAssistant.vue'
 import LLMSettings from '../src/components/LLMSettings.vue'
 
 const { mermaidRun } = vi.hoisted(() => ({ mermaidRun: vi.fn() }))
 vi.mock('mermaid', () => ({ default: { initialize: vi.fn(), run: mermaidRun } }))
 
-const RouterLink = { props: ['to'], template: '<a :href="String(to)"><slot /></a>' }
+const RouterLink = {
+  props: ['to'],
+  computed: {
+    href() {
+      if (typeof this.to === 'string') return this.to
+      const params = this.to?.params || {}
+      if (this.to?.name === 'snapshots') return '/snapshots'
+      if (this.to?.name === 'graph-view') return `/graph-views/${params.viewId}`
+      if (this.to?.name === 'knowledge') return `/repo/${params.repoName}`
+      return '/'
+    },
+  },
+  template: '<a :href="href"><slot /></a>',
+}
 
 function mountPage(component, responses = {}, props = {}) {
   const api = {
@@ -28,9 +43,46 @@ function mountPage(component, responses = {}, props = {}) {
   return { wrapper, api }
 }
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { vi.restoreAllMocks(); window.sessionStorage.clear() })
 
 describe('repository and knowledge pages', () => {
+  it('loads a Graph View topology and keeps view_id when selecting impact and flow', async () => {
+    const topology = {
+      view_id: 'view-mall', completeness: 'complete',
+      services: [
+        { member_id: 'mall', snapshot_id: 'snapshot-mall', endpoints: [{ path: '/api/orders' }] },
+        { member_id: 'mall-admin-web', snapshot_id: 'snapshot-web', endpoints: [{ path: '/api/admin' }] },
+      ],
+      edges: [{ source_member_id: 'mall', target_member_id: 'mall-admin-web', kind: 'http', confidence: 'exact', source_endpoint: '/api/orders', target_endpoint: '/api/admin', evidence: { path: '/api/admin', file: 'OrderService.java', line: 42 } }],
+    }
+    const { wrapper, api } = mountPage(GraphView, {
+      '/api/topology': topology,
+      '/api/impact': { affected: [{ member_id: 'mall' }, { member_id: 'mall-admin-web' }], edges: topology.edges },
+      '/api/flow': { steps: [{ member_id: 'mall' }, { member_id: 'mall-admin-web' }] },
+    }, { viewId: 'view-mall' })
+    await flushPromises()
+    expect(api.get).toHaveBeenCalledWith('/api/topology', { view_id: 'view-mall' })
+    expect(api.get).toHaveBeenCalledWith('/api/impact', { view_id: 'view-mall', service: 'mall' })
+    expect(api.get).toHaveBeenCalledWith('/api/flow', { view_id: 'view-mall', service: 'mall', path: '' })
+    expect(wrapper.text()).toContain('mall-admin-web')
+    expect(wrapper.text()).toContain('调用证据')
+    await wrapper.findAll('.service-list button')[1].trigger('click')
+    await flushPromises()
+    expect(api.get).toHaveBeenCalledWith('/api/impact', { view_id: 'view-mall', service: 'mall-admin-web' })
+    await wrapper.find('.analysis-heading input').setValue('/api/admin')
+    await wrapper.find('.analysis-heading input').trigger('change')
+    await flushPromises()
+    expect(api.get).toHaveBeenCalledWith('/api/flow', { view_id: 'view-mall', service: 'mall-admin-web', path: '/api/admin' })
+  })
+
+  it('renders a clear empty Graph View state', async () => {
+    const { wrapper } = mountPage(GraphView, {
+      '/api/topology': { view_id: 'empty', services: [], edges: [] },
+    }, { viewId: 'empty' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('没有可浏览的服务')
+  })
+
   it('loads, saves and tests page-managed LLM configuration without exposing a key', async () => {
     const { wrapper, api } = mountPage(LLMSettings, {
       '/api/llm-config': { available: true, source: 'page', model: 'openai/test', api_base: 'https://llm.test/v1', api_key_configured: true, stored_configured: true },
@@ -148,7 +200,7 @@ describe('repository and knowledge pages', () => {
     })
     await flushPromises()
     expect(wrapper.text()).toContain('mall-web')
-    expect(wrapper.find('.repo-link').attributes('href')).toBe('/repo/mall')
+    expect(wrapper.find('.repo-link').attributes('href')).toBe('/snapshots')
     await wrapper.find('.remove-button').trigger('click')
     expect(api.delete).not.toHaveBeenCalled()
     await wrapper.find('.remove-button').trigger('click')
@@ -169,6 +221,60 @@ describe('repository and knowledge pages', () => {
     expect(api.request).toHaveBeenCalledWith('/api/repos/register', {
       method: 'POST', query: { name: 'shop', path: '/workspace/shop' },
     })
+  })
+
+  it('selects scope members and follows an analysis run through cancel and failed-member retry', async () => {
+    const runningRun = {
+      id: 'run-1', status: 'running', members: [
+        { member_id: 'mall', disposition: 'queued', attempt: { status: 'running', stage: 'codegraph_sync', progress: { percent: 60 } } },
+      ],
+    }
+    const failedRun = {
+      id: 'run-1', status: 'partial', members: [
+        { member_id: 'mall', disposition: 'queued', attempt: { status: 'completed', stage: 'finished' } },
+        { member_id: 'mall-admin-web', disposition: 'queued', attempt: { status: 'failed', stage: 'codegraph_init', error_message: 'codegraph unavailable' } },
+      ],
+    }
+    const { wrapper, api } = mountPage(Snapshots, {
+      '/api/scopes': { scopes: [{ id: 'scope-mall', name: 'Mall' }] },
+      '/api/scopes/scope-mall/members': { members: [{ id: 'mall', display_name: 'mall' }, { id: 'mall-admin-web', display_name: 'mall-admin-web' }] },
+      '/api/repository-members/mall/snapshots': { items: [{ id: 'snap-mall' }] },
+      '/api/repository-members/mall-admin-web/snapshots': { items: [] },
+      '/api/analysis-runs': { run: runningRun },
+      '/api/analysis-runs/run-1/cancel': { run: runningRun },
+      '/api/analysis-runs/run-1/retry': { run: { id: 'run-2', status: 'pending', members: [{ member_id: 'mall-admin-web', disposition: 'queued', attempt: { status: 'pending', stage: 'queued' } }] } },
+      '/api/graph-views/current': { view: { id: 'view-1', digest: 'digest-1' } },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('mall-admin-web')
+    const memberCheckboxes = wrapper.findAll('tbody input[type="checkbox"]')
+    await memberCheckboxes[1].setValue(false)
+    await wrapper.findAll('.actions button')[1].trigger('click')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/analysis-runs', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ member_ids: ['mall'] }),
+    }))
+    expect(wrapper.find('[data-testid="analysis-run"]').text()).toContain('同步 CodeGraph')
+    expect(window.sessionStorage.getItem('codeevolution:last-analysis-run-id')).toBe('run-1')
+
+    await wrapper.find('.run-actions button').trigger('click')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/analysis-runs/run-1/cancel', { method: 'POST' })
+
+    wrapper.vm.setActiveRun(failedRun)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('codegraph unavailable')
+    await wrapper.findAll('.run-actions button').find(button => button.text().includes('重试失败成员')).trigger('click')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/analysis-runs/run-1/retry', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ member_ids: ['mall-admin-web'] }),
+    }))
+    expect(wrapper.text()).toContain('run-2')
+
+    await wrapper.vm.createView()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('查看跨仓图谱')
+    wrapper.unmount()
   })
 
   it('renders contract details, domain entities, sections and explicit LLM loading', async () => {

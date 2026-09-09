@@ -8,6 +8,7 @@
       <div class="nav-links">
         <router-link v-if="repoName" :to="'/repo/' + repoName">知识中心</router-link>
         <router-link to="/snapshots">Snapshots</router-link>
+        <router-link v-if="graphViewId" :to="{ name: 'graph-view', params: { viewId: graphViewId } }">Graph View</router-link>
       </div>
       <div class="nav-right">
         <span v-if="repoName" class="nav-repo">{{ repoName }}</span>
@@ -32,6 +33,9 @@ export default {
   computed: {
     repoName() {
       return this.$route.params.repoName || ''
+    },
+    graphViewId() {
+      return this.$route.params.viewId || ''
     },
   },
 }

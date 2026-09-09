@@ -65,6 +65,9 @@ class SnapshotRetentionService:
                 continue
         return {
             "deletion_jobs": jobs,
-            "staging_removed": self.artifacts.scavenge_staging(max_age_seconds=staging_age_seconds),
+            "staging_removed": self.artifacts.scavenge_staging(
+                max_age_seconds=staging_age_seconds,
+                protected_names=self.store.active_attempt_ids(),
+            ),
             "trash_removed": self.artifacts.scavenge_trash(max_age_seconds=trash_age_seconds),
         }

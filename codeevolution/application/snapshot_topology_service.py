@@ -90,9 +90,10 @@ class SnapshotTopologyService:
         while frontier:
             current = frontier.pop()
             for edge in topology["edges"]:
-                if edge.get("source_member_id") == current and edge.get("target_member_id") not in affected_ids:
-                    affected_ids.add(edge["target_member_id"])
-                    frontier.append(edge["target_member_id"])
+                target = edge.get("target_member_id")
+                if edge.get("source_member_id") == current and target and target not in affected_ids:
+                    affected_ids.add(target)
+                    frontier.append(target)
         return {"view_id": view_id, "service": service,
                 "affected": [item for item in topology["services"] if item["member_id"] in affected_ids],
                 "edges": [edge for edge in topology["edges"]
