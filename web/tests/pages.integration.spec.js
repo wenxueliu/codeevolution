@@ -48,36 +48,36 @@ afterEach(() => { vi.restoreAllMocks(); window.sessionStorage.clear() })
 describe('repository and knowledge pages', () => {
   it('loads a Graph View topology and keeps view_id when selecting impact and flow', async () => {
     const topology = {
-      view_id: 'view-mall', completeness: 'complete',
+      view_digest: 'sha256:view', coverage: { status: 'complete' },
       services: [
-        { member_id: 'mall', snapshot_id: 'snapshot-mall', endpoints: [{ path: '/api/orders' }] },
-        { member_id: 'mall-admin-web', snapshot_id: 'snapshot-web', endpoints: [{ path: '/api/admin' }] },
+        { member_id: 'mall', snapshot_id: 'snapshot-mall', display_name: 'mall', entries: [{ entry_id: 'mall.root', method: 'GET', path_template: '/api/orders' }] },
+        { member_id: 'mall-admin-web', snapshot_id: 'snapshot-web', display_name: 'mall-admin-web', entries: [{ entry_id: 'admin.root', method: 'GET', path_template: '/api/admin' }] },
       ],
-      edges: [{ source_member_id: 'mall', target_member_id: 'mall-admin-web', kind: 'http', confidence: 'exact', source_endpoint: '/api/orders', target_endpoint: '/api/admin', evidence: { path: '/api/admin', file: 'OrderService.java', line: 42 } }],
+      service_projections: [{ source_member_id: 'mall', target_member_id: 'mall-admin-web', kind: 'http', confidence: 'high', evidence: { path: '/api/admin' } }],
     }
     const { wrapper, api } = mountPage(GraphView, {
-      '/api/topology': topology,
-      '/api/impact': { affected: [{ member_id: 'mall' }, { member_id: 'mall-admin-web' }], edges: topology.edges },
-      '/api/flow': { steps: [{ member_id: 'mall' }, { member_id: 'mall-admin-web' }] },
+      '/api/graph-views/view-mall/artifacts/topology': { artifact: topology },
+      '/api/graph-views/view-mall/impact': { downstream_dependencies: [{ member_id: 'mall-admin-web', path: ['mall', 'mall-admin-web'] }], upstream_dependents: [] },
+      '/api/graph-views/view-mall/flow': { nodes: [{ member_id: 'mall' }, { member_id: 'mall-admin-web' }] },
     }, { viewId: 'view-mall' })
     await flushPromises()
-    expect(api.get).toHaveBeenCalledWith('/api/topology', { view_id: 'view-mall' })
-    expect(api.get).toHaveBeenCalledWith('/api/impact', { view_id: 'view-mall', service: 'mall' })
-    expect(api.get).toHaveBeenCalledWith('/api/flow', { view_id: 'view-mall', service: 'mall', path: '' })
+    expect(api.get).toHaveBeenCalledWith('/api/graph-views/view-mall/artifacts/topology')
+    expect(api.get).toHaveBeenCalledWith('/api/graph-views/view-mall/impact', { member_id: 'mall' })
     expect(wrapper.text()).toContain('mall-admin-web')
     expect(wrapper.text()).toContain('调用证据')
     await wrapper.findAll('.service-list button')[1].trigger('click')
     await flushPromises()
-    expect(api.get).toHaveBeenCalledWith('/api/impact', { view_id: 'view-mall', service: 'mall-admin-web' })
-    await wrapper.find('.analysis-heading input').setValue('/api/admin')
-    await wrapper.find('.analysis-heading input').trigger('change')
+    expect(api.get).toHaveBeenCalledWith('/api/graph-views/view-mall/impact', { member_id: 'mall-admin-web' })
+    const inputs = wrapper.findAll('.analysis-heading input')
+    await inputs[1].setValue('/api/admin')
+    await inputs[1].trigger('change')
     await flushPromises()
-    expect(api.get).toHaveBeenCalledWith('/api/flow', { view_id: 'view-mall', service: 'mall-admin-web', path: '/api/admin' })
+    expect(api.get).toHaveBeenCalledWith('/api/graph-views/view-mall/flow', { member_id: 'mall-admin-web', method: 'GET', path: '/api/admin' })
   })
 
   it('renders a clear empty Graph View state', async () => {
     const { wrapper } = mountPage(GraphView, {
-      '/api/topology': { view_id: 'empty', services: [], edges: [] },
+      '/api/graph-views/empty/artifacts/topology': { artifact: { services: [], service_projections: [] } },
     }, { viewId: 'empty' })
     await flushPromises()
     expect(wrapper.text()).toContain('没有可浏览的服务')
