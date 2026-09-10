@@ -118,9 +118,14 @@ class GraphArtifactService:
         cache = self.store.get_artifact_cache(spec.cache_key)
         if cache is None:
             return None
+        self.store.touch_artifact_cache(spec.cache_key)
         result = dict(cache)
         result["status"] = "completed"
         return result
+
+    def scavenge_cache(self, *, max_age_seconds: int = 7 * 24 * 3600, limit: int = 100) -> list[dict]:
+        """Apply bounded LRU cleanup; CAS payloads remain recoverable until separately swept."""
+        return self.store.scavenge_artifact_cache(max_age_seconds=max_age_seconds, limit=limit)
 
     def history(self, view_id: str, artifact_kind: str = "topology", *, limit: int = 20) -> list[dict]:
         """Return generation attempts for audit/progress display, newest first."""
@@ -139,6 +144,7 @@ class GraphArtifactService:
         cache = self.store.get_artifact_cache(key)
         if cache is None:
             return None
+        self.store.touch_artifact_cache(key)
         result = dict(cache)
         result["status"] = "completed"
         return result

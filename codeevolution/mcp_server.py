@@ -233,7 +233,9 @@ def generate_topology_artifact(view_id: str) -> str:
     try:
         job = artifacts.create_job(view_id, "topology", {})
         scheduler = getattr(get_runtime(), "graph_artifact_scheduler", None)
-        if scheduler is not None and job.get("status") == "pending":
+        if scheduler is None and job.get("status") == "pending":
+            return _result({"error": "artifact_scheduler_unavailable", "view_id": view_id})
+        if job.get("status") == "pending":
             scheduler.submit(job["id"])
         return _result({"job": job})
     except KeyError:

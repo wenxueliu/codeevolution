@@ -1278,6 +1278,7 @@ class AnalysisSnapshotSQLiteStore:
         now = utc_now()
         request_spec_json = _canonical_json(request_spec or {})
         request_spec_digest = "sha256:" + sha256(request_spec_json.encode()).hexdigest()
+        created = False
         with self.connection() as connection, connection:
             row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE cache_key_digest=? ORDER BY attempt_no DESC LIMIT 1", (cache_key,)).fetchone()
             if row is None or row["status"] in ("failed", "cancelled", "interrupted"):
@@ -1290,6 +1291,7 @@ class AnalysisSnapshotSQLiteStore:
                     (job_id, view_id, cache_key, artifact_kind, attempt, retry_of, now,
                      request_spec_json, request_spec_digest),
                 )
+                created = True
                 row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
                 # Protect every input snapshot while the job is active.
                 snapshots = connection.execute(
@@ -1298,7 +1300,9 @@ class AnalysisSnapshotSQLiteStore:
                 ).fetchall()
                 for item in snapshots:
                     self._insert_reference(connection, item["snapshot_id"], "artifact_job", job_id, "temporary", now, None)
-        return dict(row)
+        result = dict(row)
+        result["reused"] = not created
+        return result
 
     def get_artifact_job(self, job_id: str) -> dict[str, Any] | None:
         with self.connection() as connection:
@@ -1323,6 +1327,36 @@ class AnalysisSnapshotSQLiteStore:
         with self.connection() as connection:
             row = connection.execute("SELECT * FROM graph_view_artifact_cache WHERE cache_key_digest=?", (cache_key,)).fetchone()
         return dict(row) if row else None
+
+    def touch_artifact_cache(self, cache_key: str) -> None:
+        with self.connection() as connection, connection:
+            connection.execute(
+                "UPDATE graph_view_artifact_cache SET last_accessed_at=? WHERE cache_key_digest=?",
+                (utc_now(), cache_key),
+            )
+
+    def scavenge_artifact_cache(self, *, max_age_seconds: int = 7 * 24 * 3600, limit: int = 100) -> list[dict[str, Any]]:
+        """Remove cold cache metadata while active jobs still protect inputs."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max(0, max_age_seconds))).isoformat(timespec="microseconds")
+        bounded = max(1, min(int(limit), 1000))
+        with self.connection() as connection, connection:
+            rows = connection.execute(
+                """SELECT c.* FROM graph_view_artifact_cache c
+                   WHERE c.last_accessed_at<?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM graph_view_artifact_jobs j
+                       WHERE j.cache_key_digest=c.cache_key_digest AND j.status IN ('pending','running')
+                     )
+                   ORDER BY c.last_accessed_at LIMIT ?""",
+                (cutoff, bounded),
+            ).fetchall()
+            result = [dict(row) for row in rows]
+            for row in result:
+                connection.execute(
+                    "DELETE FROM graph_view_artifact_cache WHERE cache_key_digest=?",
+                    (row["cache_key_digest"],),
+                )
+        return result
 
     def snapshot_references(self, snapshot_id: str) -> list[dict[str, Any]]:
         with self.connection() as connection:

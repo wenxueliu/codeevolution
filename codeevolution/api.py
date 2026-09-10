@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService, SnapshotChatService
@@ -203,6 +203,8 @@ class GraphViewPinRequest(BaseModel):
 
 
 class GraphArtifactJobCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     artifact_kind: str = Field(default="topology", min_length=1, max_length=40)
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -759,6 +761,9 @@ def create_graph_artifact_job(
 
     if request.artifact_kind != "topology" or request.params:
         raise HTTPException(422, "invalid_artifact_request")
+    dependencies = _request_dependencies.get()
+    if "graph_artifact_scheduler" in dependencies and dependencies.get("graph_artifact_scheduler") is None:
+        raise HTTPException(503, "artifact_scheduler_unavailable")
     try:
         job = get_graph_artifact_service().create_job(
             view_id, request.artifact_kind, request.params
@@ -782,7 +787,7 @@ def create_graph_artifact_job(
     return {
         "job_id": job["id"],
         "status": job.get("status", "pending"),
-        "reused": job.get("attempt_no", 1) > 1,
+        "reused": bool(job.get("reused", False)),
         "status_url": f"/api/graph-artifact-jobs/{job['id']}",
         "retry_after_seconds": 2,
         "job": job,

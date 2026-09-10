@@ -61,3 +61,12 @@ def test_artifact_completion_is_fenced_by_worker_lease(tmp_path):
         raise AssertionError("stale worker must not publish an artifact")
     assert store.get_artifact_job(job["id"])["status"] == "running"
     store.complete_artifact_job(job["id"], {"x": 1}, lease_token=running["lease_token"])
+
+
+def test_active_artifact_job_creation_is_deduplicated(tmp_path):
+    store = _store(tmp_path)
+    view = store.create_current_view(member_ids=["orders"])
+    first = store.create_artifact_job(view_id=view.id, artifact_kind="topology", cache_key="sha256:cache")
+    second = store.create_artifact_job(view_id=view.id, artifact_kind="topology", cache_key="sha256:cache")
+    assert second["id"] == first["id"]
+    assert second["reused"] is True

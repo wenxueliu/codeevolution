@@ -123,3 +123,21 @@ def test_grpc_dependency_requires_authority_alias_and_server_method():
     )
     payload = TopologyArtifactBuilder().build(_view(caller, users), artifacts)
     assert any(item["kind"] == "grpc" for item in payload["endpoint_dependencies"])
+
+
+def test_competing_message_consumers_are_alternatives_not_confirmed_edges():
+    producer = SnapshotHandle("producer", "snap-producer", "producer", (), "facts", "artifact", "complete")
+    first = SnapshotHandle("first", "snap-first", "first", (), "facts", "artifact", "complete")
+    second = SnapshotHandle("second", "snap-second", "second", (), "facts", "artifact", "complete")
+    pub = _observation("message:pub", "producer.entry", {"messaging": {"channel": "orders", "protocol": "kafka", "delivery_semantics": "competing"}})
+    sub1 = _observation("message:sub1", "first.entry", {"messaging": {"channel": "orders", "protocol": "kafka", "delivery_semantics": "competing"}})
+    sub2 = _observation("message:sub2", "second.entry", {"messaging": {"channel": "orders", "protocol": "kafka", "delivery_semantics": "competing"}})
+    artifacts = {
+        "snap-producer": _artifact("snap-producer", entries=(_entry("snap-producer", "producer.entry", "GET", "/"),), messages=(pub,)),
+        "snap-first": _artifact("snap-first", entries=(_entry("snap-first", "first.entry", "GET", "/"),), subscriptions=(sub1,)),
+        "snap-second": _artifact("snap-second", entries=(_entry("snap-second", "second.entry", "GET", "/"),), subscriptions=(sub2,)),
+    }
+    payload = TopologyArtifactBuilder().build(_view(producer, first, second), artifacts)
+    assert payload["endpoint_dependencies"] == []
+    assert len(payload["message_alternatives"]) == 1
+    assert payload["message_alternatives"][0]["consumer_member_ids"] == ["first", "second"]

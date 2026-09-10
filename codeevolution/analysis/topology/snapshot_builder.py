@@ -69,6 +69,7 @@ class TopologyArtifactBuilder:
         endpoint_dependencies: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
         boundary_dependencies: list[dict[str, Any]] = []
+        message_alternatives: list[dict[str, Any]] = []
         service_edges: dict[tuple[str, str, str], dict[str, Any]] = {}
 
         for member in available:
@@ -130,7 +131,8 @@ class TopologyArtifactBuilder:
                     boundary_dependencies.append(boundary)
 
             self._append_message_dependencies(
-                member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates
+                member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates,
+                message_alternatives,
             )
             self._append_grpc_dependencies(
                 member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates,
@@ -155,7 +157,7 @@ class TopologyArtifactBuilder:
             "services": services,
             "endpoint_dependencies": endpoint_dependencies,
             "service_projections": sorted(service_edges.values(), key=lambda item: item["edge_id"]),
-            "message_alternatives": [],
+            "message_alternatives": sorted(message_alternatives, key=lambda item: item["alternative_group_id"]),
             "resource_dependencies": self._resources(available, artifacts),
             "boundary_dependencies": boundary_dependencies,
             "candidates": candidates,
@@ -270,7 +272,7 @@ class TopologyArtifactBuilder:
                 result.append(item)
         return sorted(result, key=lambda item: item["edge_id"])
 
-    def _append_message_dependencies(self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates):
+    def _append_message_dependencies(self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates, alternatives):
         # Message matching is deliberately conservative until broker-specific
         # collectors provide normalized delivery semantics.  Exact protocol +
         # channel matches are safe; empty channels never wildcard consumers.
@@ -287,6 +289,7 @@ class TopologyArtifactBuilder:
                 candidates.append({"kind": "unresolved", "observation_id": publication.observation_id,
                                    "source_member_id": member.member_id, "reason": "empty_channel"})
                 continue
+            matched_competing: list[tuple[Any, Any]] = []
             for target, subscription in consumers:
                 if target.member_id == member.member_id:
                     continue
@@ -296,6 +299,9 @@ class TopologyArtifactBuilder:
                 if channel != target_channel or protocol != target_protocol:
                     continue
                 if delivery not in {"broadcast", "fanout"} or target_messaging.get("delivery_semantics", "unknown") not in {"broadcast", "fanout"}:
+                    if delivery == "competing" and target_messaging.get("delivery_semantics") == "competing":
+                        matched_competing.append((target, subscription))
+                        continue
                     candidates.append({
                         "kind": "candidate",
                         "observation_id": publication.observation_id,
@@ -329,6 +335,16 @@ class TopologyArtifactBuilder:
                                   "supporting_endpoint_dependency_ids": [dependency["edge_id"]]}
                     projection["edge_id"] = stable_edge_id("service", projection)
                     service_edges[key] = projection
+            if matched_competing:
+                group = {
+                    "channel": channel,
+                    "protocol": protocol,
+                    "source_member_id": member.member_id,
+                    "consumer_member_ids": sorted({target.member_id for target, _ in matched_competing}),
+                    "consumer_entry_ids": sorted({subscription.entry_id for _, subscription in matched_competing if subscription.entry_id}),
+                }
+                group["alternative_group_id"] = stable_edge_id("message-alternative", group)
+                alternatives.append(group)
 
     def _append_grpc_dependencies(
         self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates
