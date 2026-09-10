@@ -1237,7 +1237,7 @@ users --HTTP--> gateway
 
 ## 22. 实施验收记录
 
-当前代码已验证：后端全量 **240** 项测试、Web **17** 项测试、通信事实/拓扑构建/Job fencing/API/CLI
+当前代码已验证：后端全量 **243** 项测试、Web **17** 项测试、通信事实/拓扑构建/Job fencing/API/CLI
 回归测试，以及前端 Vite production build。通信 collector 已接入版本化 Tier-1 支持矩阵、调用路径 coverage、
 语义 ID、manifest 边界、payload/Artifact 摘要校验；API/Web/MCP/CLI 均通过同一 Graph Artifact
 application service 交付。known-external registry、reader lease、Artifact/Job TTL/LRU 和 View 授权也已
