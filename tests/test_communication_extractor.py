@@ -169,6 +169,7 @@ def test_grpc_rows_with_frozen_caller_identity_are_collected():
     )
     assert artifact.grpc_clients
     assert artifact.grpc_clients[0].payload["rpc"]["identity_resolution"] == "generated_stub"
+    assert artifact.grpc_clients[0].payload["rpc"]["fully_qualified_method"] == "/users.v1.UserService/GetUser"
 
 
 def test_missing_protocol_adapter_is_unsupported_but_keeps_entry_inventory():

@@ -658,7 +658,9 @@ def _rpc_payload(sources, caller, line, method, row):
     if fully_qualified is None and "." in qualified:
         pieces = qualified.replace("::", ".").split(".")
         if len(pieces) >= 3:
-            fully_qualified = "/" + ".".join(pieces[:-2]) + "." + pieces[-2] + "/" + pieces[-1]
+            service = pieces[-2]
+            service = re.sub(r"(?:Blocking|Future)?Stub$", "", service)
+            fully_qualified = "/" + ".".join(pieces[:-2]) + "." + service + "/" + pieces[-1]
     package, service = _grpc_package_service(fully_qualified)
     return {
         "rpc": {
