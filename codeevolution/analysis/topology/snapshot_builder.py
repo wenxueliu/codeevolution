@@ -145,7 +145,7 @@ class TopologyArtifactBuilder:
         candidates.sort(key=lambda item: (item["kind"], item["observation_id"]))
         services = [
             self._service(member, artifacts.get(member.snapshot_id) if isinstance(member, SnapshotHandle) else None)
-            for member in view.members
+            for member in sorted(view.members, key=lambda item: item.member_id)
         ]
         coverage = self._coverage(view, artifacts)
         payload = {
@@ -254,7 +254,7 @@ class TopologyArtifactBuilder:
     @staticmethod
     def _coverage(view: ResolvedGraphView, artifacts: Mapping[str, RepositoryCommunicationArtifact]) -> dict[str, Any]:
         members = {}
-        for member in view.members:
+        for member in sorted(view.members, key=lambda item: item.member_id):
             if isinstance(member, SnapshotHandle):
                 artifact = artifacts.get(member.snapshot_id)
                 members[member.member_id] = artifact.completeness if artifact else "unavailable"

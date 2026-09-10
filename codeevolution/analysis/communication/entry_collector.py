@@ -30,6 +30,8 @@ def collect_entries(
             continue
         method, path = _http_identity(entry)
         kind = _entry_kind(entry.entry_type, method, path)
+        if kind == "grpc_server" and not method:
+            method = _grpc_method(entry)
         protocol = "http" if kind == "http" else kind
         identity = {
             "kind": kind,
@@ -180,6 +182,14 @@ def _http_identity(entry) -> tuple[str | None, str | None]:
             candidate_method = method_match.group(1).upper() if method_match else None
         return method or candidate_method, path or match.group("path")
     return method, path
+
+
+def _grpc_method(entry) -> str | None:
+    for decorator in getattr(entry, "decorators", ()) or ():
+        match = re.search(r"(?:rpc|grpc|method)[^\(]*\(\s*['\"`]([^'\"`]+)", str(decorator), re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return entry.name if getattr(entry, "entry_type", "").lower() in {"grpc", "grpc_server", "rpc"} else None
 
 
 def _excluded_path(path: str) -> bool:
