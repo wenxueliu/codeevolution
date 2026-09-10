@@ -1,20 +1,23 @@
+import json
 import sqlite3
 import subprocess
-import json
 from pathlib import Path
 
 from codeevolution import cli, mcp_server
 from codeevolution.application.analysis_run_service import RepositoryCatalogService
-from codeevolution.application.repository_attempt_worker import RepositoryAttemptWorker
-from codeevolution.application.snapshot_query_service import SnapshotQueryService, _project_api_node_ids
 from codeevolution.application.chat_service import SnapshotChatService
-from codeevolution.infrastructure.audit_store import AuditStore
+from codeevolution.application.repository_attempt_worker import RepositoryAttemptWorker
+from codeevolution.application.snapshot_query_service import (
+    SnapshotQueryService,
+    _project_api_node_ids,
+)
 from codeevolution.domain.analysis_snapshot import AttemptStatus
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
 from codeevolution.infrastructure.artifact_store_fs import FileSystemArtifactStore
+from codeevolution.infrastructure.audit_store import AuditStore
 from codeevolution.infrastructure.codegraph_command import CommandResult
-from codeevolution.infrastructure.snapshot_bundle_resolver import SnapshotBundleResolver
 from codeevolution.infrastructure.explanation_source import SnapshotExplanationSource
+from codeevolution.infrastructure.snapshot_bundle_resolver import SnapshotBundleResolver
 
 
 class _Runner:
@@ -72,7 +75,10 @@ def test_snapshot_queries_do_not_need_the_original_checkout(tmp_path):
     # This is the Phase-2 acceptance condition: all inputs now come from CAS.
     repo.rename(tmp_path / "checkout-moved")
     service = SnapshotQueryService(SnapshotBundleResolver(store, artifacts))
-    assert service.knowledge(snapshot.id) == {"answer": 42}
+    knowledge = service.knowledge(snapshot.id)
+    assert knowledge["answer"] == 42
+    assert knowledge["communication_summary"]["schema_version"] == "repository-communication/v1"
+    assert knowledge["communication_summary"]["artifact_key"].startswith("sha256:")
     tree = service.call_tree_children(snapshot.id, "root")
     assert tree["children"][0]["node_id"] == "child"
     context = service.node_rule_context(snapshot.id, "child")

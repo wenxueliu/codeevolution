@@ -90,12 +90,10 @@ def test_cli_help_lists_all_public_commands():
         "knowledge",
         "topology",
         "impact",
-        "trace",
         "discover",
         "check",
         "init-all",
         "flow",
-        "entities",
     }
     words = result.stdout.replace("{", " ").replace("}", " ").replace(",", " ").split()
     assert commands <= set(words)
@@ -126,9 +124,15 @@ def test_openapi_path_snapshot():
         "/api/call-tree/rule",
         "/api/call-tree/rule/generate",
         "/api/chat",
+        "/api/graph-artifact-jobs/{job_id}",
         "/api/graph-views",
         "/api/graph-views/current",
         "/api/graph-views/{view_id}",
+        "/api/graph-views/{view_id}/artifact-jobs",
+        "/api/graph-views/{view_id}/artifacts/topology",
+        "/api/graph-views/{view_id}/artifacts/topology/history",
+        "/api/graph-views/{view_id}/flow",
+        "/api/graph-views/{view_id}/impact",
         "/api/graph-views/{view_id}/pin",
         "/api/knowledge",
         "/api/llm-config",
