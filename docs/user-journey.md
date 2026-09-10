@@ -1,5 +1,7 @@
 # CodeEvolution 用户旅程
 
+> 本文保留实现视角的角色与异常旅程；面向产品评审的阶段地图、核心场景和验收清单见[正式用户旅程图](user-journey-map.md)，整体需求见[PRD](prd.md)。
+
 ## 1. 目标
 
 CodeEvolution 的核心旅程是：

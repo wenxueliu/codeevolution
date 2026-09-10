@@ -221,6 +221,8 @@ cd web && npm run build
 
 ## 设计文档
 
+- [产品需求文档（PRD）](docs/prd.md)
+- [用户旅程图](docs/user-journey-map.md)
 - [系统设计](docs/design.md)
 - [重构规划](docs/refactoring-plan.md)
 - [重构实施结果](docs/refactoring-result.md)
