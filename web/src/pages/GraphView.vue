@@ -44,6 +44,9 @@
           </div>
           <p v-else class="muted">未在当前快照中发现跨服务调用边。</p>
           <details v-if="artifact.coverage" open><summary>覆盖情况</summary><pre>{{ formatJson(artifact.coverage) }}</pre></details>
+          <details v-if="artifact.candidates?.length"><summary>候选/未解析边（{{ artifact.candidates.length }}）</summary><pre>{{ formatJson(artifact.candidates) }}</pre></details>
+          <details v-if="artifact.boundary_dependencies?.length"><summary>Scope 外边界（{{ artifact.boundary_dependencies.length }}）</summary><pre>{{ formatJson(artifact.boundary_dependencies) }}</pre></details>
+          <details v-if="artifact.resource_dependencies?.length"><summary>资源访问（{{ artifact.resource_dependencies.length }}）</summary><pre>{{ formatJson(artifact.resource_dependencies) }}</pre></details>
         </section>
 
         <section class="panel analysis-panel">
