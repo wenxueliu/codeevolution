@@ -33,13 +33,9 @@ from codeevolution.domain.topology import (
 
 
 def _authority_matches_alias(authority: str, alias: str) -> bool:
-    authority = authority.strip().lower().rstrip("/")
-    alias = alias.strip().lower().rstrip("/")
-    if not authority or not alias:
-        return False
-    host = authority.split(":", 1)[0]
-    alias_host = alias.split(":", 1)[0]
-    return host == alias_host or authority == alias
+    normalized_authority = canonical_authority(authority)
+    normalized_alias = canonical_authority(alias)
+    return bool(normalized_authority and normalized_authority == normalized_alias)
 
 
 def _message_match_key(messaging: Mapping[str, Any]) -> tuple[Any, ...]:
