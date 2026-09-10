@@ -225,6 +225,10 @@ class TopologyArtifactBuilder:
         }
         if isinstance(member, SnapshotHandle):
             result.update({"snapshot_id": member.snapshot_id, "completeness": artifact.completeness if artifact else "unavailable"})
+            result["entries"] = [
+                entry.to_dict()
+                for entry in (artifact.entries if artifact else ())
+            ]
         else:
             result["reason"] = member.reason
         return result
