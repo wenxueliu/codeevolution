@@ -91,3 +91,42 @@ def test_worker_rejects_source_change_without_publishing(tmp_path):
     assert failed.status == AttemptStatus.FAILED
     assert failed.error_code == "source_changed_during_capture"
     assert store.get_current_snapshot("repo") is None
+
+
+def test_worker_reuses_evidence_and_publishes_communication_separately(tmp_path):
+    _repo, store, _run, attempt = _setup(tmp_path)
+    artifacts = FileSystemArtifactStore(tmp_path / "data")
+    worker = RepositoryAttemptWorker(
+        store,
+        artifacts,
+        command_runner=SuccessfulRunner(),
+        analyzer=lambda _graph, source: {
+            "files": [item.path for item in source.list_files()]
+        },
+        analyzer_bundle_digest="analyzer:test",
+    )
+
+    worker(attempt)
+    first = store.get_current_snapshot("repo")
+    assert first is not None
+    evidence = store.get_evidence(first.evidence_digest)
+    assert evidence is not None
+    communication_key = first.facts["communication_summary"]["artifact_key"]
+    assert communication_key != evidence.artifact_key
+    assert (artifacts.open(communication_key) / "communication.json").is_file()
+    assert not (artifacts.open(evidence.artifact_key) / "communication.json").exists()
+
+    second_run = store.create_run(["repo"])
+    second_attempt = store.claim_next_attempt("worker-2")
+    worker(second_attempt)
+
+    assert store.get_attempt(second_attempt.id).status == AttemptStatus.UNCHANGED
+    assert store.get_current_snapshot("repo").id == first.id
+    published = [
+        path
+        for prefix in (artifacts.artifacts_dir).glob("*")
+        if prefix.is_dir()
+        for path in prefix.iterdir()
+        if path.is_dir()
+    ]
+    assert len(published) == 2  # one reusable evidence object + one referenced communication object

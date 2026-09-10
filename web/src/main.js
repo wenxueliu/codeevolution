@@ -13,7 +13,8 @@ const GraphView = () => import('./pages/GraphView.vue')
 const routes = [
   { path: '/', name: 'home', component: Home },
   { path: '/snapshots', name: 'snapshots', component: Snapshots },
-  { path: '/graph-views/:viewId', name: 'graph-view', component: GraphView, props: true },
+  { path: '/graph-views/:viewId?', name: 'graph-view', component: GraphView, props: true },
+  { path: '/knowledge', name: 'knowledge-home', component: Knowledge },
   { path: '/repo/:repoName', name: 'knowledge', component: Knowledge, props: true },
 ]
 

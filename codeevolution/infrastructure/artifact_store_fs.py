@@ -91,7 +91,8 @@ class FileSystemArtifactStore:
         token = deletion_id or uuid.uuid4().hex
         self._validate_component(token, "deletion id")
         bucket = self.trash_dir / token
-        bucket.mkdir(mode=0o700)
+        bucket.mkdir(mode=0o700, exist_ok=True)
+        bucket.chmod(0o700)
         target = bucket / source.name
         os.rename(source, target)
         self._fsync_dir(source.parent)

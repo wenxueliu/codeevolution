@@ -59,6 +59,9 @@ class AttemptCancelledError(RuntimeError):
     pass
 
 
+ANALYZER_BUNDLE_DIGEST = f"codeevolution:{__version__}:repository-analysis-v2"
+
+
 class RepositoryAttemptWorker:
     """Run the strict A/B/C + E/F capture protocol for one member."""
 
@@ -84,7 +87,10 @@ class RepositoryAttemptWorker:
         self.scan_policy = scan_policy or ScanPolicy()
         self.analyzer = analyzer or _analyze_existing_report
         self.codegraph_version = codegraph_version
-        self.analyzer_bundle_digest = analyzer_bundle_digest or f"codeevolution:{__version__}"
+        # Bump the algorithm identity when the persisted facts/artifact
+        # contract changes.  The package version alone did not invalidate
+        # snapshots created before communication artifacts were introduced.
+        self.analyzer_bundle_digest = analyzer_bundle_digest or ANALYZER_BUNDLE_DIGEST
         self.rules_digest = rules_digest or TIER1_RULES_DIGEST
         self.report_schema_version = report_schema_version
         self.options_digest = options_digest
@@ -152,11 +158,13 @@ class RepositoryAttemptWorker:
             )
 
         self._stage(attempt.id, AttemptStage.FREEZING_GRAPH, 40)
-        graph = self.graph_capture.capture(graph_db, staging / "codegraph.db", root)
+        evidence_staging = staging / "evidence"
+        evidence_staging.mkdir(mode=0o700)
+        graph = self.graph_capture.capture(graph_db, evidence_staging / "codegraph.db", root)
 
         self._stage(attempt.id, AttemptStage.FREEZING_SOURCES, 55)
         expected = _capture_entries(after, graph.path, root)
-        frozen = freeze_sources(root, expected, staging / "sources")
+        frozen = freeze_sources(root, expected, evidence_staging / "sources")
 
         self._stage(attempt.id, AttemptStage.DIGEST_FINAL, 65)
         final = scanner.scan(self.scan_policy)
@@ -172,9 +180,9 @@ class RepositoryAttemptWorker:
 
         manifest = _manifest(self.scan_policy, after, frozen, graph)
         manifest_bytes = _canonical_bytes(manifest)
-        (staging / "manifest.json").write_bytes(manifest_bytes)
+        (evidence_staging / "manifest.json").write_bytes(manifest_bytes)
         evidence_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
-        inventory = SnapshotSourceInventory(staging / "sources", manifest)
+        inventory = SnapshotSourceInventory(evidence_staging / "sources", manifest)
 
         self._stage(attempt.id, AttemptStage.ANALYZING, 75)
         facts = self.analyzer(graph.path, inventory)
@@ -183,8 +191,11 @@ class RepositoryAttemptWorker:
             graph.path, inventory, snapshot_id, member_id=attempt.member_id
         )
         communication_bytes = serialize_communication_artifact(communication)
-        (staging / "communication.json").write_bytes(communication_bytes)
-        communication_key = "sha256:" + directory_digest(staging)
+        communication_staging = staging / "communication"
+        communication_staging.mkdir(mode=0o700)
+        (communication_staging / "communication.json").write_bytes(communication_bytes)
+        communication_digest = directory_digest(communication_staging)
+        communication_key = "sha256:" + communication_digest
         communication_summary = communication.summary(
             CommunicationArtifactReference(
                 communication_key, communication.payload_digest(), len(communication_bytes)
@@ -197,7 +208,13 @@ class RepositoryAttemptWorker:
         self._stage(attempt.id, AttemptStage.PUBLISHING, 95)
         if self._cancel_requested(attempt.id):
             raise AttemptCancelledError()
-        artifact_key = self.artifacts.publish(staging, directory_digest(staging))
+        # Evidence identity is the manifest digest.  Keep derived communication
+        # output in its own CAS object: it embeds the snapshot ID and therefore
+        # must not change the reusable Evidence Bundle identity.
+        communication_key = self.artifacts.publish(communication_staging, communication_digest)
+        artifact_key = self.artifacts.publish(
+            evidence_staging, directory_digest(evidence_staging)
+        )
         evidence = EvidenceBundle(
             digest=evidence_digest,
             artifact_key=artifact_key,
@@ -228,7 +245,22 @@ class RepositoryAttemptWorker:
             observed_branch=final.git_branch,
             observed_head_commit=final.git_head,
         )
-        self.store.publish_snapshot(attempt.id, evidence, snapshot)
+        published = self.store.publish_snapshot(attempt.id, evidence, snapshot)
+        if published.id != snapshot.id:
+            # The immutable snapshot identity already existed.  The retry's
+            # communication payload embeds a fresh snapshot ID and is therefore
+            # not referenced by the reused facts; reclaim that CAS object.
+            cleanup_id = f"orphan-communication-{attempt.id}"
+            try:
+                self.artifacts.move_to_trash(communication_key, cleanup_id)
+                self.artifacts.purge_trash(cleanup_id)
+            except Exception:
+                # A later retention/scavenger pass can recover an orphan CAS
+                # object; publishing the unchanged result must still succeed.
+                pass
+        # The two published CAS objects were renamed out of this attempt's
+        # staging directory; do not leave an empty per-attempt container behind.
+        shutil.rmtree(staging, ignore_errors=True)
 
     def _communication_artifact(
         self,

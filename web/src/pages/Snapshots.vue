@@ -87,7 +87,6 @@ export default {
         }
         this.scopes = scopes
         this.selectedIds = this.selectedIds.filter(id => this.memberIds.includes(id))
-        if (!this.selectedIds.length) this.selectedIds = [...this.memberIds]
       } catch (error) { this.error = error } finally { this.loading = false }
     },
     knowledgeLink(snapshotId) { return { name: 'knowledge', params: { repoName: 'snapshot' }, query: { snapshot_id: snapshotId } } },

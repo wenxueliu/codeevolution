@@ -1,5 +1,10 @@
 <template>
   <div class="graph-view-page">
+    <UiState v-if="!viewId" kind="empty" title="尚未选择 Graph View" message="请先在 Snapshots 中创建当前 View。">
+      <router-link class="primary" :to="{ name: 'snapshots' }">前往 Snapshots</router-link>
+    </UiState>
+
+    <template v-else>
     <div class="page-header">
       <div>
         <h1>Graph View</h1>
@@ -63,6 +68,7 @@
         </section>
       </template>
     </template>
+    </template>
   </div>
 </template>
 
@@ -71,7 +77,7 @@ import UiState from '../components/UiState.vue'
 
 export default {
   components: { UiState },
-  props: { viewId: { type: String, required: true } },
+  props: { viewId: { type: String, default: '' } },
   data() { return { artifact: null, selectedService: '', impact: {}, flow: {}, method: 'GET', path: '', loading: false, artifactLoading: false, analysisLoading: false, error: null, analysisError: null, jobStatus: null, pollTimer: null } },
   computed: {
     services() { return this.artifact?.services || [] },
@@ -82,6 +88,11 @@ export default {
   beforeUnmount() { this.stopPolling() },
   methods: {
     async load() {
+      if (!this.viewId) {
+        this.loading = false
+        this.error = null
+        return
+      }
       this.loading = true; this.error = null
       try {
         const response = await this.$api.get(`/api/graph-views/${this.viewId}/artifacts/topology`)

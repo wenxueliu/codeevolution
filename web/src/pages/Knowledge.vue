@@ -3,7 +3,11 @@
     <UiState v-if="error" kind="error" title="知识提取失败" :message="error.message" action-label="重试" dismiss-label="关闭" @action="load(false)" @dismiss="error = null" />
     <UiState v-if="loading" kind="loading" title="正在从 CodeGraph 提取结构知识" message="大型仓库可能需要等待片刻，完成前可以继续浏览当前结果。" />
 
-    <div class="page-header">
+    <UiState v-if="!loading && !error && !snapshotId" kind="empty" title="尚未选择 Repository Snapshot" message="请先在 Snapshots 中运行分析并选择一个已发布的 Snapshot。">
+      <router-link class="primary" :to="{ name: 'snapshots' }">前往 Snapshots</router-link>
+    </UiState>
+
+    <div v-if="snapshotId" class="page-header">
       <div>
         <h1>知识中心</h1>
         <p>基于不可变 Repository Snapshot 推导。<code v-if="snapshotId">{{ snapshotId }}</code><span v-if="loadedAt"> · 最近读取：{{ loadedAt }} · {{ loadDuration }} ms</span></p>
@@ -16,11 +20,11 @@
       </div>
     </div>
 
-    <div class="notice" v-if="!llmLoaded">
+    <div class="notice" v-if="snapshotId && !llmLoaded">
       业务描述、业务规则、错误目录和状态机需要 LLM，可通过页面顶部“LLM 设置”配置，仅在点击抽取时调用。
     </div>
 
-    <div class="summary-grid" v-if="report">
+    <div class="summary-grid" v-if="snapshotId && report">
       <button
         v-for="item in summaryCards"
         :key="item.key"
@@ -33,7 +37,7 @@
       </button>
     </div>
 
-    <div class="content" v-if="report">
+    <div class="content" v-if="snapshotId && report">
       <aside class="section-nav">
         <button
           v-for="section in sections"
@@ -248,7 +252,7 @@
       </section>
     </div>
 
-    <div v-else-if="!loading && !error" class="empty-state">暂无知识数据</div>
+    <div v-else-if="snapshotId && !loading && !error" class="empty-state">暂无知识数据</div>
 
     <div v-if="sequenceZoom" class="sequence-zoom-backdrop" @click.self="closeSequenceZoom">
       <section
@@ -382,7 +386,7 @@ export default {
     async load(includeLlm) {
       const started = performance.now()
       if (!this.snapshotId) {
-        this.error = new Error('缺少 snapshot_id，请从 Snapshot 或 Graph View 页面进入知识中心')
+        this.error = null
         return
       }
       await this.$runAsync(async () => {
@@ -584,6 +588,7 @@ export default {
     brKey(item) { return [this.repoName, item.handler, item.method, item.path].join('||') },
 
     async loadBusinessRules() {
+      if (!this.snapshotId) return
       try {
         const data = await this.$api.get('/api/business-rules', { repository_snapshot_id: this.snapshotId })
         const map = {}

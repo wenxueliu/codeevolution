@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 
 class SnapshotRetentionService:
     def __init__(self, store, artifacts):
@@ -32,8 +34,27 @@ class SnapshotRetentionService:
             return job
         snapshot = self.store.get_snapshot(job["target_id"])
         evidence = self.store.get_evidence(snapshot.evidence_digest) if snapshot else None
+        artifact_keys = []
         if evidence:
-            trash = self.artifacts.move_to_trash(evidence.artifact_key, job_id)
+            artifact_keys.append(evidence.artifact_key)
+        if snapshot:
+            facts = snapshot.facts if isinstance(snapshot.facts, Mapping) else {}
+            summary = facts.get("communication_summary", {})
+            if isinstance(summary, Mapping):
+                communication_key = summary.get("artifact_key")
+                if communication_key and communication_key not in artifact_keys:
+                    artifact_keys.append(str(communication_key))
+        if artifact_keys:
+            trash = None
+            for artifact_key in artifact_keys:
+                # A prior attempt may have moved one object before failing.  A
+                # retry must treat that already-detached object as success.
+                digest = str(artifact_key).removeprefix("sha256:")
+                existing = self.artifacts.trash_dir / job_id / digest
+                if existing.is_dir():
+                    trash = existing
+                    continue
+                trash = self.artifacts.move_to_trash(artifact_key, job_id)
             self.store.mark_deletion_trashed(job_id, str(trash))
             try:
                 self.artifacts.purge_trash(job_id)

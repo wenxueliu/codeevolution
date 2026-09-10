@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import App from '../src/App.vue'
 import Home from '../src/pages/Home.vue'
 import Knowledge from '../src/pages/Knowledge.vue'
 import Snapshots from '../src/pages/Snapshots.vue'
@@ -18,15 +19,16 @@ const RouterLink = {
       if (typeof this.to === 'string') return this.to
       const params = this.to?.params || {}
       if (this.to?.name === 'snapshots') return '/snapshots'
-      if (this.to?.name === 'graph-view') return `/graph-views/${params.viewId}`
+      if (this.to?.name === 'graph-view') return params.viewId ? `/graph-views/${params.viewId}` : '/graph-views'
       if (this.to?.name === 'knowledge') return `/repo/${params.repoName}`
+      if (this.to?.name === 'knowledge-home') return '/knowledge'
       return '/'
     },
   },
   template: '<a :href="href"><slot /></a>',
 }
 
-function mountPage(component, responses = {}, props = {}) {
+function mountPage(component, responses = {}, props = {}, route = { query: { snapshot_id: 'test-snapshot' } }) {
   const api = {
     get: vi.fn(async (path) => typeof responses[path] === 'function' ? responses[path]() : responses[path] ?? {}),
     delete: vi.fn(async () => ({ ok: true })),
@@ -37,7 +39,7 @@ function mountPage(component, responses = {}, props = {}) {
     global: {
       components: { RouterLink },
       mixins: [{ data: () => ({ loading: false, error: null }) }],
-      mocks: { $api: api, $router: { push: vi.fn() }, $route: { query: { snapshot_id: 'test-snapshot' } }, $runAsync: async (task) => task() },
+      mocks: { $api: api, $router: { push: vi.fn() }, $route: route, $runAsync: async (task) => task() },
     },
   })
   return { wrapper, api }
@@ -46,6 +48,50 @@ function mountPage(component, responses = {}, props = {}) {
 afterEach(() => { vi.restoreAllMocks(); window.sessionStorage.clear() })
 
 describe('repository and knowledge pages', () => {
+  it('keeps Knowledge and Graph View discoverable before a context is selected', () => {
+    const wrapper = mount(App, {
+      global: {
+        components: { RouterLink },
+        stubs: { RepositoryAssistant: true, LLMSettings: true, 'router-view': true },
+        mocks: { $route: { params: {}, query: {} }, $router: { push: vi.fn() } },
+      },
+    })
+    const links = wrapper.findAll('.nav-links a')
+    expect(links.map(link => link.text())).toEqual(['知识中心', 'Snapshots', 'Graph View'])
+    expect(links.map(link => link.attributes('href'))).toEqual(['/knowledge', '/snapshots', '/graph-views'])
+  })
+
+  it('keeps the active snapshot and view context in top-level navigation', () => {
+    const wrapper = mount(App, {
+      global: {
+        components: { RouterLink },
+        stubs: { RepositoryAssistant: true, LLMSettings: true, 'router-view': true },
+        mocks: { $route: { params: { repoName: 'snapshot', viewId: 'view-1' }, query: { snapshot_id: 'snap-1' } }, $router: { push: vi.fn() } },
+      },
+    })
+    const links = wrapper.findAll('.nav-links a')
+    expect(links[0].attributes('href')).toBe('/repo/snapshot')
+    expect(links[2].attributes('href')).toBe('/graph-views/view-1')
+  })
+
+  it('guides the user to Snapshots when Knowledge has no snapshot context', async () => {
+    const { wrapper, api } = mountPage(Knowledge, {}, { repoName: '' }, { query: {} })
+    await flushPromises()
+    expect(wrapper.text()).toContain('尚未选择 Repository Snapshot')
+    expect(wrapper.text()).toContain('请先在 Snapshots 中运行分析')
+    expect(wrapper.find('a[href="/snapshots"]').exists()).toBe(true)
+    expect(api.get).not.toHaveBeenCalled()
+  })
+
+  it('guides the user to Snapshots when Graph View has no view context', async () => {
+    const { wrapper, api } = mountPage(GraphView, {}, {}, { query: {} })
+    await flushPromises()
+    expect(wrapper.text()).toContain('尚未选择 Graph View')
+    expect(wrapper.text()).toContain('请先在 Snapshots 中创建当前 View')
+    expect(wrapper.find('a[href="/snapshots"]').exists()).toBe(true)
+    expect(api.get).not.toHaveBeenCalled()
+  })
+
   it('loads a Graph View topology and keeps view_id when selecting impact and flow', async () => {
     const topology = {
       view_digest: 'sha256:view', coverage: { status: 'complete' },
@@ -252,7 +298,7 @@ describe('repository and knowledge pages', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('mall-admin-web')
     const memberCheckboxes = wrapper.findAll('tbody input[type="checkbox"]')
-    await memberCheckboxes[1].setValue(false)
+    await memberCheckboxes[0].setValue(true)
     await wrapper.findAll('.actions button')[1].trigger('click')
     await flushPromises()
     expect(api.request).toHaveBeenCalledWith('/api/analysis-runs', expect.objectContaining({
@@ -278,6 +324,34 @@ describe('repository and knowledge pages', () => {
     await wrapper.vm.createView()
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('查看跨仓图谱')
+    wrapper.unmount()
+  })
+
+  it('starts with no members selected and runs only the selected mall member', async () => {
+    const { wrapper, api } = mountPage(Snapshots, {
+      '/api/scopes': { scopes: [{ id: 'scope-mall', name: 'Mall' }] },
+      '/api/scopes/scope-mall/members': { members: [
+        { id: 'mall', display_name: 'mall' },
+        { id: 'mall-admin-web', display_name: 'mall-admin-web' },
+      ] },
+      '/api/repository-members/mall/snapshots': { items: [{ id: 'snap-mall' }] },
+      '/api/repository-members/mall-admin-web/snapshots': { items: [{ id: 'snap-web' }] },
+      '/api/analysis-runs': { run: { id: 'run-mall', status: 'pending', members: [] } },
+    })
+
+    await flushPromises()
+    const memberCheckboxes = wrapper.findAll('tbody input[type="checkbox"]')
+    expect(memberCheckboxes).toHaveLength(2)
+    expect(memberCheckboxes.every(({ element }) => !element.checked)).toBe(true)
+
+    await wrapper.find('input[aria-label="选择 mall"]').setValue(true)
+    await wrapper.findAll('.actions button').find(button => button.text() === '运行分析').trigger('click')
+    await flushPromises()
+
+    expect(api.request).toHaveBeenCalledWith('/api/analysis-runs', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ member_ids: ['mall'] }),
+    }))
     wrapper.unmount()
   })
 
