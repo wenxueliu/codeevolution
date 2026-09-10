@@ -69,3 +69,17 @@ def test_flow_exposes_competing_message_alternatives_as_labelled_branches():
     }]
     result = TopologyQueryService().flow(artifact, "gateway", entry_id="gateway.root")
     assert any(item.get("alternative_group_id") == "alternative-1" for item in result["edges"])
+
+
+def test_impact_returns_message_alternatives_without_promoting_them_to_edges():
+    artifact = _artifact()
+    artifact["message_alternatives"] = [{
+        "alternative_group_id": "alternative-1",
+        "protocol": "kafka",
+        "source_member_id": "gateway",
+        "consumer_member_ids": ["orders"],
+        "consumers": [{"member_id": "orders", "entry_id": "orders.root"}],
+    }]
+    result = TopologyQueryService().impact(artifact, "orders")
+    assert result["downstream_dependencies"] == [{"member_id": "users", "path": ["orders", "users"], "depth": 1}]
+    assert result["message_alternatives"][0]["alternative_group_id"] == "alternative-1"

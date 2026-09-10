@@ -67,6 +67,15 @@ class TopologyQueryService:
                 if item.get("source", {}).get("member_id") == member_id
                 or item.get("source_member_id") == member_id
             ]
+        result["message_alternatives"] = [
+            item for item in artifact.get("message_alternatives", [])
+            if item.get("source_member_id") == member_id
+            or member_id in item.get("consumer_member_ids", [])
+            or any(
+                isinstance(consumer, Mapping) and consumer.get("member_id") == member_id
+                for consumer in item.get("consumers", [])
+            )
+        ]
         result["unknown_frontier"] = [
             {"kind": "coverage", "member_id": item, "reason": "partial_coverage"}
             for item in result["unknown_boundaries"]
