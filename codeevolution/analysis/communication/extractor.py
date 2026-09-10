@@ -34,6 +34,14 @@ MQ_PATTERNS = (
     "publish", "produce", "send", "basic_publish", "xadd", "xread", "subscribe", "consume",
 )
 RPC_PATTERNS = ("grpc", "Stub", "BlockingStub", "FutureStub", "ServiceClient", "RpcClient")
+HARD_BUDGETS = {
+    "entries": 5_000,
+    "call_depth": 12,
+    "call_nodes": 10_000,
+    "call_edges": 50_000,
+    "observations": 10_000,
+    "payload_bytes": 64 * 1024,
+}
 
 
 class CommunicationFactExtractor:
@@ -48,21 +56,24 @@ class CommunicationFactExtractor:
         snapshot_id: str,
         member_id: str | None = None,
     ) -> RepositoryCommunicationArtifact:
-        self._payload_limit = max(1024, int(rules.budgets.get("payload_bytes", 65536)))
+        self._payload_limit = min(
+            HARD_BUDGETS["payload_bytes"],
+            max(1024, _budget(rules, "payload_bytes", HARD_BUDGETS["payload_bytes"], minimum=1024)),
+        )
         allowed_paths = _manifest_paths(sources)
         entries, entry_coverage = collect_entries(
             graph,
             snapshot_id,
-            max_entries=rules.budgets.get("entries", 5000),
+            max_entries=_budget(rules, "entries", HARD_BUDGETS["entries"]),
             allowed_paths=allowed_paths,
             return_coverage=True,
         )
         paths, reachability_coverage = reachable_call_paths(
             graph,
             entries,
-            max_depth=rules.budgets.get("call_depth", 12),
-            max_nodes=rules.budgets.get("call_nodes", 10000),
-            max_edges=rules.budgets.get("call_edges", 50000),
+            max_depth=_budget(rules, "call_depth", HARD_BUDGETS["call_depth"], minimum=0),
+            max_nodes=_budget(rules, "call_nodes", HARD_BUDGETS["call_nodes"]),
+            max_edges=_budget(rules, "call_edges", HARD_BUDGETS["call_edges"]),
             callee_cache={},
             return_coverage=True,
         )
@@ -377,6 +388,15 @@ def _protocol_supported(graph, rules, protocol):
     return bool(entry.get(protocol, ()))
 
 
+def _budget(rules, name: str, default: int, *, minimum: int = 1) -> int:
+    """Read a collector budget while enforcing the process hard ceiling."""
+    try:
+        value = int(rules.budgets.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, HARD_BUDGETS.get(name, default)))
+
+
 def _collector_coverage(name, rule, entries, entry_coverage, reachability):
     entry_truncated = bool(entry_coverage.get("truncated", False))
     reach_truncated = any(item.get("truncated", False) for item in reachability.values())
@@ -397,9 +417,7 @@ def _collector_coverage(name, rule, entries, entry_coverage, reachability):
 
 def _bounded_result(result, rules):
     """Apply one deterministic observation budget per collector."""
-    budget = int(rules.budgets.get("observations", 10000))
-    if budget < 1:
-        budget = 1
+    budget = _budget(rules, "observations", HARD_BUDGETS["observations"])
     fields = (
         "http_outbounds", "message_publications", "message_subscriptions",
         "grpc_clients", "grpc_servers", "resource_accesses", "unresolved_observations",
