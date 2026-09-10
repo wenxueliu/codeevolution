@@ -66,7 +66,8 @@ def test_worker_captures_analyzes_and_publishes_snapshot(tmp_path):
     assert finished.status == AttemptStatus.COMPLETED
     snapshot = store.get_current_snapshot("repo")
     assert snapshot is not None
-    assert snapshot.facts == {"files": ["app.py"]}
+    assert snapshot.facts["files"] == ["app.py"]
+    assert snapshot.facts["communication_summary"]["artifact_key"].startswith("sha256:")
     assert snapshot.observed_head_commit is None  # repository has staged but no committed HEAD
 
 

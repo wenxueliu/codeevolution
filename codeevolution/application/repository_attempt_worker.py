@@ -13,6 +13,15 @@ from typing import Any
 from uuid import uuid4
 
 from codeevolution import __version__
+from codeevolution.analysis.communication.extractor import CommunicationFactExtractor
+from codeevolution.analysis.communication.schema import (
+    CollectorCoverage,
+    CollectorRuleSet,
+    CollectorStatus,
+    CommunicationArtifactReference,
+    RepositoryCommunicationArtifact,
+    serialize_communication_artifact,
+)
 from codeevolution.domain.analysis_snapshot import (
     AttemptStage,
     AttemptStatus,
@@ -167,6 +176,17 @@ class RepositoryAttemptWorker:
 
         self._stage(attempt.id, AttemptStage.ANALYZING, 75)
         facts = self.analyzer(graph.path, inventory)
+        snapshot_id = str(uuid4())
+        communication = self._communication_artifact(graph.path, inventory, snapshot_id)
+        communication_bytes = serialize_communication_artifact(communication)
+        (staging / "communication.json").write_bytes(communication_bytes)
+        communication_key = "sha256:" + directory_digest(staging)
+        communication_summary = communication.summary(
+            CommunicationArtifactReference(
+                communication_key, communication.payload_digest(), len(communication_bytes)
+            )
+        )
+        facts = {**facts, "communication_summary": communication_summary}
         facts_bytes = _canonical_bytes(facts)
         facts_digest = "sha256:" + hashlib.sha256(facts_bytes).hexdigest()
 
@@ -186,7 +206,7 @@ class RepositoryAttemptWorker:
             capture_completeness="incomplete" if after.exclusions else "complete",
         )
         snapshot = RepositoryAnalysisSnapshot(
-            id=str(uuid4()),
+            id=snapshot_id,
             member_id=member.id,
             evidence_digest=evidence.digest,
             captured_at="",
@@ -205,6 +225,38 @@ class RepositoryAttemptWorker:
             observed_head_commit=final.git_head,
         )
         self.store.publish_snapshot(attempt.id, evidence, snapshot)
+
+    def _communication_artifact(
+        self, graph_path: Path, sources: SnapshotSourceInventory, snapshot_id: str
+    ) -> RepositoryCommunicationArtifact:
+        """Build communication facts exclusively from the frozen staging inputs."""
+        from codeevolution.infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
+
+        rules = CollectorRuleSet(
+            digest=self.rules_digest,
+            version="communication/v1",
+            budgets={"call_depth": 12, "call_nodes": 10000, "entries": 5000},
+        )
+        try:
+            with SQLiteCodeGraphRepository(str(graph_path)) as repository:
+                return CommunicationFactExtractor().collect(
+                    repository, sources, rules, snapshot_id=snapshot_id
+                )
+        except Exception as error:
+            # Communication evidence is still explicit and auditable when a
+            # language/framework collector cannot inspect a frozen graph.
+            return RepositoryCommunicationArtifact(
+                snapshot_id=snapshot_id,
+                rules_digest=self.rules_digest,
+                collector_coverage=(
+                    CollectorCoverage(
+                        "communication",
+                        "communication/v1",
+                        CollectorStatus.FAILED,
+                        reason=type(error).__name__,
+                    ),
+                ),
+            )
 
     def _stage(self, attempt_id: str, stage: AttemptStage, percent: int) -> None:
         if self._cancel_requested(attempt_id):
