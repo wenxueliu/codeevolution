@@ -35,8 +35,10 @@ from codeevolution.domain.analysis_snapshot import (
     ViewLifecycle,
     aggregate_run_status,
 )
+from codeevolution.domain.topology import canonical_aliases, canonical_digest
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+DEFAULT_TOPOLOGY_RULES_DIGEST = canonical_digest({"schema": "topology-rules/v1", "rules": []})
 
 _MIGRATION_2 = """
 CREATE TABLE IF NOT EXISTS snapshot_rule_candidates (
@@ -149,6 +151,7 @@ CREATE TABLE repository_members (
     scope_id TEXT NOT NULL REFERENCES analysis_scopes(id) ON DELETE RESTRICT,
     display_name TEXT NOT NULL, registered_path TEXT NOT NULL, path_identity TEXT NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, retired_at TEXT,
+    declared_aliases_json TEXT NOT NULL DEFAULT '[]',
     UNIQUE(scope_id, display_name)
 );
 CREATE INDEX idx_members_scope_active ON repository_members(scope_id, retired_at);
@@ -287,6 +290,9 @@ CREATE TABLE member_change_checks (
 
 CREATE TABLE graph_views (
     id TEXT PRIMARY KEY, digest TEXT NOT NULL,
+    scope_id TEXT NOT NULL REFERENCES analysis_scopes(id) ON DELETE RESTRICT,
+    identity_schema TEXT NOT NULL DEFAULT 'graph-view/v2',
+    topology_rules_digest TEXT NOT NULL,
     lifecycle TEXT NOT NULL CHECK(lifecycle IN ('ephemeral','pinned')),
     completeness TEXT NOT NULL CHECK(completeness IN ('complete','incomplete')),
     created_at TEXT NOT NULL, last_accessed_at TEXT NOT NULL, expires_at TEXT,
@@ -304,6 +310,8 @@ CREATE TABLE graph_view_members (
     member_id TEXT NOT NULL REFERENCES repository_members(id) ON DELETE RESTRICT,
     snapshot_id TEXT REFERENCES repository_analysis_snapshots(id) ON DELETE RESTRICT,
     availability TEXT NOT NULL CHECK(availability IN ('available','unparsed','retired')),
+    display_name TEXT NOT NULL,
+    declared_aliases_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY(view_id,member_id), UNIQUE(view_id,ordinal),
     CHECK((availability='available' AND snapshot_id IS NOT NULL)
        OR (availability!='available' AND snapshot_id IS NULL))
@@ -316,6 +324,13 @@ BEGIN
     WHERE s.id=NEW.snapshot_id AND s.member_id=NEW.member_id
       AND s.deletion_state='active' AND e.deletion_state='active'
   ) THEN RAISE(ABORT,'snapshot_view_member_mismatch') END;
+END;
+CREATE TRIGGER trg_view_member_scope_insert BEFORE INSERT ON graph_view_members
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM graph_views v JOIN repository_members m ON m.id=NEW.member_id
+    WHERE v.id=NEW.view_id AND v.scope_id=m.scope_id
+  ) THEN RAISE(ABORT,'graph_view_member_scope_mismatch') END;
 END;
 CREATE TABLE snapshot_references (
     id TEXT PRIMARY KEY,
@@ -406,6 +421,88 @@ class AnalysisSnapshotSQLiteStore:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_graph_artifact_job ON graph_view_artifact_jobs(cache_key_digest) WHERE status IN ('pending','running')"
         )
 
+    @staticmethod
+    def _repair_topology_contract_shape(connection: sqlite3.Connection) -> None:
+        """Forward-migrate frozen View identity without guessing mixed scopes.
+
+        SQLite cannot add a non-null column to populated tables without a
+        default.  Old views therefore retain a null ``scope_id`` only when
+        their historical members span scopes; consumers can report the
+        documented ``legacy_mixed_scope_view`` error instead of silently
+        choosing one.
+        """
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_views'"
+        ).fetchone() is None:
+            return
+        view_columns = {
+            item["name"] for item in connection.execute("PRAGMA table_info(graph_views)")
+        }
+        if "scope_id" not in view_columns:
+            connection.execute("ALTER TABLE graph_views ADD COLUMN scope_id TEXT")
+        if "identity_schema" not in view_columns:
+            connection.execute(
+                "ALTER TABLE graph_views ADD COLUMN identity_schema TEXT NOT NULL DEFAULT 'graph-view/v2'"
+            )
+        if "topology_rules_digest" not in view_columns:
+            connection.execute("ALTER TABLE graph_views ADD COLUMN topology_rules_digest TEXT NOT NULL DEFAULT ''")
+
+        member_columns = {
+            item["name"] for item in connection.execute("PRAGMA table_info(graph_view_members)")
+        }
+        if "display_name" not in member_columns:
+            connection.execute("ALTER TABLE graph_view_members ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+        if "declared_aliases_json" not in member_columns:
+            connection.execute(
+                "ALTER TABLE graph_view_members ADD COLUMN declared_aliases_json TEXT NOT NULL DEFAULT '[]'"
+            )
+
+        catalog_columns = {
+            item["name"] for item in connection.execute("PRAGMA table_info(repository_members)")
+        }
+        if "declared_aliases_json" not in catalog_columns:
+            connection.execute(
+                "ALTER TABLE repository_members ADD COLUMN declared_aliases_json TEXT NOT NULL DEFAULT '[]'"
+            )
+
+        connection.execute(
+            """UPDATE graph_views SET scope_id=(
+                   SELECT MIN(m.scope_id) FROM graph_view_members vm
+                   JOIN repository_members m ON m.id=vm.member_id
+                   WHERE vm.view_id=graph_views.id
+                 )
+                 WHERE scope_id IS NULL AND 1=(
+                   SELECT COUNT(DISTINCT m.scope_id) FROM graph_view_members vm
+                   JOIN repository_members m ON m.id=vm.member_id
+                   WHERE vm.view_id=graph_views.id
+                 )"""
+        )
+        connection.execute(
+            "UPDATE graph_views SET topology_rules_digest=? WHERE topology_rules_digest=''",
+            (DEFAULT_TOPOLOGY_RULES_DIGEST,),
+        )
+        connection.execute(
+            """UPDATE graph_view_members
+                   SET display_name=(SELECT display_name FROM repository_members m WHERE m.id=graph_view_members.member_id)
+                 WHERE display_name=''"""
+        )
+        connection.execute(
+            """UPDATE graph_view_members
+                   SET declared_aliases_json=(SELECT declared_aliases_json FROM repository_members m WHERE m.id=graph_view_members.member_id)
+                 WHERE declared_aliases_json='[]'"""
+        )
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS trg_view_member_scope_insert
+               BEFORE INSERT ON graph_view_members
+               WHEN (SELECT scope_id FROM graph_views WHERE id=NEW.view_id) IS NOT NULL
+               BEGIN
+                 SELECT CASE WHEN NOT EXISTS (
+                   SELECT 1 FROM graph_views v JOIN repository_members m ON m.id=NEW.member_id
+                   WHERE v.id=NEW.view_id AND v.scope_id=m.scope_id
+                 ) THEN RAISE(ABORT,'graph_view_member_scope_mismatch') END;
+               END"""
+        )
+
     def migrate(self) -> None:
         with self.connection() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
@@ -447,6 +544,12 @@ class AnalysisSnapshotSQLiteStore:
                 except BaseException:
                     connection.rollback()
                     raise
+            # The initial schema now includes v4 columns.  Existing v1-v3
+            # databases get them through the idempotent repair below.
+            self._repair_topology_contract_shape(connection)
+            if version < SCHEMA_VERSION:
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.commit()
 
     def create_scope(self, name: str, *, scope_id: str | None = None) -> AnalysisScope:
         if not name.strip():
@@ -509,21 +612,23 @@ class AnalysisSnapshotSQLiteStore:
         path_identity: str,
         *,
         member_id: str | None = None,
+        declared_aliases: Sequence[str] = (),
     ) -> RepositoryMember:
         if not display_name.strip() or not registered_path or not path_identity:
             raise SnapshotStoreError("member name, path and path identity are required")
         now = utc_now()
+        aliases = canonical_aliases(declared_aliases)
         item = RepositoryMember(
             member_id or str(uuid4()), scope_id, display_name.strip(), registered_path,
-            path_identity, now, now,
+            path_identity, now, now, declared_aliases=aliases,
         )
         with self.connection() as connection, connection:
             connection.execute(
                 """INSERT INTO repository_members
-                   (id,scope_id,display_name,registered_path,path_identity,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?)""",
+                   (id,scope_id,display_name,registered_path,path_identity,created_at,updated_at,declared_aliases_json)
+                   VALUES(?,?,?,?,?,?,?,?)""",
                 (item.id, item.scope_id, item.display_name, item.registered_path,
-                 item.path_identity, item.created_at, item.updated_at),
+                 item.path_identity, item.created_at, item.updated_at, _canonical_json(list(item.declared_aliases))),
             )
         return item
 
@@ -1472,39 +1577,44 @@ class AnalysisSnapshotSQLiteStore:
     ) -> GraphView:
         if (scope_ids is None) == (member_ids is None):
             raise SnapshotStoreError("provide exactly one current-view selector")
-        selector = {"scope_ids": list(scope_ids)} if scope_ids is not None else {
-            "member_ids": list(member_ids or ())
-        }
         with self.connection() as connection:
             if scope_ids is not None:
-                if not scope_ids or len(set(scope_ids)) != len(scope_ids):
-                    raise SnapshotStoreError("scope_ids must be non-empty and unique")
-                placeholders = ",".join("?" for _ in scope_ids)
+                if len(scope_ids) != 1 or not scope_ids[0]:
+                    raise SnapshotStoreError("a graph view must select exactly one scope")
+                scope_id = scope_ids[0]
                 known = connection.execute(
-                    f"SELECT id FROM analysis_scopes WHERE id IN ({placeholders}) AND retired_at IS NULL",
-                    tuple(scope_ids),
+                    "SELECT id FROM analysis_scopes WHERE id=? AND retired_at IS NULL",
+                    (scope_id,),
                 ).fetchall()
-                if {row["id"] for row in known} != set(scope_ids):
-                    raise SnapshotStoreError("all scopes must exist and be active")
+                if not known:
+                    raise SnapshotStoreError("scope must exist and be active")
                 rows = connection.execute(
-                    f"""SELECT m.id AS member_id,m.retired_at,c.snapshot_id
+                    """SELECT m.id AS member_id,m.scope_id,m.display_name,m.declared_aliases_json,
+                              m.retired_at,c.snapshot_id
                         FROM repository_members m LEFT JOIN current_repository_snapshots c ON c.member_id=m.id
-                        WHERE m.scope_id IN ({placeholders}) AND m.retired_at IS NULL ORDER BY m.id""",
-                    tuple(scope_ids),
+                        WHERE m.scope_id=? AND m.retired_at IS NULL ORDER BY m.id""",
+                    (scope_id,),
                 ).fetchall()
+                selector = {"scope_id": scope_id}
             else:
                 selected = list(member_ids or ())
                 if not selected or len(set(selected)) != len(selected):
                     raise SnapshotStoreError("member_ids must be non-empty and unique")
                 placeholders = ",".join("?" for _ in selected)
                 rows = connection.execute(
-                    f"""SELECT m.id AS member_id,m.retired_at,c.snapshot_id
+                    f"""SELECT m.id AS member_id,m.scope_id,m.display_name,m.declared_aliases_json,
+                              m.retired_at,c.snapshot_id
                         FROM repository_members m LEFT JOIN current_repository_snapshots c ON c.member_id=m.id
                         WHERE m.id IN ({placeholders}) ORDER BY m.id""",
                     tuple(selected),
                 ).fetchall()
                 if {row["member_id"] for row in rows} != set(selected):
                     raise SnapshotStoreError("all members must exist")
+                scope_ids_found = {row["scope_id"] for row in rows}
+                if len(scope_ids_found) != 1:
+                    raise SnapshotStoreError("mixed_scope_members")
+                scope_id = next(iter(scope_ids_found))
+                selector = {"member_ids": selected, "scope_id": scope_id}
         mappings = []
         for ordinal, row in enumerate(rows):
             if row["retired_at"] is not None:
@@ -1513,8 +1623,13 @@ class AnalysisSnapshotSQLiteStore:
                 availability, snapshot_id = ViewAvailability.UNPARSED, None
             else:
                 availability, snapshot_id = ViewAvailability.AVAILABLE, row["snapshot_id"]
-            mappings.append(GraphViewMember(row["member_id"], ordinal, snapshot_id, availability))
-        return self._create_view(mappings, selector=selector, view_id=view_id)
+            mappings.append(
+                GraphViewMember(
+                    row["member_id"], ordinal, snapshot_id, availability,
+                    row["display_name"], tuple(json.loads(row["declared_aliases_json"])),
+                )
+            )
+        return self._create_view(mappings, scope_id=scope_id, selector=selector, view_id=view_id)
 
     def create_explicit_view(
         self,
@@ -1524,16 +1639,39 @@ class AnalysisSnapshotSQLiteStore:
     ) -> GraphView:
         if not members or len({item.member_id for item in members}) != len(members):
             raise SnapshotStoreError("view members must be non-empty and unique")
+        member_ids = [item.member_id for item in members]
+        placeholders = ",".join("?" for _ in member_ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""SELECT id,scope_id,display_name,declared_aliases_json
+                    FROM repository_members WHERE id IN ({placeholders})""",
+                tuple(member_ids),
+            ).fetchall()
+        if {row["id"] for row in rows} != set(member_ids):
+            raise SnapshotStoreError("all members must exist")
+        scope_ids = {row["scope_id"] for row in rows}
+        if len(scope_ids) != 1:
+            raise SnapshotStoreError("mixed_scope_members")
+        scope_id = next(iter(scope_ids))
+        metadata = {row["id"]: row for row in rows}
         normalized = [
-            GraphViewMember(item.member_id, ordinal, item.snapshot_id, item.availability)
+            GraphViewMember(
+                item.member_id, ordinal, item.snapshot_id, item.availability,
+                metadata[item.member_id]["display_name"],
+                tuple(json.loads(metadata[item.member_id]["declared_aliases_json"])),
+            )
             for ordinal, item in enumerate(sorted(members, key=lambda item: item.member_id))
         ]
-        return self._create_view(normalized, selector={"explicit": True}, view_id=view_id)
+        return self._create_view(
+            normalized, scope_id=scope_id,
+            selector={"explicit": True, "scope_id": scope_id}, view_id=view_id,
+        )
 
     def _create_view(
         self,
         members: Sequence[GraphViewMember],
         *,
+        scope_id: str,
         selector: dict[str, Any],
         view_id: str | None,
     ) -> GraphView:
@@ -1541,10 +1679,13 @@ class AnalysisSnapshotSQLiteStore:
         now = now_dt.isoformat(timespec="microseconds")
         expires = (now_dt + timedelta(hours=24)).isoformat(timespec="microseconds")
         digest_body = {
-            "schema": "graph-view/v1",
+            "schema": "graph-view/v2",
+            "scope_id": scope_id,
+            "topology_rules_digest": DEFAULT_TOPOLOGY_RULES_DIGEST,
             "members": [
                 {"member_id": item.member_id, "snapshot_id": item.snapshot_id,
-                 "availability": item.availability.value}
+                 "availability": item.availability.value, "display_name": item.display_name,
+                 "declared_aliases": list(canonical_aliases(item.declared_aliases))}
                 for item in members
             ],
         }
@@ -1559,16 +1700,17 @@ class AnalysisSnapshotSQLiteStore:
             try:
                 connection.execute(
                     """INSERT INTO graph_views
-                       (id,digest,lifecycle,completeness,created_at,last_accessed_at,expires_at,selector_json)
-                       VALUES(?,?,?,?,?,?,?,?)""",
-                    (new_id, digest, ViewLifecycle.EPHEMERAL.value, completeness,
+                       (id,digest,scope_id,identity_schema,topology_rules_digest,lifecycle,completeness,created_at,last_accessed_at,expires_at,selector_json)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (new_id, digest, scope_id, "graph-view/v2", DEFAULT_TOPOLOGY_RULES_DIGEST, ViewLifecycle.EPHEMERAL.value, completeness,
                      now, now, expires, _canonical_json(selector)),
                 )
                 for item in members:
                     connection.execute(
                         """INSERT INTO graph_view_members
-                           (view_id,ordinal,member_id,snapshot_id,availability) VALUES(?,?,?,?,?)""",
-                        (new_id, item.ordinal, item.member_id, item.snapshot_id, item.availability.value),
+                           (view_id,ordinal,member_id,snapshot_id,availability,display_name,declared_aliases_json) VALUES(?,?,?,?,?,?,?)""",
+                        (new_id, item.ordinal, item.member_id, item.snapshot_id, item.availability.value,
+                         item.display_name, _canonical_json(list(canonical_aliases(item.declared_aliases))),),
                     )
                     if item.snapshot_id:
                         self._insert_reference(
@@ -1679,7 +1821,9 @@ class AnalysisSnapshotSQLiteStore:
 
     @staticmethod
     def _member(row: sqlite3.Row) -> RepositoryMember:
-        return RepositoryMember(**dict(row))
+        values = dict(row)
+        values["declared_aliases"] = tuple(json.loads(values.pop("declared_aliases_json", "[]")))
+        return RepositoryMember(**values)
 
     @staticmethod
     def _attempt(row: sqlite3.Row) -> RepositoryAttempt:
@@ -1727,9 +1871,14 @@ class AnalysisSnapshotSQLiteStore:
                     member_id=item["member_id"], ordinal=item["ordinal"],
                     snapshot_id=item["snapshot_id"],
                     availability=ViewAvailability(item["availability"]),
+                    display_name=item["display_name"],
+                    declared_aliases=tuple(json.loads(item["declared_aliases_json"])),
                 )
                 for item in members
             ),
+            scope_id=row["scope_id"],
+            topology_rules_digest=row["topology_rules_digest"],
+            identity_schema=row["identity_schema"],
         )
 
     @staticmethod

@@ -78,8 +78,11 @@ class GraphViewService:
     def refresh(self, view_id: str) -> GraphView:
         view = self.get(view_id)
         selector = view.selector
+        scope_ids = selector.get("scope_ids")
+        if selector.get("scope_id") is not None:
+            scope_ids = [selector["scope_id"]]
         return self.store.create_current_view(
-            scope_ids=selector.get("scope_ids") if selector.get("scope_ids") is not None else None,
+            scope_ids=scope_ids,
             member_ids=selector.get("member_ids") if selector.get("member_ids") is not None else None,
         )
 
@@ -89,10 +92,12 @@ class GraphViewService:
             raise ValueError("view_not_pinned")
         return {
             "schema": "codeevolution.graph-view.v1", "view_id": view.id,
-            "view_digest": view.digest, "created_at": view.created_at,
+            "view_digest": view.digest, "scope_id": view.scope_id,
+            "topology_rules_digest": view.topology_rules_digest, "created_at": view.created_at,
             "members": [
                 {"member_id": item.member_id, "repository_snapshot_id": item.snapshot_id,
-                 "availability": item.availability.value}
+                 "availability": item.availability.value, "display_name": item.display_name,
+                 "declared_aliases": list(item.declared_aliases)}
                 for item in view.members
             ],
         }

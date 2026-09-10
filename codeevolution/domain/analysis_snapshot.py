@@ -96,6 +96,7 @@ class RepositoryMember:
     created_at: str
     updated_at: str
     retired_at: str | None = None
+    declared_aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,8 @@ class GraphViewMember:
     ordinal: int
     snapshot_id: str | None
     availability: ViewAvailability
+    display_name: str = ""
+    declared_aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -208,6 +211,9 @@ class GraphView:
     external_context: dict[str, Any] = field(default_factory=dict)
     tags: tuple[str, ...] = ()
     members: tuple[GraphViewMember, ...] = ()
+    scope_id: str | None = None
+    topology_rules_digest: str = ""
+    identity_schema: str = "graph-view/v2"
 
 
 def aggregate_run_status(
