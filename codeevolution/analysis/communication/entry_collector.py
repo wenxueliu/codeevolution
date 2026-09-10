@@ -88,9 +88,27 @@ def reachable_call_paths(
     max_depth: int = 12,
     max_nodes: int = 10000,
     max_edges: int = 50000,
+    callee_cache: dict[str, tuple[Any, ...]] | None = None,
     return_coverage: bool = False,
 ) -> dict[str, dict[str, list[str]]] | tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, Any]]]:
     """Return shortest entry-rooted node paths using only frozen calls edges."""
+    # The same frozen graph is traversed once per entry.  Cache the immutable
+    # outgoing edge tuples so a large set of HTTP/MQ/RPC entries does not issue
+    # repeated SQLite queries for shared call-tree nodes.
+    cached_callees = callee_cache if callee_cache is not None else {}
+
+    def _callees(node_id: str) -> tuple[Any, ...]:
+        targets = cached_callees.get(node_id)
+        if targets is None:
+            targets = tuple(
+                sorted(
+                    graph.callees(node_id) or (),
+                    key=lambda item: (item.callee_node_id, item.call_line, item.callee_name),
+                )
+            )
+            cached_callees[node_id] = targets
+        return targets
+
     result: dict[str, dict[str, list[str]]] = {}
     coverage: dict[str, dict[str, Any]] = {}
     for entry in entries:
@@ -104,13 +122,10 @@ def reachable_call_paths(
         while queue:
             current, depth = queue.popleft()
             if depth >= max_depth:
-                if graph.callees(current):
+                if _callees(current):
                     truncated = True
                 continue
-            targets = sorted(
-                graph.callees(current),
-                key=lambda item: (item.callee_node_id, item.call_line, item.callee_name),
-            )
+            targets = _callees(current)
             for target in targets:
                 edges_examined += 1
                 if edges_examined > max_edges:

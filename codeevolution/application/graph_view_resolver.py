@@ -86,7 +86,13 @@ class GraphViewResolver:
                     artifact.completeness,
                 )
             )
-        resolved = ResolvedGraphView(view.scope_id, view.id, view.digest, tuple(members))
+        resolved = ResolvedGraphView(
+            view.scope_id,
+            view.id,
+            view.digest,
+            tuple(members),
+            getattr(view, "topology_rules_digest", ""),
+        )
         return resolved, artifacts
 
     @staticmethod

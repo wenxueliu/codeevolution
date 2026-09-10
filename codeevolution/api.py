@@ -6,7 +6,7 @@ import os
 import subprocess
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict
 from enum import Enum
@@ -842,8 +842,9 @@ def create_graph_artifact_job(
 def _topology_artifact_delivery(view_id: str) -> dict[str, Any]:
     from .application.graph_artifact_service import GraphArtifactRequestError
 
+    artifact_service = get_graph_artifact_service()
     try:
-        cached = get_graph_artifact_service().get(view_id, "topology", {})
+        cached = artifact_service.get(view_id, "topology", {})
     except KeyError as error:
         raise HTTPException(404, "view_not_found") from error
     except GraphArtifactRequestError as error:
@@ -855,12 +856,23 @@ def _topology_artifact_delivery(view_id: str) -> dict[str, Any]:
     payload_json = cached.get("payload_json")
     if not payload_json and cached.get("payload_storage") == "artifact":
         try:
-            root = get_snapshot_runtime().artifacts.open(cached["artifact_key"])
-            from .infrastructure.artifact_store_fs import directory_digest
+            # Hold a durable reader lease while opening the CAS directory so
+            # a concurrent TTL/LRU sweep cannot remove metadata or payload
+            # between the cache lookup and the digest/read operation.
+            store = getattr(artifact_service, "store", None)
+            lease_factory = getattr(store, "artifact_cache_reader", None)
+            lease = (
+                lease_factory(cached["cache_key_digest"])
+                if callable(lease_factory) and cached.get("cache_key_digest")
+                else nullcontext()
+            )
+            with lease:
+                root = get_snapshot_runtime().artifacts.open(cached["artifact_key"])
+                from .infrastructure.artifact_store_fs import directory_digest
 
-            if directory_digest(root) != str(cached["artifact_key"]).removeprefix("sha256:"):
-                raise ValueError("artifact directory digest mismatch")
-            payload_json = (root / "payload.json").read_text(encoding="utf-8")
+                if directory_digest(root) != str(cached["artifact_key"]).removeprefix("sha256:"):
+                    raise ValueError("artifact directory digest mismatch")
+                payload_json = (root / "payload.json").read_text(encoding="utf-8")
         except (OSError, KeyError, ValueError) as error:
             raise HTTPException(424, "snapshot_artifact_corrupt") from error
     try:
@@ -911,16 +923,25 @@ def get_topology_artifact_history(view_id: str, limit: int = Query(20, ge=1, le=
 
 @app.get("/api/graph-artifact-jobs/{job_id}")
 def get_graph_artifact_job_contract(job_id: str):
-    job = get_graph_artifact_store().get_artifact_job(job_id)
-    if job is None:
-        raise HTTPException(404, "job_not_found")
+    from .application.graph_artifact_service import GraphArtifactRequestError
+
+    try:
+        job = get_graph_artifact_service().get_job(job_id)
+    except KeyError as error:
+        raise HTTPException(404, "job_not_found") from error
+    except GraphArtifactRequestError as error:
+        code = str(error)
+        status = 410 if code == "view_expired" else 404
+        raise HTTPException(status, code) from error
     return {"job": job}
 
 
 @app.post("/api/graph-artifact-jobs/{job_id}/retry", status_code=202)
 def retry_graph_artifact_job(job_id: str):
+    from .application.graph_artifact_service import GraphArtifactRequestError
+
     try:
-        job = get_graph_artifact_store().retry_artifact_job(job_id)
+        job = get_graph_artifact_service().retry_job(job_id)
         scheduler = get_graph_artifact_scheduler()
         if scheduler is None and job.get("status") == "pending":
             raise HTTPException(503, "artifact_scheduler_unavailable")
@@ -928,7 +949,11 @@ def retry_graph_artifact_job(job_id: str):
             scheduler.submit(job["id"])
         return {"job": job}
     except KeyError as error:
-        raise HTTPException(404, "artifact job not found") from error
+        raise HTTPException(404, "job_not_found") from error
+    except GraphArtifactRequestError as error:
+        code = str(error)
+        status = 410 if code == "view_expired" else 409 if code == "artifact_view_unavailable" else 422
+        raise HTTPException(status, code) from error
 
 
 @app.get("/api/graph-views/{view_id}/impact")

@@ -14,8 +14,14 @@ from codeevolution.application.graph_view_resolver import (
     GraphViewResolver,
 )
 from codeevolution.domain.topology import SnapshotHandle
-from codeevolution.infrastructure.analysis_snapshot_sqlite import ViewExpiredError
+from codeevolution.infrastructure.analysis_snapshot_sqlite import (
+    DEFAULT_TOPOLOGY_CACHE_RETENTION_SECONDS,
+    DEFAULT_TOPOLOGY_JOB_RETENTION_SECONDS,
+    ViewExpiredError,
+)
 from codeevolution.infrastructure.artifact_store_fs import directory_digest
+
+MAX_TOPOLOGY_PAYLOAD_BYTES = 64 * 1024 * 1024
 
 
 class GraphArtifactRequestError(ValueError):
@@ -54,6 +60,13 @@ class GraphArtifactService:
             )
         from codeevolution.domain.topology import TopologyArtifactRequestSpec, canonical_digest
 
+        registry_digest = getattr(self.builder, "known_external_registry_digest", "")
+        topology_rules_digest = getattr(view, "topology_rules_digest", "")
+        rules_digest = canonical_digest({
+            "topology_rules_digest": topology_rules_digest,
+            "known_external_registry_digest": registry_digest,
+        }) if registry_digest else topology_rules_digest
+
         return TopologyArtifactRequestSpec(
             view_digest=view.digest,
             scope_id=view.scope_id,
@@ -62,7 +75,7 @@ class GraphArtifactService:
                 for item in view.members
             ),
             analyzer_bundle_digest=canonical_digest({"analyzer_inputs": analyzer_inputs}),
-            rules_digest=view.topology_rules_digest,
+            rules_digest=rules_digest,
             normalized_params={},
         )
 
@@ -128,9 +141,67 @@ class GraphArtifactService:
         result["status"] = "completed"
         return result
 
-    def scavenge_cache(self, *, max_age_seconds: int = 7 * 24 * 3600, limit: int = 100) -> list[dict]:
-        """Apply bounded LRU cleanup; CAS payloads remain recoverable until separately swept."""
+    def scavenge_cache(
+        self,
+        *,
+        max_age_seconds: int = DEFAULT_TOPOLOGY_CACHE_RETENTION_SECONDS,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Apply bounded TTL/LRU cleanup to cache metadata.
+
+        The store excludes active Jobs and reader leases.  CAS payloads are
+        intentionally left recoverable for a separate, reference-aware sweep.
+        """
         return self.store.scavenge_artifact_cache(max_age_seconds=max_age_seconds, limit=limit)
+
+    def scavenge_jobs(self, *, max_age_seconds: int = DEFAULT_TOPOLOGY_JOB_RETENTION_SECONDS,
+                      limit: int = 100) -> list[dict]:
+        """Apply the bounded retention window to terminal Job metadata."""
+        return self.store.scavenge_artifact_jobs(max_age_seconds=max_age_seconds, limit=limit)
+
+    def get_job(self, job_id: str) -> dict:
+        """Read a Job only through its still-authorized Graph View.
+
+        Job IDs are opaque and are not an authorization capability.  Resolving
+        the owning View here prevents a guessed ID from exposing a completed
+        payload or retrying work after an ephemeral View expired.
+        """
+        job = self.store.get_artifact_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        view_id = job.get("view_id")
+        if not view_id:
+            raise GraphArtifactRequestError("artifact_view_unavailable")
+        self._view(str(view_id))
+        return self.store.public_artifact_job(job)
+
+    def retry_job(self, job_id: str) -> dict:
+        """Retry a failed Job only while its owning View remains valid."""
+        job = self.store.get_artifact_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        view_id = job.get("view_id")
+        if not view_id:
+            raise GraphArtifactRequestError("artifact_view_unavailable")
+        self._view(str(view_id))
+        return self.store.public_artifact_job(self.store.retry_artifact_job(job_id))
+
+    def cancel_job(self, job_id: str, *, administrator: bool = False) -> dict:
+        """Internal administrative cancel operation.
+
+        The shared HTTP/MCP surfaces deliberately do not expose cancellation.
+        Keeping the authorization check here prevents a future caller from
+        accidentally turning the storage primitive into an unguarded route.
+        """
+        if not administrator:
+            raise GraphArtifactRequestError("artifact_cancel_requires_admin")
+        job = self.store.get_artifact_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if not job.get("view_id"):
+            raise GraphArtifactRequestError("artifact_view_unavailable")
+        self._view(str(job["view_id"]))
+        return self.store.public_artifact_job(self.store.cancel_artifact_job(job_id))
 
     def history(self, view_id: str, artifact_kind: str = "topology", *, limit: int = 20) -> list[dict]:
         """Return generation attempts for audit/progress display, newest first."""
@@ -181,6 +252,8 @@ class GraphArtifactService:
 
     def _complete(self, job_id: str, payload: dict, *, lease_token: str | None = None) -> dict:
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if len(payload_json.encode("utf-8")) > MAX_TOPOLOGY_PAYLOAD_BYTES:
+            raise ValueError("artifact_payload_too_large")
         if self.artifacts is not None and len(payload_json.encode("utf-8")) >= 1024 * 1024:
             staging = self.artifacts.create_staging(f"artifact-job-{uuid4().hex}")
             (Path(staging) / "payload.json").write_text(payload_json, encoding="utf-8")

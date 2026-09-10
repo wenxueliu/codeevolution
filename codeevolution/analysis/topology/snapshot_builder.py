@@ -20,6 +20,8 @@ from codeevolution.analysis.topology.http_matcher import (
     HttpInboundEndpoint,
     HttpObservation,
     HttpTopologyMatcher,
+    KnownExternalRegistry,
+    canonical_authority,
 )
 from codeevolution.domain.topology import (
     ResolvedGraphView,
@@ -40,6 +42,23 @@ def _authority_matches_alias(authority: str, alias: str) -> bool:
     return host == alias_host or authority == alias
 
 
+def _message_match_key(messaging: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Return the broker identity fields required for safe message pairing."""
+    return tuple(
+        messaging.get(name)
+        for name in (
+            "protocol",
+            "broker_instance_hint",
+            "destination_kind",
+            "exchange",
+            "routing_key",
+            "queue",
+            "channel",
+            "consumer_group",
+        )
+    )
+
+
 class TopologyBuildError(RuntimeError):
     """Raised when a bound Snapshot cannot supply its immutable artifact."""
 
@@ -47,8 +66,19 @@ class TopologyBuildError(RuntimeError):
 class TopologyArtifactBuilder:
     """Project repository communication facts into one Scope topology."""
 
-    def __init__(self, matcher: HttpTopologyMatcher | None = None):
-        self.http_matcher = matcher or HttpTopologyMatcher()
+    def __init__(
+        self,
+        matcher: HttpTopologyMatcher | None = None,
+        known_external_registry: KnownExternalRegistry | Mapping[str, Any] | list[Any] | None = None,
+    ):
+        registry = KnownExternalRegistry.from_value(known_external_registry)
+        if matcher is not None and known_external_registry is not None:
+            matcher_registry = getattr(matcher, "known_external_registry", registry)
+            if matcher_registry.digest != registry.digest:
+                raise ValueError("matcher and builder known external registries differ")
+        self.http_matcher = matcher or HttpTopologyMatcher(known_external_registry=registry)
+        self.known_external_registry = getattr(self.http_matcher, "known_external_registry", registry)
+        self.known_external_registry_digest = self.known_external_registry.digest
 
     def build(
         self,
@@ -57,6 +87,7 @@ class TopologyArtifactBuilder:
     ) -> dict[str, Any]:
         available = [member for member in view.members if isinstance(member, SnapshotHandle)]
         missing = [member for member in view.members if isinstance(member, UnavailableMember)]
+        topology_rules_digest = getattr(view, "topology_rules_digest", "")
         for member in available:
             artifact = artifacts.get(member.snapshot_id)
             if artifact is None:
@@ -87,6 +118,7 @@ class TopologyArtifactBuilder:
                         "entry_id": source_entry_id,
                     },
                     "transport": self._transport(observation),
+                    "rules_digest": topology_rules_digest,
                     "confidence": decision.confidence(),
                     "reasons": list(decision.reasons),
                     "evidence": self._evidence(observation),
@@ -125,17 +157,28 @@ class TopologyArtifactBuilder:
                                        "target_member_id": decision.target_member_id,
                                        "candidate_entry_ids": list(decision.candidates),
                                        "target_entry_ids": list(decision.target_entry_ids)})
-                elif decision.status == "out_of_scope_or_unregistered":
-                    boundary = {**base, "kind": decision.status}
+                elif decision.status in {"out_of_scope_or_unregistered", "known_external"}:
+                    boundary = {
+                        **base,
+                        "kind": decision.status,
+                        "reason": decision.reasons[0] if decision.reasons else "",
+                    }
+                    if decision.external_rule_id:
+                        boundary["external_rule_id"] = decision.external_rule_id
+                    if decision.external_provider:
+                        boundary["external_provider"] = decision.external_provider
+                    if decision.external_rule_source:
+                        boundary["external_rule_source"] = decision.external_rule_source
                     boundary["boundary_id"] = stable_edge_id("boundary", boundary)
                     boundary_dependencies.append(boundary)
 
             self._append_message_dependencies(
                 member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates,
-                message_alternatives,
+                message_alternatives, topology_rules_digest,
             )
             self._append_grpc_dependencies(
                 member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates,
+                boundary_dependencies, topology_rules_digest,
             )
 
         for projection in service_edges.values():
@@ -153,17 +196,23 @@ class TopologyArtifactBuilder:
             "artifact_kind": "topology",
             "view_digest": view.view_digest,
             "scope_id": view.scope_id,
+            "rules_digest": topology_rules_digest,
+            "known_external_registry_digest": self.known_external_registry_digest,
             "members": services,
             "services": services,
             "endpoint_dependencies": endpoint_dependencies,
             "service_projections": sorted(service_edges.values(), key=lambda item: item["edge_id"]),
             "message_alternatives": sorted(message_alternatives, key=lambda item: item["alternative_group_id"]),
-            "resource_dependencies": self._resources(available, artifacts),
+            "resource_dependencies": self._resources(available, artifacts, topology_rules_digest),
             "boundary_dependencies": boundary_dependencies,
             "candidates": candidates,
             "coverage": coverage,
             "warnings": ["partial_view_coverage"] if missing else [],
-            "identity": {"view_digest": view.view_digest},
+            "identity": {
+                "view_digest": view.view_digest,
+                "rules_digest": topology_rules_digest,
+                "known_external_registry_digest": self.known_external_registry_digest,
+            },
             "statistics": {
                 "service_edges": len(service_edges),
                 "endpoint_dependencies": len(endpoint_dependencies),
@@ -254,30 +303,46 @@ class TopologyArtifactBuilder:
     @staticmethod
     def _coverage(view: ResolvedGraphView, artifacts: Mapping[str, RepositoryCommunicationArtifact]) -> dict[str, Any]:
         members = {}
+        member_details = {}
         for member in sorted(view.members, key=lambda item: item.member_id):
             if isinstance(member, SnapshotHandle):
                 artifact = artifacts.get(member.snapshot_id)
                 members[member.member_id] = artifact.completeness if artifact else "unavailable"
+                member_details[member.member_id] = {
+                    "status": artifact.completeness if artifact else "unavailable",
+                    "collectors": [item.to_dict() for item in (artifact.collector_coverage if artifact else ())],
+                }
             else:
                 members[member.member_id] = member.availability
+                member_details[member.member_id] = {
+                    "status": member.availability,
+                    "reason": member.reason,
+                    "collectors": [],
+                }
         complete = all(value == "complete" for value in members.values()) if members else False
         return {"status": "complete" if complete else "partial", "members": members,
+                "member_details": member_details,
                 "unknown_boundaries": [] if complete else [key for key, value in members.items() if value != "complete"]}
 
     @staticmethod
-    def _resources(members: list[SnapshotHandle], artifacts: Mapping[str, RepositoryCommunicationArtifact]) -> list[dict[str, Any]]:
+    def _resources(
+        members: list[SnapshotHandle],
+        artifacts: Mapping[str, RepositoryCommunicationArtifact],
+        rules_digest: str = "",
+    ) -> list[dict[str, Any]]:
         result = []
         for member in members:
             artifact = artifacts[member.snapshot_id]
             for observation in artifact.resource_accesses:
                 item = {"source_member_id": member.member_id, "observation_id": observation.observation_id,
                         "resource": dict(observation.payload.get("resource", observation.payload)),
+                        "rules_digest": rules_digest,
                         "evidence": TopologyArtifactBuilder._evidence(observation)}
                 item["edge_id"] = stable_edge_id("resource", item)
                 result.append(item)
         return sorted(result, key=lambda item: item["edge_id"])
 
-    def _append_message_dependencies(self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates, alternatives):
+    def _append_message_dependencies(self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates, alternatives, rules_digest):
         # Message matching is deliberately conservative until broker-specific
         # collectors provide normalized delivery semantics.  Exact protocol +
         # channel matches are safe; empty channels never wildcard consumers.
@@ -299,9 +364,7 @@ class TopologyArtifactBuilder:
                 if target.member_id == member.member_id:
                     continue
                 target_messaging = dict(subscription.payload).get("messaging", {})
-                target_channel = target_messaging.get("channel", "")
-                target_protocol = target_messaging.get("protocol", "")
-                if channel != target_channel or protocol != target_protocol:
+                if _message_match_key(messaging) != _message_match_key(target_messaging):
                     continue
                 if delivery not in {"broadcast", "fanout"} or target_messaging.get("delivery_semantics", "unknown") not in {"broadcast", "fanout"}:
                     if delivery == "competing" and target_messaging.get("delivery_semantics") == "competing":
@@ -330,6 +393,7 @@ class TopologyArtifactBuilder:
                     },
                     "observation_ids": [publication.observation_id, subscription.observation_id],
                     "channel": channel,
+                    "rules_digest": rules_digest,
                 }
                 dependency["edge_id"] = stable_edge_id("message", dependency)
                 endpoint_dependencies.append(dependency)
@@ -347,12 +411,14 @@ class TopologyArtifactBuilder:
                     "source_member_id": member.member_id,
                     "consumer_member_ids": sorted({target.member_id for target, _ in matched_competing}),
                     "consumer_entry_ids": sorted({subscription.entry_id for _, subscription in matched_competing if subscription.entry_id}),
+                    "rules_digest": rules_digest,
                 }
                 group["alternative_group_id"] = stable_edge_id("message-alternative", group)
                 alternatives.append(group)
 
     def _append_grpc_dependencies(
-        self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates
+        self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates,
+        boundary_dependencies, rules_digest
     ):
         """Match gRPC only when a frozen authority alias identifies one target.
 
@@ -376,13 +442,62 @@ class TopologyArtifactBuilder:
                 target for target in available
                 if any(_authority_matches_alias(authority, alias) for alias in target.declared_aliases)
             ]
+            external_rules = self.known_external_registry.matches_identity(
+                authority=authority, protocol="grpc", method=method
+            )
+            if aliases and external_rules:
+                candidates.append({
+                    "kind": "ambiguous",
+                    "observation_id": observation.observation_id,
+                    "source_member_id": member.member_id,
+                    "authority": authority,
+                    "candidate_member_ids": [item.member_id for item in aliases],
+                    "candidate_external_rule_ids": [item.rule_id for item in external_rules],
+                    "reason": "internal_alias_conflicts_with_known_external_rule",
+                })
+                continue
+            if not aliases and len(external_rules) > 1:
+                candidates.append({
+                    "kind": "ambiguous",
+                    "observation_id": observation.observation_id,
+                    "source_member_id": member.member_id,
+                    "authority": authority,
+                    "candidate_external_rule_ids": [item.rule_id for item in external_rules],
+                    "reason": "ambiguous_known_external_rule",
+                })
+                continue
             if len(aliases) != 1:
+                if len(external_rules) == 1:
+                    rule = external_rules[0]
+                    boundary = {
+                        "kind": "known_external",
+                        "observation_id": observation.observation_id,
+                        "source": {"member_id": member.member_id, "entry_id": observation.entry_id or method},
+                        "authority": authority,
+                        "rpc_method": method,
+                        "external_rule_id": rule.rule_id,
+                        "external_provider": rule.provider,
+                        "external_rule_source": rule.source,
+                        "reason": "known_external_registry_match",
+                        "rules_digest": rules_digest,
+                    }
+                    boundary["boundary_id"] = stable_edge_id("boundary", boundary)
+                    boundary_dependencies.append(boundary)
+                    continue
+                try:
+                    canonical_rpc_authority = canonical_authority(authority)
+                except ValueError:
+                    canonical_rpc_authority = ""
+                reason = "known_external_rule_constraints_not_matched" if any(
+                    item.authority == canonical_rpc_authority for item in self.known_external_registry.rules
+                ) else "authority_not_registered_in_view"
                 candidates.append({
                     "kind": "ambiguous" if len(aliases) > 1 else "out_of_scope_or_unregistered",
                     "observation_id": observation.observation_id,
                     "source_member_id": member.member_id,
                     "authority": authority,
                     "candidate_member_ids": [item.member_id for item in aliases],
+                    "reason": reason,
                 })
                 continue
             target = aliases[0]
@@ -415,6 +530,7 @@ class TopologyArtifactBuilder:
                 "target": {"member_id": target.member_id, "entry_ids": [target_entry.entry_id]},
                 "rpc_method": method,
                 "observation_id": observation.observation_id,
+                "rules_digest": rules_digest,
                 "confidence": {"level": "high", "reasons": ["authority_alias", "fully_qualified_method"]},
             }
             dependency["edge_id"] = stable_edge_id("grpc", dependency)

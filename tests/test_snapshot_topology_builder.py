@@ -6,6 +6,7 @@ from codeevolution.analysis.communication.schema import (
     NodeRef,
     RepositoryCommunicationArtifact,
 )
+from codeevolution.analysis.topology.http_matcher import KnownExternalRegistry
 from codeevolution.analysis.topology.snapshot_builder import TopologyArtifactBuilder
 from codeevolution.domain.topology import ResolvedGraphView, SnapshotHandle, UnavailableMember
 
@@ -29,6 +30,10 @@ def _artifact(snapshot_id: str, *, entries=(), http=(), messages=(), subscriptio
         resource_accesses=tuple(resources),
         collector_coverage=(CollectorCoverage("test", "test/v1", CollectorStatus.COMPLETE),),
     )
+
+
+def _coverage():
+    return CollectorCoverage("test", "test/v1", CollectorStatus.COMPLETE)
 
 
 def _observation(observation_id, entry_id, payload):
@@ -80,6 +85,40 @@ def test_builder_does_not_confirm_relative_url_and_keeps_resource_separate():
     assert len(payload["resource_dependencies"]) == 1
 
 
+def test_builder_emits_known_external_boundary_with_registry_evidence_only():
+    caller = SnapshotHandle("caller", "snap-caller", "caller", (), "facts", "artifact", "complete")
+    artifacts = {
+        "snap-caller": _artifact(
+            "snap-caller",
+            entries=(_entry("snap-caller", "caller.entry", "GET", "/caller"),),
+            http=(_observation(
+                "http:external",
+                "caller.entry",
+                {"request": {"method": "GET", "authority": "api.stripe.example", "normalized_path": "/charges"}},
+            ),),
+        ),
+    }
+    payload = TopologyArtifactBuilder(
+        known_external_registry=KnownExternalRegistry.from_value({
+            "rules": [{
+                "rule_id": "stripe-api",
+                "authority": "api.stripe.example",
+                "provider": "stripe",
+                "source": "deployment-registry",
+            }]
+        })
+    ).build(_view(caller), artifacts)
+
+    assert payload["endpoint_dependencies"] == []
+    assert payload["service_projections"] == []
+    boundary = payload["boundary_dependencies"][0]
+    assert boundary["kind"] == "known_external"
+    assert boundary["external_rule_id"] == "stripe-api"
+    assert boundary["external_provider"] == "stripe"
+    assert boundary["reason"] == "known_external_registry_match"
+    assert payload["identity"]["known_external_registry_digest"].startswith("sha256:")
+
+
 def test_builder_marks_unavailable_member_and_partial_coverage():
     available = SnapshotHandle("orders", "snap-orders", "orders", (), "facts", "artifact", "complete")
     missing = UnavailableMember("users", "users", "unparsed", "no snapshot")
@@ -123,6 +162,38 @@ def test_grpc_dependency_requires_authority_alias_and_server_method():
     )
     payload = TopologyArtifactBuilder().build(_view(caller, users), artifacts)
     assert any(item["kind"] == "grpc" for item in payload["endpoint_dependencies"])
+
+
+def test_grpc_unknown_authority_uses_explicit_known_external_registry_boundary():
+    caller = SnapshotHandle("caller", "snap-caller", "caller", (), "facts", "artifact", "complete")
+    client = _observation(
+        "grpc:external",
+        "caller.entry",
+        {"rpc": {"authority": "api.stripe.example:443", "fully_qualified_method": "/stripe.Payments/Charge"}},
+    )
+    artifacts = {
+        "snap-caller": RepositoryCommunicationArtifact(
+            snapshot_id="snap-caller",
+            rules_digest="sha256:rules",
+            entries=(_entry("snap-caller", "caller.entry", "GET", "/"),),
+            grpc_clients=(client,),
+            collector_coverage=(_coverage(),),
+        ),
+    }
+    payload = TopologyArtifactBuilder(
+        known_external_registry=[{
+            "rule_id": "stripe-rpc",
+            "authority": "api.stripe.example:443",
+            "protocols": ["grpc"],
+            "provider": "stripe",
+        }]
+    ).build(_view(caller), artifacts)
+
+    assert payload["endpoint_dependencies"] == []
+    boundary = payload["boundary_dependencies"][0]
+    assert boundary["kind"] == "known_external"
+    assert boundary["external_rule_id"] == "stripe-rpc"
+    assert boundary["external_provider"] == "stripe"
 
 
 def test_competing_message_consumers_are_alternatives_not_confirmed_edges():

@@ -46,7 +46,9 @@ class CommunicationFactExtractor:
         rules: CollectorRuleSet,
         *,
         snapshot_id: str,
+        member_id: str | None = None,
     ) -> RepositoryCommunicationArtifact:
+        self._payload_limit = max(1024, int(rules.budgets.get("payload_bytes", 65536)))
         allowed_paths = _manifest_paths(sources)
         entries, entry_coverage = collect_entries(
             graph,
@@ -61,6 +63,7 @@ class CommunicationFactExtractor:
             max_depth=rules.budgets.get("call_depth", 12),
             max_nodes=rules.budgets.get("call_nodes", 10000),
             max_edges=rules.budgets.get("call_edges", 50000),
+            callee_cache={},
             return_coverage=True,
         )
         functions = {item.node_id: item for item in graph.functions()}
@@ -71,7 +74,7 @@ class CommunicationFactExtractor:
             self._http_result(graph, sources, entries, paths, reachability_coverage, functions, rules, entry_coverage),
             self._message_result(graph, sources, entries, paths, reachability_coverage, functions, rules, snapshot_id, entry_coverage),
             self._grpc_result(graph, sources, entries, paths, reachability_coverage, functions, rules, entry_coverage),
-            self._resource_result(graph, sources, entries, paths, reachability_coverage, functions, rules, entry_coverage),
+            self._resource_result(graph, sources, entries, paths, reachability_coverage, functions, rules, entry_coverage, member_id),
         ]
         return build_communication_artifact(
             snapshot_id=snapshot_id, rules_digest=rules.digest, results=result
@@ -125,7 +128,12 @@ class CommunicationFactExtractor:
                     protocol = _broker(row.get("callee_name", ""))
                     observation = self._observation(
                         "message", entry, caller, call_line,
-                        {"messaging": {"protocol": protocol, "channel": channel, "delivery_semantics": _delivery_semantics(protocol, row.get("callee_name", ""), "publish")}},
+                        _message_payload(
+                            row,
+                            protocol=protocol,
+                            channel=channel,
+                            direction="publish",
+                        ),
                         row, extraction_confidence=0.9 if channel else 0.35,
                         call_path=paths.get(entry.entry_id, {}).get(row.get("caller_node_id"), []),
                         call_path_meta=_path_meta(reachability, entry.entry_id, row.get("caller_node_id")),
@@ -177,7 +185,12 @@ class CommunicationFactExtractor:
                     protocol = _broker(row.get("name", ""))
                     observation = self._observation(
                         "message", entry, caller, int(row.get("start_line") or 1),
-                        {"messaging": {"protocol": protocol, "channel": channel, "delivery_semantics": _delivery_semantics(protocol, row.get("name", ""), "consume")}},
+                        _message_payload(
+                            row,
+                            protocol=protocol,
+                            channel=channel,
+                            direction="consume",
+                        ),
                         row, extraction_confidence=0.7 if channel else 0.3,
                         call_path=paths.get(entry.entry_id, {}).get(row.get("node_id"), []),
                         call_path_meta=_path_meta(reachability, entry.entry_id, row.get("node_id")),
@@ -214,7 +227,7 @@ class CommunicationFactExtractor:
             grpc_clients=tuple(_unique(clients)), unresolved_observations=tuple(_unique(unresolved)),
         ), rules)
 
-    def _resource_result(self, graph, sources, entries, paths, reachability, functions, rules, entry_coverage):
+    def _resource_result(self, graph, sources, entries, paths, reachability, functions, rules, entry_coverage, member_id):
         accesses = []
         if not _protocol_supported(graph, rules, "resource") or not callable(getattr(graph, "database_call_candidates", None)):
             return CollectorResult(CollectorCoverage("resource", "resource-collector/v1", CollectorStatus.UNSUPPORTED, reason="graph_adapter_missing_resource_calls"))
@@ -232,7 +245,15 @@ class CommunicationFactExtractor:
                 resource_type = _resource_type(operation)
                 accesses.append(self._observation(
                     "resource", entry, caller, int(row.get("call_line") or row.get("start_line") or 1),
-                    {"resource": {"type": resource_type, "operation": operation, "instance_id": f"unresolved:{entry.handler.snapshot_id}:{resource_type}"}}, row,
+                    {
+                        "resource": {
+                            "type": resource_type,
+                            "operation": operation,
+                            "instance_id": f"unresolved:{member_id or entry.handler.snapshot_id}:{resource_type}",
+                            "access_mode": _resource_access_mode(operation),
+                            "instance_resolution": "unresolved",
+                        }
+                    }, row,
                     extraction_confidence=0.55,
                     call_path=paths.get(entry.entry_id, {}).get(caller_id, []),
                     call_path_meta=_path_meta(reachability, entry.entry_id, caller_id), functions=functions,
@@ -242,9 +263,8 @@ class CommunicationFactExtractor:
             resource_accesses=tuple(_unique(accesses)),
         ), rules)
 
-    @staticmethod
-    def _observation(kind, entry, caller, call_line, payload, row, extraction_confidence, *, call_path=(), call_path_meta=None, functions=None):
-        payload = _bounded_payload(payload)
+    def _observation(self, kind, entry, caller, call_line, payload, row, extraction_confidence, *, call_path=(), call_path_meta=None, functions=None):
+        payload = _bounded_payload(payload, max_bytes=getattr(self, "_payload_limit", 65536))
         caller_ref = None
         callsite = None
         if caller is not None:
@@ -430,6 +450,7 @@ def _http_payload(graph, sources, caller, call_line, callee_name):
     else:
         authority, path = None, sanitized if sanitized.startswith("/") else None
     binding = None
+    binding_candidate = None
     if path and not authority:
         base = _first_absolute_url(text or "")
         if not base and caller is not None and callable(getattr(graph, "url_candidate_nodes", None)):
@@ -437,26 +458,47 @@ def _http_payload(graph, sources, caller, call_line, callee_name):
                 candidates = graph.url_candidate_nodes(caller.file_path, max(1, call_line - 10), call_line + 10)
             except Exception:
                 candidates = []
-            authorities = sorted({
-                urlsplit(_sanitize_url(_candidate_text(item))).netloc
+            candidate_urls = {
+                _sanitize_url(_candidate_text(item)): item
                 for item in candidates
                 if isinstance(item, dict) and _sanitize_url(_candidate_text(item)).startswith("http")
-            })
+            }
+            authorities = sorted({urlsplit(url).netloc for url in candidate_urls})
             if len(authorities) == 1:
-                binding = {"base_authority": authorities[0], "source": "frozen_graph_config", "resolution": "static"}
+                binding_candidate = next(iter(candidate_urls.values()), None)
+                binding = {
+                    "base_authority": authorities[0],
+                    "source": "frozen_graph_config",
+                    "resolution": "static",
+                }
         elif base:
             binding = {"base_authority": urlsplit(_sanitize_url(base)).netloc, "source": "frozen_source", "resolution": "static"}
         if binding:
             authority = binding["base_authority"]
+            config_key = _candidate_config_key(binding_candidate)
+            if config_key:
+                binding["config_key"] = config_key
+    parsed = urlsplit(sanitized) if sanitized else None
+    query_keys = sorted({key for key, _value in parse_qsl(parsed.query, keep_blank_values=True) if key}) if parsed else []
+    scheme = (parsed.scheme or "") if parsed else ""
+    if not scheme and binding and binding.get("base_authority"):
+        base_scheme = _first_absolute_url(text or "")
+        scheme = urlsplit(base_scheme).scheme if base_scheme else ""
+    client = _client_metadata(callee_name)
     request = {
         "method": method,
         "method_resolution": "client_operation" if method else "unresolved",
         "raw_url": sanitized or None,
+        "raw_url_template": sanitized or None,
+        "scheme": scheme or None,
         "authority": authority,
         "normalized_path": path,
+        "query_keys": query_keys,
         "resolution": "complete" if authority and path else "partial",
     }
     result = {"request": request}
+    if client:
+        result["client"] = client
     if binding:
         result["client_binding"] = binding
     return result
@@ -469,6 +511,32 @@ def _first_absolute_url(text):
 
 def _candidate_text(item):
     return str(item.get("value") or item.get("url") or item.get("signature") or item.get("qualified_name") or item.get("name") or "")
+
+
+def _candidate_config_key(item):
+    if not isinstance(item, dict):
+        return None
+    value = item.get("config_key") or item.get("key") or item.get("environment")
+    return str(value).strip() if value else None
+
+
+def _client_metadata(callee_name):
+    value = str(callee_name or "")
+    lower = value.lower()
+    if not value:
+        return None
+    library = "unknown"
+    for marker, name in (
+        ("httpx", "httpx"), ("requests", "requests"), ("aiohttp", "aiohttp"),
+        ("axios", "axios"), ("resttemplate", "spring-resttemplate"),
+        ("webclient", "spring-webclient"), ("feign", "feign"),
+        ("urllib", "urllib"), ("fetch", "fetch"),
+    ):
+        if marker in lower:
+            library = name
+            break
+    operation = _method(value)
+    return {"library": library, "operation": operation or value.rsplit(".", 1)[-1], "symbol": value}
 
 
 def _sanitize_url(raw: str) -> str:
@@ -501,6 +569,28 @@ def _channel(sources, caller, line):
     text = sources.snippet(caller.file_path, max(1, line - 2), line + 2) or ""
     match = re.search(r"['\"`]([A-Za-z0-9_.:/-]{2,})['\"`]", text)
     return match.group(1) if match else ""
+
+
+def _message_payload(row, *, protocol, channel, direction):
+    name = str(row.get("callee_name") or row.get("name") or row.get("target") or "")
+    destination_kind = str(
+        row.get("destination_kind")
+        or ("stream" if protocol == "redis" and any(token in name.lower() for token in ("xadd", "xread")) else "topic" if protocol in {"kafka", "nats"} else "queue" if protocol == "rabbitmq" else "channel")
+    )
+    messaging = {
+        "protocol": protocol,
+        "broker_instance_hint": row.get("broker_instance_hint") or row.get("broker") or None,
+        "destination_kind": destination_kind,
+        "exchange": row.get("exchange"),
+        "routing_key": row.get("routing_key"),
+        "queue": row.get("queue"),
+        "consumer_group": row.get("consumer_group") or row.get("group"),
+        "event_type": row.get("event_type") or row.get("message_type"),
+        "channel": channel,
+        "delivery_semantics": _delivery_semantics(protocol, name, direction),
+        "name_resolution": "literal" if channel else "unresolved",
+    }
+    return {"direction": direction, "messaging": messaging}
 
 
 def _first_url(text):
@@ -551,8 +641,11 @@ def _rpc_payload(sources, caller, line, method, row):
         pieces = qualified.replace("::", ".").split(".")
         if len(pieces) >= 3:
             fully_qualified = "/" + ".".join(pieces[:-2]) + "." + pieces[-2] + "/" + pieces[-1]
+    package, service = _grpc_package_service(fully_qualified)
     return {
         "rpc": {
+            "package": package,
+            "service": service,
             "method": method,
             "fully_qualified_method": fully_qualified,
             "authority": authority,
@@ -562,9 +655,29 @@ def _rpc_payload(sources, caller, line, method, row):
     }
 
 
+def _grpc_package_service(fully_qualified):
+    value = str(fully_qualified or "")
+    if not value.startswith("/") or "/" not in value[1:]:
+        return None, None
+    service_name = value[1:].split("/", 1)[0]
+    if "." not in service_name:
+        return None, service_name
+    package, service = service_name.rsplit(".", 1)
+    return package or None, service or None
+
+
 def _resource_type(name):
     lower = name.lower()
     return "redis" if "redis" in lower else "sql" if any(token in lower for token in ("query", "execute", "select", "insert", "update")) else "resource"
+
+
+def _resource_access_mode(operation):
+    lower = str(operation or "").lower()
+    if any(token in lower for token in ("insert", "update", "delete", "put", "write", "set", "publish", "xadd")):
+        return "write"
+    if any(token in lower for token in ("query", "select", "get", "read", "fetch", "find", "scan", "xread")):
+        return "read"
+    return "unknown"
 
 
 def _looks_like_resource(row, operation):

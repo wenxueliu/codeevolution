@@ -10,7 +10,9 @@ similarly shaped route happens to exist in another repository.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
 
@@ -19,6 +21,7 @@ _CANDIDATE = "candidate"
 _UNRESOLVED = "unresolved"
 _AMBIGUOUS = "ambiguous"
 _OUT_OF_SCOPE = "out_of_scope_or_unregistered"
+_KNOWN_EXTERNAL = "known_external"
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,169 @@ class HttpAlias:
     authority: str
     source: str = "declared"
     confidence: float = 0.90
+
+
+@dataclass(frozen=True)
+class KnownExternalRule:
+    """One explicit rule identifying a non-Scope HTTP authority.
+
+    A rule is intentionally narrower than a service alias.  It can identify a
+    whole authority, or constrain the authority to a route/method.  Nothing is
+    inferred from provider names, URL shape, or the fact that an authority is
+    unregistered; the authority must match this frozen rule exactly.
+    """
+
+    rule_id: str
+    authority: str
+    provider: str = ""
+    methods: tuple[str, ...] = ()
+    path_prefixes: tuple[str, ...] = ()
+    source: str = "configured"
+    protocols: tuple[str, ...] = ("http",)
+
+    def __post_init__(self) -> None:
+        rule_id = self.rule_id.strip()
+        if not rule_id:
+            raise ValueError("known external rule_id must not be blank")
+        object.__setattr__(self, "rule_id", rule_id)
+        authority = canonical_authority(self.authority)
+        if not authority:
+            raise ValueError("known external rule authority must be a valid host")
+        object.__setattr__(self, "authority", authority)
+        methods = tuple(sorted({str(item).strip().upper() for item in self.methods if str(item).strip()}))
+        object.__setattr__(self, "methods", methods)
+        prefixes = tuple(sorted({_external_path_prefix(item) for item in self.path_prefixes}))
+        object.__setattr__(self, "path_prefixes", prefixes)
+        protocols = tuple(sorted({str(item).strip().lower() for item in self.protocols if str(item).strip()}))
+        if not protocols:
+            raise ValueError("known external rule protocols must not be empty")
+        object.__setattr__(self, "protocols", protocols)
+        object.__setattr__(self, "provider", self.provider.strip())
+        source = self.source.strip()
+        if not source:
+            raise ValueError("known external rule source must not be blank")
+        object.__setattr__(self, "source", source)
+
+    def matches(
+        self,
+        *,
+        authority: str,
+        method: str | None,
+        path: str | None,
+        protocol: str = "http",
+    ) -> bool:
+        if canonical_authority(authority) != self.authority:
+            return False
+        if protocol.lower() not in self.protocols:
+            return False
+        if self.methods and (not method or method.upper() not in self.methods):
+            return False
+        if self.path_prefixes:
+            normalized = normalize_path(path or "")
+            if not normalized or not any(_path_prefix_matches(normalized, prefix) for prefix in self.path_prefixes):
+                return False
+        return True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rule_id": self.rule_id,
+            "authority": self.authority,
+            "provider": self.provider,
+            "methods": list(self.methods),
+            "path_prefixes": list(self.path_prefixes),
+            "source": self.source,
+            "protocols": list(self.protocols),
+        }
+
+
+@dataclass(frozen=True)
+class KnownExternalRegistry:
+    """Deterministic, immutable known-external configuration for a View.
+
+    The registry is deployment input, not a discovery result.  Its digest is
+    included in topology identity by the builder/application service so a
+    registry change cannot silently reuse an old artifact.
+    """
+
+    rules: tuple[KnownExternalRule, ...] = ()
+
+    def __post_init__(self) -> None:
+        rules = tuple(sorted(self.rules, key=lambda item: item.rule_id))
+        if len({item.rule_id for item in rules}) != len(rules):
+            raise ValueError("known external rule_id values must be unique")
+        object.__setattr__(self, "rules", rules)
+
+    @classmethod
+    def from_value(cls, value: Any) -> "KnownExternalRegistry":
+        """Coerce a JSON-shaped registry without accepting implicit variants."""
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, Mapping):
+            raw_rules = value.get("rules", ())
+            if not isinstance(raw_rules, (list, tuple)):
+                raise ValueError("known external registry rules must be a list")
+        elif isinstance(value, (list, tuple)):
+            raw_rules = value
+        else:
+            raise ValueError("known external registry must be an object or list")
+        rules: list[KnownExternalRule] = []
+        for index, raw in enumerate(raw_rules):
+            if isinstance(raw, str):
+                raw = {"rule_id": f"external-{index + 1}", "authority": raw}
+            if not isinstance(raw, Mapping):
+                raise ValueError("known external registry rule must be an object")
+            methods = raw.get("methods", raw.get("method", ()))
+            if isinstance(methods, str):
+                methods = (methods,)
+            prefixes = raw.get("path_prefixes", raw.get("path_prefix", ()))
+            if isinstance(prefixes, str):
+                prefixes = (prefixes,)
+            protocols = raw.get("protocols", raw.get("protocol", ("http",)))
+            if isinstance(protocols, str):
+                protocols = (protocols,)
+            rules.append(KnownExternalRule(
+                rule_id=str(raw.get("rule_id", raw.get("id", f"external-{index + 1}"))),
+                authority=str(raw.get("authority", raw.get("host", ""))),
+                provider=str(raw.get("provider", raw.get("name", ""))),
+                methods=tuple(methods or ()),
+                path_prefixes=tuple(prefixes or ()),
+                source=str(raw.get("source", "configured")),
+                protocols=tuple(protocols or ("http",)),
+            ))
+        return cls(tuple(rules))
+
+    @property
+    def digest(self) -> str:
+        payload = json.dumps(
+            {"schema": "known-external-registry/v1", "rules": [item.to_dict() for item in self.rules]},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        return "sha256:" + sha256(payload).hexdigest()
+
+    def matches(self, observation: "HttpObservation") -> tuple[KnownExternalRule, ...]:
+        return self.matches_identity(
+            authority=observation.authority or observation.client_binding_authority or "",
+            protocol="http",
+            method=observation.method,
+            path=observation.path,
+        )
+
+    def matches_identity(
+        self,
+        *,
+        authority: str,
+        protocol: str,
+        method: str | None = None,
+        path: str | None = None,
+    ) -> tuple[KnownExternalRule, ...]:
+        if not authority:
+            return ()
+        return tuple(
+            rule for rule in self.rules
+            if rule.matches(authority=authority, protocol=protocol, method=method, path=path)
+        )
 
 
 @dataclass(frozen=True)
@@ -90,6 +256,9 @@ class HttpMatchDecision:
     reasons: tuple[str, ...] = ()
     endpoint_alternatives: tuple[str, ...] = ()
     candidates: tuple[str, ...] = ()
+    external_rule_id: str | None = None
+    external_provider: str | None = None
+    external_rule_source: str | None = None
 
     @property
     def is_confirmed(self) -> bool:
@@ -128,8 +297,13 @@ class HttpTopologyMatcher:
     output remains typed and deterministic.
     """
 
-    def __init__(self, rules: HttpMatchingRules | None = None):
+    def __init__(
+        self,
+        rules: HttpMatchingRules | None = None,
+        known_external_registry: KnownExternalRegistry | Mapping[str, Any] | Iterable[Any] | None = None,
+    ):
         self.rules = rules or HttpMatchingRules()
+        self.known_external_registry = KnownExternalRegistry.from_value(known_external_registry)
 
     def match(
         self,
@@ -159,6 +333,7 @@ class HttpTopologyMatcher:
             )
 
         alias_members = _alias_members(authority, frozen_aliases)
+        external_rules = self.known_external_registry.matches(fact)
         if len(alias_members) > 1:
             return self._decision(
                 _AMBIGUOUS,
@@ -166,11 +341,42 @@ class HttpTopologyMatcher:
                 candidates=tuple(sorted(alias_members)),
                 reasons=("ambiguous_alias",),
             )
+        if alias_members and external_rules:
+            return self._decision(
+                _AMBIGUOUS,
+                fact,
+                candidates=tuple(sorted(alias_members | {item.rule_id for item in external_rules})),
+                reasons=("internal_alias_conflicts_with_known_external_rule",),
+            )
+        if len(external_rules) > 1:
+            return self._decision(
+                _AMBIGUOUS,
+                fact,
+                candidates=tuple(item.rule_id for item in external_rules),
+                reasons=("ambiguous_known_external_rule",),
+            )
+        if not alias_members and external_rules:
+            rule = external_rules[0]
+            return self._decision(
+                _KNOWN_EXTERNAL,
+                fact,
+                reasons=("known_external_registry_match",),
+                external_rule_id=rule.rule_id,
+                external_provider=rule.provider or None,
+                external_rule_source=rule.source,
+            )
         if not alias_members:
+            same_authority_rules = tuple(
+                rule for rule in self.known_external_registry.rules
+                if canonical_authority(rule.authority) == authority
+            )
             return self._decision(
                 _OUT_OF_SCOPE,
                 fact,
-                reasons=("authority_not_registered_in_view",),
+                reasons=(
+                    "known_external_rule_constraints_not_matched"
+                    if same_authority_rules else "authority_not_registered_in_view",
+                ),
             )
 
         target_member_id = next(iter(alias_members))
@@ -277,6 +483,9 @@ class HttpTopologyMatcher:
         reasons: tuple[str, ...] = (),
         endpoint_alternatives: tuple[str, ...] = (),
         candidates: tuple[str, ...] = (),
+        external_rule_id: str | None = None,
+        external_provider: str | None = None,
+        external_rule_source: str | None = None,
     ) -> HttpMatchDecision:
         level = "high" if score >= self.rules.high_threshold else "medium" if score >= self.rules.confirmed_threshold else "low"
         return HttpMatchDecision(
@@ -290,6 +499,9 @@ class HttpTopologyMatcher:
             reasons=reasons,
             endpoint_alternatives=endpoint_alternatives,
             candidates=candidates,
+            external_rule_id=external_rule_id,
+            external_provider=external_provider,
+            external_rule_source=external_rule_source,
         )
 
 
@@ -400,6 +612,17 @@ def _alias_members(authority: str, aliases: Iterable[HttpAlias]) -> set[str]:
     }
 
 
+def _external_path_prefix(value: str) -> str:
+    normalized = normalize_path(value)
+    if not normalized:
+        raise ValueError("known external path_prefix must be an absolute path")
+    return normalized
+
+
+def _path_prefix_matches(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(prefix.rstrip("/") + "/")
+
+
 def _coerce_observation(value: HttpObservation | Mapping[str, Any]) -> HttpObservation:
     if isinstance(value, HttpObservation):
         return value
@@ -460,6 +683,8 @@ __all__ = [
     "HttpMatchingRules",
     "HttpObservation",
     "HttpTopologyMatcher",
+    "KnownExternalRegistry",
+    "KnownExternalRule",
     "canonical_authority",
     "join_paths",
     "normalize_path",

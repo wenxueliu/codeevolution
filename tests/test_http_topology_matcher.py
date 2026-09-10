@@ -3,6 +3,8 @@ from codeevolution.analysis.topology.http_matcher import (
     HttpInboundEndpoint,
     HttpObservation,
     HttpTopologyMatcher,
+    KnownExternalRegistry,
+    KnownExternalRule,
     normalize_path,
     route_score,
 )
@@ -74,6 +76,90 @@ def test_explicit_unregistered_authority_is_scope_boundary_not_false_internal_ed
 
     assert result.status == "out_of_scope_or_unregistered"
     assert result.target_member_id is None
+
+
+def test_known_external_requires_an_explicit_exact_registry_match():
+    matcher = HttpTopologyMatcher(
+        known_external_registry=KnownExternalRegistry((
+            KnownExternalRule(
+                "stripe-api",
+                "api.stripe.example",
+                provider="stripe",
+                source="deployment-registry",
+            ),
+        ))
+    )
+    result = matcher.match(
+        _observation(authority="https://api.stripe.example/v1", path="/charges"),
+        [_endpoint()],
+        _aliases(),
+    )
+
+    assert result.status == "known_external"
+    assert result.external_rule_id == "stripe-api"
+    assert result.external_provider == "stripe"
+    assert result.external_rule_source == "deployment-registry"
+    assert result.reasons == ("known_external_registry_match",)
+
+
+def test_unregistered_authority_does_not_become_known_external_from_provider_like_name():
+    matcher = HttpTopologyMatcher(
+        known_external_registry=[{"rule_id": "stripe-api", "authority": "api.stripe.example"}]
+    )
+    result = matcher.match(
+        _observation(authority="api.payments.example"),
+        [_endpoint()],
+        _aliases(),
+    )
+
+    assert result.status == "out_of_scope_or_unregistered"
+    assert result.external_rule_id is None
+    assert result.reasons == ("authority_not_registered_in_view",)
+
+
+def test_multiple_matching_external_rules_are_ambiguous():
+    matcher = HttpTopologyMatcher(
+        known_external_registry=[
+            {"rule_id": "payments", "authority": "payments.example"},
+            {"rule_id": "fraud", "authority": "payments.example"},
+        ]
+    )
+    result = matcher.match(_observation(authority="payments.example"), [_endpoint()], _aliases())
+
+    assert result.status == "ambiguous"
+    assert result.candidates == ("fraud", "payments")
+    assert result.reasons == ("ambiguous_known_external_rule",)
+
+
+def test_internal_alias_external_rule_conflict_is_ambiguous():
+    matcher = HttpTopologyMatcher(
+        known_external_registry=[{"rule_id": "users-external", "authority": "users.internal:8443"}]
+    )
+    result = matcher.match(_observation(), [_endpoint()], _aliases())
+
+    assert result.status == "ambiguous"
+    assert result.reasons == ("internal_alias_conflicts_with_known_external_rule",)
+
+
+def test_external_rule_constraints_are_explainable_and_do_not_widen_identity():
+    matcher = HttpTopologyMatcher(
+        known_external_registry=[
+            {
+                "rule_id": "billing-charges",
+                "authority": "billing.example",
+                "methods": ["POST"],
+                "path_prefixes": ["/charges"],
+            }
+        ]
+    )
+    result = matcher.match(
+        _observation(authority="billing.example", method="GET", path="/refunds"),
+        [_endpoint()],
+        _aliases(),
+    )
+
+    assert result.status == "out_of_scope_or_unregistered"
+    assert result.reasons == ("known_external_rule_constraints_not_matched",)
 
 
 def test_conflicting_aliases_are_ambiguous_even_when_only_one_route_matches():

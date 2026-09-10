@@ -40,6 +40,15 @@ from codeevolution.domain.topology import canonical_aliases, canonical_digest
 SCHEMA_VERSION = 5
 DEFAULT_TOPOLOGY_RULES_DIGEST = canonical_digest({"schema": "topology-rules/v1", "rules": []})
 
+# Retention is deliberately expressed in one place so an administrator can
+# use the same defaults for the catalog scavenger and the CAS sweeper.  The
+# values mirror the contract in the topology implementation design.
+DEFAULT_TOPOLOGY_CACHE_RETENTION_SECONDS = 30 * 24 * 60 * 60
+DEFAULT_TOPOLOGY_JOB_RETENTION_SECONDS = 90 * 24 * 60 * 60
+DEFAULT_TOPOLOGY_READER_LEASE_SECONDS = 60
+MAX_ARTIFACT_REQUEST_SPEC_BYTES = 64 * 1024
+MAX_ARTIFACT_ERROR_BYTES = 2_000
+
 _MIGRATION_2 = """
 CREATE TABLE IF NOT EXISTS snapshot_rule_candidates (
     id TEXT PRIMARY KEY,
@@ -133,6 +142,14 @@ CREATE TABLE IF NOT EXISTS storage_reservations (
     reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes >= 0),
     created_at TEXT NOT NULL, expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS graph_view_artifact_readers (
+    cache_key_digest TEXT NOT NULL,
+    reader_id TEXT NOT NULL,
+    lease_until TEXT NOT NULL,
+    PRIMARY KEY(cache_key_digest, reader_id)
+);
+CREATE INDEX IF NOT EXISTS idx_graph_artifact_readers_expiry
+    ON graph_view_artifact_readers(lease_until);
 """
 
 _ARTIFACT_JOB_V3_TABLE = """
@@ -1277,6 +1294,8 @@ class AnalysisSnapshotSQLiteStore:
         job_id = str(uuid4())
         now = utc_now()
         request_spec_json = _canonical_json(request_spec or {})
+        if len(request_spec_json.encode("utf-8")) > MAX_ARTIFACT_REQUEST_SPEC_BYTES:
+            raise SnapshotStoreError("artifact_request_spec_too_large")
         request_spec_digest = "sha256:" + sha256(request_spec_json.encode()).hexdigest()
         created = False
         with self.connection() as connection, connection:
@@ -1309,6 +1328,22 @@ class AnalysisSnapshotSQLiteStore:
             row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row) if row else None
 
+    @staticmethod
+    def public_artifact_job(job: dict[str, Any]) -> dict[str, Any]:
+        """Return the bounded job contract safe for an HTTP/MCP caller.
+
+        The persisted row may contain an inline topology payload.  Returning
+        that payload from the job-status endpoint both duplicates the cache
+        response and makes a status read an authorization bypass.  Delivery
+        always goes through the View-bound artifact endpoint instead.
+        """
+        result = dict(job)
+        result.pop("payload_json", None)
+        error = result.get("error_message")
+        if isinstance(error, str):
+            result["error_message"] = error[:MAX_ARTIFACT_ERROR_BYTES]
+        return result
+
     def list_artifact_jobs(
         self, view_id: str, *, artifact_kind: str = "topology", limit: int = 20
     ) -> list[dict[str, Any]]:
@@ -1335,26 +1370,157 @@ class AnalysisSnapshotSQLiteStore:
                 (utc_now(), cache_key),
             )
 
-    def scavenge_artifact_cache(self, *, max_age_seconds: int = 7 * 24 * 3600, limit: int = 100) -> list[dict[str, Any]]:
-        """Remove cold cache metadata while active jobs still protect inputs."""
+    def acquire_artifact_cache_reader(
+        self,
+        cache_key: str,
+        *,
+        lease_seconds: int = DEFAULT_TOPOLOGY_READER_LEASE_SECONDS,
+        reader_id: str | None = None,
+    ) -> str:
+        """Acquire a short reader lease before opening a CAS payload.
+
+        Cache scavenging runs in a separate process/thread.  The lease gives
+        it a durable exclusion check instead of relying on an in-memory lock.
+        A missing cache is rejected while holding the same transaction that
+        inserts the lease, closing the select/delete race.
+        """
+        token = reader_id or str(uuid4())
+        seconds = max(1, min(int(lease_seconds), 3600))
+        now_dt = datetime.now(timezone.utc)
+        expires = (now_dt + timedelta(seconds=seconds)).isoformat(timespec="microseconds")
+        with self.connection() as connection, connection:
+            if connection.execute(
+                "SELECT 1 FROM graph_view_artifact_cache WHERE cache_key_digest=?",
+                (cache_key,),
+            ).fetchone() is None:
+                raise KeyError(cache_key)
+            connection.execute(
+                "INSERT OR REPLACE INTO graph_view_artifact_readers(cache_key_digest,reader_id,lease_until) VALUES(?,?,?)",
+                (cache_key, token, expires),
+            )
+        return token
+
+    def renew_artifact_cache_reader(
+        self,
+        cache_key: str,
+        reader_id: str,
+        *,
+        lease_seconds: int = DEFAULT_TOPOLOGY_READER_LEASE_SECONDS,
+    ) -> None:
+        seconds = max(1, min(int(lease_seconds), 3600))
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="microseconds")
+        with self.connection() as connection, connection:
+            updated = connection.execute(
+                "UPDATE graph_view_artifact_readers SET lease_until=? WHERE cache_key_digest=? AND reader_id=?",
+                (expires, cache_key, reader_id),
+            )
+            if updated.rowcount != 1:
+                raise SnapshotStoreError("artifact_reader_lease_missing")
+
+    def release_artifact_cache_reader(self, cache_key: str, reader_id: str) -> None:
+        with self.connection() as connection, connection:
+            connection.execute(
+                "DELETE FROM graph_view_artifact_readers WHERE cache_key_digest=? AND reader_id=?",
+                (cache_key, reader_id),
+            )
+
+    @contextmanager
+    def artifact_cache_reader(
+        self,
+        cache_key: str,
+        *,
+        lease_seconds: int = DEFAULT_TOPOLOGY_READER_LEASE_SECONDS,
+    ) -> Iterator[str]:
+        """Hold a reader lease for the duration of a cache/CAS read."""
+        reader_id = self.acquire_artifact_cache_reader(
+            cache_key, lease_seconds=lease_seconds
+        )
+        try:
+            yield reader_id
+        finally:
+            self.release_artifact_cache_reader(cache_key, reader_id)
+
+    def scavenge_artifact_cache(
+        self,
+        *,
+        max_age_seconds: int = DEFAULT_TOPOLOGY_CACHE_RETENTION_SECONDS,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Remove cold cache metadata using TTL + LRU ordering.
+
+        Active jobs and active reader leases are both exclusion conditions.  A
+        returned row retains its ``artifact_key`` so a caller may run a
+        separate CAS sweep after checking references; this catalog operation
+        never removes a payload behind a reader's back.
+        """
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max(0, max_age_seconds))).isoformat(timespec="microseconds")
         bounded = max(1, min(int(limit), 1000))
         with self.connection() as connection, connection:
+            now = utc_now()
+            connection.execute(
+                "DELETE FROM graph_view_artifact_readers WHERE lease_until<=?",
+                (now,),
+            )
             rows = connection.execute(
                 """SELECT c.* FROM graph_view_artifact_cache c
                    WHERE c.last_accessed_at<?
-                     AND NOT EXISTS (
+                   AND NOT EXISTS (
                        SELECT 1 FROM graph_view_artifact_jobs j
                        WHERE j.cache_key_digest=c.cache_key_digest AND j.status IN ('pending','running')
-                     )
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM graph_view_artifact_readers r
+                       WHERE r.cache_key_digest=c.cache_key_digest AND r.lease_until>?
+                   )
                    ORDER BY c.last_accessed_at LIMIT ?""",
-                (cutoff, bounded),
+                (cutoff, now, bounded),
             ).fetchall()
             result = [dict(row) for row in rows]
             for row in result:
                 connection.execute(
                     "DELETE FROM graph_view_artifact_cache WHERE cache_key_digest=?",
                     (row["cache_key_digest"],),
+                )
+        return result
+
+    def scavenge_artifact_jobs(
+        self,
+        *,
+        max_age_seconds: int = DEFAULT_TOPOLOGY_JOB_RETENTION_SECONDS,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Delete old terminal Job metadata without breaking retry history.
+
+        A retry row points at its previous attempt with ``RESTRICT``.  We
+        therefore only remove terminal rows with no child retry; the next
+        bounded pass can remove older ancestors after their children are gone.
+        Active jobs and their temporary Snapshot references are never touched.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max(0, int(max_age_seconds)))).isoformat(timespec="microseconds")
+        bounded = max(1, min(int(limit), 1000))
+        with self.connection() as connection, connection:
+            rows = connection.execute(
+                """SELECT j.* FROM graph_view_artifact_jobs j
+                   WHERE j.status IN ('completed','failed','cancelled','interrupted')
+                     AND COALESCE(j.completed_at,j.requested_at)<?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM graph_view_artifact_jobs child
+                       WHERE child.retry_of_job_id=j.id
+                     )
+                   ORDER BY COALESCE(j.completed_at,j.requested_at),j.id LIMIT ?""",
+                (cutoff, bounded),
+            ).fetchall()
+            result = [dict(row) for row in rows]
+            for row in result:
+                # Defensive cleanup for databases upgraded from an older
+                # release where a terminal worker might have leaked a ref.
+                connection.execute(
+                    "DELETE FROM snapshot_references WHERE owner_type='artifact_job' AND owner_id=?",
+                    (row["id"],),
+                )
+                connection.execute(
+                    "DELETE FROM graph_view_artifact_jobs WHERE id=? AND status IN ('completed','failed','cancelled','interrupted')",
+                    (row["id"],),
                 )
         return result
 

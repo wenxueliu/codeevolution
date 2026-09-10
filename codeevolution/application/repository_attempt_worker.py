@@ -179,7 +179,9 @@ class RepositoryAttemptWorker:
         self._stage(attempt.id, AttemptStage.ANALYZING, 75)
         facts = self.analyzer(graph.path, inventory)
         snapshot_id = str(uuid4())
-        communication = self._communication_artifact(graph.path, inventory, snapshot_id)
+        communication = self._communication_artifact(
+            graph.path, inventory, snapshot_id, member_id=attempt.member_id
+        )
         communication_bytes = serialize_communication_artifact(communication)
         (staging / "communication.json").write_bytes(communication_bytes)
         communication_key = "sha256:" + directory_digest(staging)
@@ -229,7 +231,12 @@ class RepositoryAttemptWorker:
         self.store.publish_snapshot(attempt.id, evidence, snapshot)
 
     def _communication_artifact(
-        self, graph_path: Path, sources: SnapshotSourceInventory, snapshot_id: str
+        self,
+        graph_path: Path,
+        sources: SnapshotSourceInventory,
+        snapshot_id: str,
+        *,
+        member_id: str | None = None,
     ) -> RepositoryCommunicationArtifact:
         """Build communication facts exclusively from the frozen staging inputs."""
         from codeevolution.infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
@@ -243,7 +250,7 @@ class RepositoryAttemptWorker:
         try:
             with SQLiteCodeGraphRepository(str(graph_path)) as repository:
                 return CommunicationFactExtractor().collect(
-                    repository, sources, rules, snapshot_id=snapshot_id
+                    repository, sources, rules, snapshot_id=snapshot_id, member_id=member_id
                 )
         except Exception as error:
             # Communication evidence is still explicit and auditable when a

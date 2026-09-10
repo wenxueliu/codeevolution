@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
+from codeevolution.analysis.topology.http_matcher import KnownExternalRegistry
+from codeevolution.analysis.topology.snapshot_builder import TopologyArtifactBuilder
 from codeevolution.application.analysis_run_service import (
     AnalysisRunService,
     RepositoryCatalogService,
@@ -32,6 +35,7 @@ class SnapshotRuntime:
         legacy_registry: str | Path | None = None,
         concurrency: int = 2,
         worker=None,
+        known_external_registry: KnownExternalRegistry | dict[str, Any] | list[Any] | None = None,
     ):
         self.data_root = Path(data_root).expanduser().resolve()
         self.store = AnalysisSnapshotSQLiteStore(self.data_root / "analysis-snapshots.db")
@@ -46,7 +50,10 @@ class SnapshotRuntime:
             self.store, self.worker, concurrency=concurrency
         )
         self.graph_artifacts = GraphArtifactService(
-            self.store, self.snapshot_queries, self.artifacts
+            self.store,
+            self.snapshot_queries,
+            self.artifacts,
+            builder=TopologyArtifactBuilder(known_external_registry=known_external_registry),
         )
         self.graph_artifact_scheduler = GraphArtifactScheduler(self.graph_artifacts)
 

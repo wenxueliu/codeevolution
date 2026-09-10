@@ -35,6 +35,12 @@ class _ArtifactService:
         digest_payload.pop("payload_digest", None)
         return {"status": "completed", "payload_json": json.dumps(self.payload), "payload_digest": canonical_digest(digest_payload)}
 
+    def get_job(self, job_id):
+        return {"id": job_id, "status": "pending", "view_id": "view-1"}
+
+    def retry_job(self, job_id):
+        return {"id": job_id, "status": "pending", "view_id": "view-1"}
+
 
 def test_new_graph_artifact_and_query_contracts_are_explicit_and_read_only():
     service = _ArtifactService()
@@ -81,3 +87,15 @@ def test_artifact_post_rejects_non_topology_or_filtered_variant():
         )
         assert malformed.status_code == 422
         assert malformed.json()["error"]["code"] == "malformed_request"
+
+
+def test_job_status_and_retry_use_view_bound_service_methods():
+    service = _ArtifactService()
+    client = TestClient(create_app({"graph_artifact_service": service, "graph_artifact_scheduler": None}))
+
+    with client:
+        status = client.get("/api/graph-artifact-jobs/job-1")
+        assert status.status_code == 200
+        assert status.json()["job"]["view_id"] == "view-1"
+        retry = client.post("/api/graph-artifact-jobs/job-1/retry")
+        assert retry.status_code == 503

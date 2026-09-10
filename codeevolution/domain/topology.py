@@ -158,6 +158,7 @@ class ResolvedGraphView:
     view_id: str
     view_digest: str
     members: tuple[SnapshotHandle | UnavailableMember, ...]
+    topology_rules_digest: str = ""
 
 
 @dataclass(frozen=True)
