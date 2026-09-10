@@ -1401,7 +1401,7 @@ class AnalysisSnapshotSQLiteStore:
             if existing is None:
                 raise KeyError(job_id)
             updated = connection.execute(
-                "UPDATE graph_view_artifact_jobs SET status='completed',payload_json=?,completed_at=? WHERE id=? AND status IN ('pending','running')",
+                "UPDATE graph_view_artifact_jobs SET status='completed',payload_json=?,completed_at=?,stage='finished',lease_until=NULL WHERE id=? AND status IN ('pending','running')",
                 (_canonical_json(payload), utc_now(), job_id),
             )
             if updated.rowcount != 1:
@@ -1422,20 +1422,55 @@ class AnalysisSnapshotSQLiteStore:
             row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row)
 
-    def start_artifact_job(self, job_id: str) -> dict[str, Any]:
+    def start_artifact_job(
+        self, job_id: str, *, worker_id: str = "graph-artifact-worker", lease_seconds: int = 300
+    ) -> dict[str, Any]:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="microseconds")
+        lease_until = (now_dt + timedelta(seconds=lease_seconds)).isoformat(timespec="microseconds")
+        lease_token = str(uuid4())
         with self.connection() as connection, connection:
             connection.execute(
-                "UPDATE graph_view_artifact_jobs SET status='running',started_at=? WHERE id=? AND status='pending'",
-                (utc_now(), job_id),
+                """UPDATE graph_view_artifact_jobs
+                   SET status='running',started_at=COALESCE(started_at,?),worker_id=?,
+                       lease_token=?,lease_until=?,heartbeat_at=?,stage='building'
+                   WHERE id=? AND status='pending'""",
+                (now, worker_id, lease_token, lease_until, now, job_id),
             )
             row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
         if row is None:
             raise KeyError(job_id)
         return dict(row)
 
+    def heartbeat_artifact_job(self, job_id: str, lease_token: str, *, lease_seconds: int = 300) -> dict[str, Any]:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="microseconds")
+        lease_until = (now_dt + timedelta(seconds=lease_seconds)).isoformat(timespec="microseconds")
+        with self.connection() as connection, connection:
+            updated = connection.execute(
+                """UPDATE graph_view_artifact_jobs SET heartbeat_at=?,lease_until=?
+                   WHERE id=? AND status='running' AND lease_token=?""",
+                (now, lease_until, job_id, lease_token),
+            )
+            if updated.rowcount != 1:
+                raise SnapshotStoreError("artifact lease fencing failed")
+            row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row)
+
+    def recover_interrupted_artifact_jobs(self) -> int:
+        now = utc_now()
+        with self.connection() as connection, connection:
+            updated = connection.execute(
+                """UPDATE graph_view_artifact_jobs
+                   SET status='interrupted',completed_at=?,error_code='lease_expired',stage='finished'
+                   WHERE status='running' AND lease_until IS NOT NULL AND lease_until<?""",
+                (now, now),
+            )
+        return updated.rowcount
+
     def cancel_artifact_job(self, job_id: str) -> dict[str, Any]:
         with self.connection() as connection, connection:
-            connection.execute("UPDATE graph_view_artifact_jobs SET status='cancelled',completed_at=? WHERE id=? AND status IN ('pending','running')", (utc_now(), job_id))
+            connection.execute("UPDATE graph_view_artifact_jobs SET status='cancelled',completed_at=?,stage='finished',lease_until=NULL WHERE id=? AND status IN ('pending','running')", (utc_now(), job_id))
             connection.execute("DELETE FROM snapshot_references WHERE owner_type='artifact_job' AND owner_id=?", (job_id,))
             row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
         if row is None:
@@ -1445,7 +1480,7 @@ class AnalysisSnapshotSQLiteStore:
     def fail_artifact_job(self, job_id: str, error: str, *, code: str = "artifact_failed") -> dict[str, Any]:
         with self.connection() as connection, connection:
             updated = connection.execute(
-                "UPDATE graph_view_artifact_jobs SET status='failed',error_code=?,error_message=?,completed_at=? WHERE id=? AND status IN ('pending','running')",
+                "UPDATE graph_view_artifact_jobs SET status='failed',error_code=?,error_message=?,completed_at=?,stage='finished',lease_until=NULL WHERE id=? AND status IN ('pending','running')",
                 (code, error[:2000], utc_now(), job_id),
             )
             if updated.rowcount != 1:

@@ -14,6 +14,8 @@ from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapsh
 from codeevolution.infrastructure.artifact_store_fs import FileSystemArtifactStore
 from codeevolution.infrastructure.snapshot_bundle_resolver import SnapshotBundleResolver
 from codeevolution.application.snapshot_query_service import SnapshotQueryService
+from codeevolution.application.graph_artifact_service import GraphArtifactService
+from codeevolution.application.graph_artifact_scheduler import GraphArtifactScheduler
 from codeevolution.infrastructure.registry_snapshot_migration import (
     legacy_registry_migrated,
     migrate_legacy_registry,
@@ -43,6 +45,10 @@ class SnapshotRuntime:
         self.scheduler = AnalysisScheduler(
             self.store, self.worker, concurrency=concurrency
         )
+        self.graph_artifacts = GraphArtifactService(
+            self.store, self.snapshot_queries, self.artifacts
+        )
+        self.graph_artifact_scheduler = GraphArtifactScheduler(self.graph_artifacts)
 
     def start(self) -> None:
         self.scheduler.start(recover=True)
@@ -51,4 +57,5 @@ class SnapshotRuntime:
         self.scheduler.notify()
 
     def close(self) -> None:
+        self.graph_artifact_scheduler.close()
         self.scheduler.close()

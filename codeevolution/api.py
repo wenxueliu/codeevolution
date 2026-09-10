@@ -330,9 +330,17 @@ def get_graph_artifact_service():
     dependencies = _request_dependencies.get()
     if injected := dependencies.get("graph_artifact_service"):
         return injected
-    from .application.graph_artifact_service import GraphArtifactService
     runtime = get_snapshot_runtime()
-    return GraphArtifactService(runtime.store, get_snapshot_query_service(), runtime.artifacts)
+    return runtime.graph_artifacts
+
+
+def get_graph_artifact_scheduler():
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("graph_artifact_scheduler"):
+        return injected
+    if dependencies.get("graph_artifact_service") is not None:
+        return None
+    return get_snapshot_runtime().graph_artifact_scheduler
 
 
 def get_snapshot_topology_service():
@@ -772,6 +780,9 @@ def create_graph_artifact_job(
         status = 409 if code in {"view_has_no_analyzable_members", "legacy_mixed_scope_view"} else 424 if code in {"snapshot_unavailable", "snapshot_artifact_corrupt"} else 422
         raise HTTPException(status, code) from error
     response.headers["Location"] = f"/api/graph-artifact-jobs/{job['id']}"
+    scheduler = get_graph_artifact_scheduler()
+    if scheduler is not None and hasattr(scheduler, "submit") and job.get("status") == "pending":
+        scheduler.submit(job["id"])
     if job.get("status") == "completed":
         response.status_code = 200
     else:
