@@ -46,6 +46,10 @@ class TopologyQueryService:
             "coverage": artifact.get("coverage", {}),
             "unknown_boundaries": artifact.get("coverage", {}).get("unknown_boundaries", []),
         }
+        result["downstream_direct"] = [item for item in result["downstream_dependencies"] if item["depth"] == 1]
+        result["downstream_transitive"] = [item for item in result["downstream_dependencies"] if item["depth"] > 1]
+        result["upstream_direct"] = [item for item in result["upstream_dependents"] if item["depth"] == 1]
+        result["upstream_transitive"] = [item for item in result["upstream_dependents"] if item["depth"] > 1]
         if include_resources:
             result["resources"] = [
                 item for item in artifact.get("resource_dependencies", [])
@@ -187,7 +191,12 @@ class TopologyQueryService:
     @staticmethod
     def _shared_resource_risks(artifact: Mapping[str, Any], member_id: str) -> list[dict[str, Any]]:
         resources = artifact.get("resource_dependencies", [])
-        own = {str(item.get("resource", {}).get("instance_id")) for item in resources if item.get("source_member_id") == member_id}
+        own = {
+            str(item.get("resource", {}).get("instance_id"))
+            for item in resources
+            if item.get("source_member_id") == member_id
+            and str(item.get("resource", {}).get("instance_id")) not in {"", "None", "unresolved"}
+        }
         result = []
         for resource in resources:
             if resource.get("source_member_id") != member_id and str(resource.get("resource", {}).get("instance_id")) in own:

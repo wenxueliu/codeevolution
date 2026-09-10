@@ -1463,7 +1463,9 @@ class AnalysisSnapshotSQLiteStore:
                 raise SnapshotStoreError("artifact job is not active")
             now = utc_now()
             payload_json = _canonical_json(payload)
-            payload_digest = sha256(payload_json.encode()).hexdigest()
+            digest_value = dict(payload)
+            digest_value.pop("payload_digest", None)
+            payload_digest = "sha256:" + sha256(_canonical_json(digest_value).encode()).hexdigest()
             storage = "artifact" if artifact_key else "inline"
             connection.execute(
                 """INSERT OR REPLACE INTO graph_view_artifact_cache

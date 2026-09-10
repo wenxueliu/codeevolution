@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
-from codeevolution.analysis.communication.entry_collector import collect_entries, reachable_call_paths
+from codeevolution.analysis.communication.entry_collector import (
+    collect_entries,
+    reachable_call_paths,
+)
 from codeevolution.analysis.communication.schema import (
     CollectorCoverage,
     CollectorResult,
@@ -18,7 +20,6 @@ from codeevolution.analysis.communication.schema import (
     RepositoryCommunicationArtifact,
     build_communication_artifact,
 )
-
 
 HTTP_PATTERNS = (
     "requests.", "httpx.", "aiohttp.", "urllib", "fetch", "axios.", "RestTemplate.",
@@ -192,13 +193,38 @@ def _http_payload(sources, caller, call_line, callee_name):
     text = sources.snippet(caller.file_path, max(1, call_line - 2), call_line + 2) if caller else None
     raw = _first_url(text or "")
     method = _method(callee_name)
-    if raw.startswith("http"):
-        parsed = urlsplit(raw)
+    sanitized = _sanitize_url(raw)
+    if sanitized.startswith("http"):
+        parsed = urlsplit(sanitized)
         authority = parsed.netloc
         path = parsed.path or "/"
     else:
-        authority, path = None, raw if raw.startswith("/") else None
-    return {"request": {"method": method, "raw_url": raw or None, "authority": authority, "normalized_path": path}}
+        authority, path = None, sanitized if sanitized.startswith("/") else None
+    return {"request": {"method": method, "raw_url": sanitized or None, "authority": authority, "normalized_path": path}}
+
+
+def _sanitize_url(raw: str) -> str:
+    """Drop URL credentials, query values and fragments before persistence."""
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    if not parsed.scheme and not parsed.netloc:
+        return parsed.path + _safe_query(parsed.query)
+    host = parsed.hostname or ""
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None:
+        host = f"{host}:{port}"
+    return f"{parsed.scheme}://{host}{parsed.path or '/'}{_safe_query(parsed.query)}"
+
+
+def _safe_query(query: str) -> str:
+    if not query:
+        return ""
+    keys = [key for key, _value in parse_qsl(query, keep_blank_values=True) if key]
+    return "?" + "&".join(sorted(set(keys))) if keys else ""
 
 
 def _channel(sources, caller, line):

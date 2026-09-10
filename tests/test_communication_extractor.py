@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from codeevolution.analysis.communication.extractor import CommunicationFactExtractor
+from codeevolution.analysis.communication.extractor import CommunicationFactExtractor, _sanitize_url
 from codeevolution.analysis.communication.schema import CollectorRuleSet
 from codeevolution.domain.knowledge import CallTarget, EntryPointDef, FunctionDef
 
@@ -67,3 +67,7 @@ def test_extractor_drops_test_entries_and_keeps_dynamic_calls_unresolved():
 
     assert artifact.entries == ()
     assert artifact.http_outbounds == ()
+
+
+def test_http_url_sanitization_preserves_identity_but_not_credentials_or_query_values():
+    assert _sanitize_url("https://user:secret@users.internal:8443/orders?id=42&token=hidden#fragment") == "https://users.internal:8443/orders?id&token"
