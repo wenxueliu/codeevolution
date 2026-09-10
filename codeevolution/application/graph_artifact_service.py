@@ -71,7 +71,8 @@ class GraphArtifactService:
         self._ensure_analyzable(view_id)
         spec = self.topology_request_spec(view_id)
         return self.store.create_artifact_job(
-            view_id=view_id, artifact_kind=artifact_kind, cache_key=spec.cache_key
+            view_id=view_id, artifact_kind=artifact_kind, cache_key=spec.cache_key,
+            request_spec=spec.to_dict(),
         )
 
     def run_job(self, job_id: str) -> dict:

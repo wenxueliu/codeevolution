@@ -37,7 +37,7 @@ from codeevolution.domain.analysis_snapshot import (
 )
 from codeevolution.domain.topology import canonical_aliases, canonical_digest
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_TOPOLOGY_RULES_DIGEST = canonical_digest({"schema": "topology-rules/v1", "rules": []})
 
 _MIGRATION_2 = """
@@ -105,7 +105,11 @@ CREATE TABLE graph_view_artifact_jobs_v3 (
     retry_of_job_id TEXT REFERENCES graph_view_artifact_jobs_v3(id) ON DELETE RESTRICT,
     status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled','interrupted')),
     payload_json TEXT, error_code TEXT, error_message TEXT, requested_at TEXT NOT NULL,
-    started_at TEXT, completed_at TEXT, UNIQUE(cache_key_digest, attempt_no)
+    started_at TEXT, completed_at TEXT,
+    request_spec_json TEXT NOT NULL DEFAULT '{}', request_spec_digest TEXT NOT NULL DEFAULT '',
+    worker_id TEXT, lease_token TEXT, lease_until TEXT, heartbeat_at TEXT,
+    stage TEXT NOT NULL DEFAULT 'queued', progress_json TEXT NOT NULL DEFAULT '{}',
+    cancellation_requested_at TEXT, UNIQUE(cache_key_digest, attempt_no)
 );
 INSERT INTO graph_view_artifact_jobs_v3
  (id,view_id,cache_key_digest,artifact_kind,attempt_no,status,payload_json,error_message,requested_at,completed_at)
@@ -406,6 +410,20 @@ class AnalysisSnapshotSQLiteStore:
             return
         columns = {item["name"] for item in connection.execute("PRAGMA table_info(graph_view_artifact_jobs)")}
         if "attempt_no" in columns:
+            additions = {
+                "request_spec_json": "TEXT NOT NULL DEFAULT '{}'",
+                "request_spec_digest": "TEXT NOT NULL DEFAULT ''",
+                "worker_id": "TEXT",
+                "lease_token": "TEXT",
+                "lease_until": "TEXT",
+                "heartbeat_at": "TEXT",
+                "stage": "TEXT NOT NULL DEFAULT 'queued'",
+                "progress_json": "TEXT NOT NULL DEFAULT '{}'",
+                "cancellation_requested_at": "TEXT",
+            }
+            for name, definition in additions.items():
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE graph_view_artifact_jobs ADD COLUMN {name} {definition}")
             return
         connection.execute("ALTER TABLE graph_view_artifact_jobs RENAME TO graph_view_artifact_jobs_legacy")
         connection.executescript(_ARTIFACT_JOB_V3_TABLE)
@@ -1252,18 +1270,25 @@ class AnalysisSnapshotSQLiteStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def create_artifact_job(self, *, view_id: str, artifact_kind: str, cache_key: str) -> dict[str, Any]:
+    def create_artifact_job(
+        self, *, view_id: str, artifact_kind: str, cache_key: str,
+        request_spec: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         job_id = str(uuid4())
         now = utc_now()
+        request_spec_json = _canonical_json(request_spec or {})
+        request_spec_digest = "sha256:" + sha256(request_spec_json.encode()).hexdigest()
         with self.connection() as connection, connection:
             row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE cache_key_digest=? ORDER BY attempt_no DESC LIMIT 1", (cache_key,)).fetchone()
             if row is None or row["status"] in ("failed", "cancelled", "interrupted"):
                 attempt = (int(row["attempt_no"]) + 1) if row is not None else 1
                 retry_of = row["id"] if row is not None else None
                 connection.execute(
-                    """INSERT INTO graph_view_artifact_jobs(id,view_id,cache_key_digest,artifact_kind,attempt_no,retry_of_job_id,status,requested_at)
-                       VALUES(?,?,?,?,?,?, 'pending',?)""",
-                    (job_id, view_id, cache_key, artifact_kind, attempt, retry_of, now),
+                    """INSERT INTO graph_view_artifact_jobs
+                       (id,view_id,cache_key_digest,artifact_kind,attempt_no,retry_of_job_id,status,requested_at,request_spec_json,request_spec_digest)
+                       VALUES(?,?,?,?,?,?, 'pending',?,?,?)""",
+                    (job_id, view_id, cache_key, artifact_kind, attempt, retry_of, now,
+                     request_spec_json, request_spec_digest),
                 )
                 row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
                 # Protect every input snapshot while the job is active.
@@ -1388,12 +1413,12 @@ class AnalysisSnapshotSQLiteStore:
             connection.execute(
                 """INSERT OR REPLACE INTO graph_view_artifact_cache
                    (cache_key_digest,view_digest,artifact_kind,created_at,last_accessed_at,payload_storage,payload_json,artifact_key,payload_digest,byte_size)
-                   SELECT j.cache_key_digest, v.digest, j.artifact_kind, ?, ?, ?, ?, ?, ?, ?, ?
+                   SELECT j.cache_key_digest, v.digest, j.artifact_kind, ?, ?, ?, ?, ?, ?, ?
                    FROM graph_view_artifact_jobs j JOIN graph_views v ON v.id=j.view_id WHERE j.id=?""",
                 (now, now, storage, None if artifact_key else payload_json, artifact_key,
                  payload_digest, len(payload_json.encode()), job_id),
             )
-            connection.execute("UPDATE snapshot_references SET state='permanent',expires_at=NULL WHERE owner_type='artifact_job' AND owner_id=?", (job_id,))
+            connection.execute("DELETE FROM snapshot_references WHERE owner_type='artifact_job' AND owner_id=?", (job_id,))
             row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row)
 
@@ -1440,9 +1465,10 @@ class AnalysisSnapshotSQLiteStore:
             with connection:
                 connection.execute(
                     """INSERT INTO graph_view_artifact_jobs
-                       (id,view_id,cache_key_digest,artifact_kind,attempt_no,retry_of_job_id,status,requested_at)
-                       VALUES(?,?,?,?,?,?, 'pending',?)""",
-                    (new_id, row["view_id"], row["cache_key_digest"], row["artifact_kind"], int(row["attempt_no"])+1, job_id, now),
+                       (id,view_id,cache_key_digest,artifact_kind,attempt_no,retry_of_job_id,status,requested_at,request_spec_json,request_spec_digest)
+                       VALUES(?,?,?,?,?,?, 'pending',?,?,?)""",
+                    (new_id, row["view_id"], row["cache_key_digest"], row["artifact_kind"], int(row["attempt_no"])+1, job_id, now,
+                     row["request_spec_json"], row["request_spec_digest"]),
                 )
                 snapshots = connection.execute(
                     "SELECT snapshot_id FROM graph_view_members WHERE view_id=? AND snapshot_id IS NOT NULL",
