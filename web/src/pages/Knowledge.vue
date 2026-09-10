@@ -1,11 +1,30 @@
 <template>
   <div class="knowledge">
+    <template v-if="!snapshotId">
+      <div class="page-header">
+        <div><h1>知识中心</h1><p>选择一个已发布的项目 Snapshot，查看该项目的结构知识。</p></div>
+        <router-link class="secondary" :to="{ name: 'snapshots' }">管理 Snapshots</router-link>
+      </div>
+      <UiState v-if="catalogError" kind="error" title="项目知识目录加载失败" :message="catalogError.message" action-label="重试" @action="loadCatalog" />
+      <UiState v-else-if="catalogLoading" kind="loading" title="正在加载项目知识目录" />
+      <section v-else-if="projectCatalog.length" class="project-list" data-testid="knowledge-projects">
+        <article v-for="project in projectCatalog" :key="project.member_id" class="project-card" data-testid="knowledge-project">
+          <div>
+            <h2>{{ project.display_name }}</h2>
+            <p>{{ project.scope_name }} · 已发布 Snapshot</p>
+            <code>{{ project.snapshot_id }}</code>
+          </div>
+          <router-link class="primary" :to="knowledgeLink(project)">查看知识</router-link>
+        </article>
+      </section>
+      <UiState v-else kind="empty" title="还没有已发布的项目知识" message="请先在 Snapshots 中运行分析并发布 Snapshot。">
+        <router-link class="primary" :to="{ name: 'snapshots' }">前往 Snapshots</router-link>
+      </UiState>
+    </template>
+
+    <template v-else>
     <UiState v-if="error" kind="error" title="知识提取失败" :message="error.message" action-label="重试" dismiss-label="关闭" @action="load(false)" @dismiss="error = null" />
     <UiState v-if="loading" kind="loading" title="正在从 CodeGraph 提取结构知识" message="大型仓库可能需要等待片刻，完成前可以继续浏览当前结果。" />
-
-    <UiState v-if="!loading && !error && !snapshotId" kind="empty" title="尚未选择 Repository Snapshot" message="请先在 Snapshots 中运行分析并选择一个已发布的 Snapshot。">
-      <router-link class="primary" :to="{ name: 'snapshots' }">前往 Snapshots</router-link>
-    </UiState>
 
     <div v-if="snapshotId" class="page-header">
       <div>
@@ -285,12 +304,19 @@
         </div>
       </section>
     </div>
+    </template>
   </div>
 </template>
 
 <script>
 import UiState from '../components/UiState.vue'
 import CallChainTree from '../components/CallChainTree.vue'
+
+function snapshotIdFromRoute(route) {
+  return route?.query?.snapshot_id
+    || new URLSearchParams(window.location.search).get('snapshot_id')
+    || ''
+}
 
 const SECTIONS = [
   ['api_contract', 'API 契约', 'Phase 1', '路由、方法、处理函数与参数'],
@@ -333,12 +359,11 @@ export default {
     // (/#/repo/snapshot?snapshot_id=...), so window.location.search is empty.
     // Prefer Vue Router's parsed query and keep the window query as a fallback
     // for embedded/direct usages of this page.
-    const snapshotId = this.$route?.query?.snapshot_id
-      || new URLSearchParams(window.location.search).get('snapshot_id')
-      || ''
+    const snapshotId = snapshotIdFromRoute(this.$route)
     return {
       snapshotId,
       report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS,
+      projectCatalog: [], catalogLoading: false, catalogError: null,
       expandedKeys: new Set(), expandedEntityKeys: new Set(),
       endpointSearch: '', endpointMethod: '', endpointService: '', endpointPage: 1, endpointPageSize: 25,
       loadedAt: '', loadDuration: 0,
@@ -375,14 +400,75 @@ export default {
     endpointMethods() { return [...new Set((this.report?.api_contract?.endpoints || []).map(item => item.method).filter(Boolean))].sort() },
     endpointServices() { return [...new Set((this.report?.api_contract?.endpoints || []).map(item => item.repository).filter(Boolean))].sort() },
   },
+  watch: {
+    '$route': {
+      async handler(route) {
+        const snapshotId = snapshotIdFromRoute(route)
+        if (snapshotId === this.snapshotId) return
+        this.snapshotId = snapshotId
+        this.report = null
+        this.llmLoaded = false
+        this.businessRules = {}
+        this.projectCatalog = []
+        this.error = null
+        if (snapshotId) {
+          await this.load(false)
+          await this.loadBusinessRules()
+        } else {
+          await this.loadCatalog()
+        }
+      },
+      deep: true,
+    },
+  },
   async created() {
-    await this.load(false)
-    await this.loadBusinessRules()
+    if (this.snapshotId) {
+      await this.load(false)
+      await this.loadBusinessRules()
+    } else {
+      await this.loadCatalog()
+    }
   },
   beforeUnmount() {
     for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
   },
   methods: {
+    async loadCatalog() {
+      this.catalogLoading = true
+      this.catalogError = null
+      try {
+        const data = await this.$api.get('/api/scopes')
+        const projects = []
+        for (const scope of data.scopes || []) {
+          const members = await this.$api.get(`/api/scopes/${encodeURIComponent(scope.id)}/members`)
+          for (const member of members.members || []) {
+            const snapshots = await this.$api.get(`/api/repository-members/${encodeURIComponent(member.id)}/snapshots`, { limit: 1 })
+            const snapshot = snapshots.items?.[0]
+            if (snapshot?.id) {
+              projects.push({
+                scope_id: scope.id,
+                scope_name: scope.name,
+                member_id: member.id,
+                display_name: member.display_name,
+                snapshot_id: snapshot.id,
+              })
+            }
+          }
+        }
+        this.projectCatalog = projects
+      } catch (error) {
+        this.catalogError = error
+      } finally {
+        this.catalogLoading = false
+      }
+    },
+    knowledgeLink(project) {
+      return {
+        name: 'knowledge',
+        params: { repoName: project.display_name || project.member_id },
+        query: { snapshot_id: project.snapshot_id },
+      }
+    },
     async load(includeLlm) {
       const started = performance.now()
       if (!this.snapshotId) {
@@ -868,6 +954,11 @@ td code { color: #666; word-break: break-all; }
 .br-actions { display: flex; gap: 6px; margin-top: 8px; }
 .sm { padding: 5px 10px; font-size: 11px; }
 .json-view { max-height: 650px; overflow: auto; margin: 0; padding: 16px; border-radius: 6px; background: #171725; color: #d8d8e5; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.project-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.project-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px; border: 1px solid #e2e5eb; border-radius: 8px; background: #fff; }
+.project-card h2 { margin: 0 0 6px; font-size: 18px; color: #252b36; }
+.project-card p { margin: 0 0 7px; color: #777; font-size: 13px; }
+.project-card code { color: #666; font-size: 11px; overflow-wrap: anywhere; }
 .empty-semantic, .empty-state { text-align: center; padding: 60px 20px; color: #888; }
 .empty-semantic p { margin-bottom: 14px; }
 @media (max-width: 900px) {

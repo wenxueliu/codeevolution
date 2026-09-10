@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { reactive } from 'vue'
 
 import App from '../src/App.vue'
 import Home from '../src/pages/Home.vue'
@@ -20,7 +21,10 @@ const RouterLink = {
       const params = this.to?.params || {}
       if (this.to?.name === 'snapshots') return '/snapshots'
       if (this.to?.name === 'graph-view') return params.viewId ? `/graph-views/${params.viewId}` : '/graph-views'
-      if (this.to?.name === 'knowledge') return `/repo/${params.repoName}`
+      if (this.to?.name === 'knowledge') {
+        const snapshotId = this.to?.query?.snapshot_id
+        return `/repo/${params.repoName}${snapshotId ? `?snapshot_id=${snapshotId}` : ''}`
+      }
       if (this.to?.name === 'knowledge-home') return '/knowledge'
       return '/'
     },
@@ -70,26 +74,100 @@ describe('repository and knowledge pages', () => {
       },
     })
     const links = wrapper.findAll('.nav-links a')
-    expect(links[0].attributes('href')).toBe('/repo/snapshot')
-    expect(links[2].attributes('href')).toBe('/graph-views/view-1')
+    expect(links[0].attributes('href')).toBe('/knowledge')
+    expect(links[2].attributes('href')).toBe('/graph-views')
+  })
+
+  it('uses persisted current Snapshot and Graph View from the top-level navigation', () => {
+    window.sessionStorage.setItem('codeevolution:last-snapshot-id', 'snap-persisted')
+    window.sessionStorage.setItem('codeevolution:last-snapshot-member', 'mall')
+    window.sessionStorage.setItem('codeevolution:last-graph-view-id', 'view-persisted')
+    const wrapper = mount(App, {
+      global: {
+        components: { RouterLink },
+        stubs: { RepositoryAssistant: true, LLMSettings: true, 'router-view': true },
+        mocks: { $route: { params: {}, query: {} }, $router: { push: vi.fn() } },
+      },
+    })
+    const links = wrapper.findAll('.nav-links a')
+    expect(links[0].attributes('href')).toBe('/knowledge')
+    expect(links[2].attributes('href')).toBe('/graph-views')
+    wrapper.unmount()
+  })
+
+  it('lists every project with a published Snapshot in the Knowledge Center', async () => {
+    const { wrapper, api } = mountPage(Knowledge, {
+      '/api/scopes': { scopes: [
+        { id: 'scope-harness', name: 'harness_framework' },
+        { id: 'scope-mall', name: 'mall' },
+        { id: 'scope-codeos', name: 'codeos' },
+      ] },
+      '/api/scopes/scope-harness/members': { members: [{ id: 'member-harness', display_name: 'harness_framework' }] },
+      '/api/scopes/scope-mall/members': { members: [{ id: 'member-mall', display_name: 'mall' }] },
+      '/api/scopes/scope-codeos/members': { members: [{ id: 'member-codeos', display_name: 'codeos' }] },
+      '/api/repository-members/member-harness/snapshots': { items: [{ id: 'snapshot-harness' }] },
+      '/api/repository-members/member-mall/snapshots': { items: [{ id: 'snapshot-mall' }] },
+      '/api/repository-members/member-codeos/snapshots': { items: [{ id: 'snapshot-codeos' }] },
+    }, {}, { query: {} })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="knowledge-projects"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('harness_framework')
+    expect(wrapper.text()).toContain('mall')
+    expect(wrapper.text()).toContain('codeos')
+    expect(wrapper.findAll('[data-testid="knowledge-project"]').length).toBe(3)
+    expect(api.get).not.toHaveBeenCalledWith('/api/knowledge', expect.anything())
+  })
+
+  it('loads project knowledge when opening a project from the catalog', async () => {
+    const route = reactive({ params: {}, query: {} })
+    const { wrapper, api } = mountPage(Knowledge, {
+      '/api/scopes': { scopes: [{ id: 'scope-mall', name: 'mall' }] },
+      '/api/scopes/scope-mall/members': { members: [{ id: 'member-mall', display_name: 'mall' }] },
+      '/api/repository-members/member-mall/snapshots': { items: [{ id: 'snapshot-mall' }] },
+      '/api/knowledge': { api_contract: { endpoint_count: 1, endpoints: [] } },
+      '/api/business-rules': { rules: [] },
+    }, {}, route)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="knowledge-projects"]').exists()).toBe(true)
+
+    route.query = { snapshot_id: 'snapshot-mall' }
+    await flushPromises()
+    expect(api.get).toHaveBeenCalledWith('/api/knowledge', { snapshot_id: 'snapshot-mall', include_llm: false })
+    expect(wrapper.text()).toContain('基于不可变 Repository Snapshot 推导')
   })
 
   it('guides the user to Snapshots when Knowledge has no snapshot context', async () => {
     const { wrapper, api } = mountPage(Knowledge, {}, { repoName: '' }, { query: {} })
     await flushPromises()
-    expect(wrapper.text()).toContain('尚未选择 Repository Snapshot')
+    expect(wrapper.text()).toContain('还没有已发布的项目知识')
     expect(wrapper.text()).toContain('请先在 Snapshots 中运行分析')
     expect(wrapper.find('a[href="/snapshots"]').exists()).toBe(true)
-    expect(api.get).not.toHaveBeenCalled()
+    expect(api.get).toHaveBeenCalledWith('/api/scopes')
   })
 
-  it('guides the user to Snapshots when Graph View has no view context', async () => {
+  it('lists all Graph Views and guides to Snapshots when the catalog is empty', async () => {
+    const { wrapper, api } = mountPage(GraphView, {
+      '/api/graph-views': { views: [
+        { id: 'view-1', lifecycle: 'pinned', completeness: 'complete', members: [{ member_id: 'mall' }] },
+        { id: 'view-2', lifecycle: 'ephemeral', completeness: 'incomplete', members: [{ member_id: 'codeos' }] },
+      ] },
+    }, {}, { query: {} })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="graph-views"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="graph-view-card"]')).toHaveLength(2)
+    expect(wrapper.text()).toContain('view-1')
+    expect(wrapper.text()).toContain('view-2')
+    expect(api.get).toHaveBeenCalledWith('/api/graph-views')
+    wrapper.unmount()
+  })
+
+  it('guides the user to Snapshots when the Graph View catalog is empty', async () => {
     const { wrapper, api } = mountPage(GraphView, {}, {}, { query: {} })
     await flushPromises()
-    expect(wrapper.text()).toContain('尚未选择 Graph View')
-    expect(wrapper.text()).toContain('请先在 Snapshots 中创建当前 View')
+    expect(wrapper.text()).toContain('还没有 Graph View')
+    expect(wrapper.text()).toContain('请先在 Snapshots 中选择成员并创建当前 View')
     expect(wrapper.find('a[href="/snapshots"]').exists()).toBe(true)
-    expect(api.get).not.toHaveBeenCalled()
+    expect(api.get).toHaveBeenCalledWith('/api/graph-views')
   })
 
   it('loads a Graph View topology and keeps view_id when selecting impact and flow', async () => {
@@ -273,6 +351,25 @@ describe('repository and knowledge pages', () => {
     expect(api.request).toHaveBeenCalledWith('/api/scopes/scope-shop/members', expect.objectContaining({ method: 'POST', body: JSON.stringify({ display_name: 'shop', registered_path: '/workspace/shop' }) }))
   })
 
+  it('keeps the add-member input interactive instead of navigating the repository card', async () => {
+    const { wrapper, api } = mountPage(Home, {
+      '/api/scopes': { scopes: [{ id: 'scope-mall', name: 'mall' }] },
+      '/api/scopes/scope-mall/members': { members: [{ id: 'member-mall', display_name: 'mall', registered_path: '/workspace/mall' }] },
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="add-member"]').trigger('click')
+    const input = wrapper.find('[data-testid="member-repository-path"]')
+    await input.setValue('/workspace/mall-admin-web')
+    expect(input.element.value).toBe('/workspace/mall-admin-web')
+
+    await wrapper.find('[data-testid="confirm-member-repository"]').trigger('click')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/scopes/scope-mall/members', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ display_name: 'mall-admin-web', registered_path: '/workspace/mall-admin-web' }),
+    }))
+  })
+
   it('selects scope members and follows an analysis run through cancel and failed-member retry', async () => {
     const runningRun = {
       id: 'run-1', status: 'running', members: [
@@ -324,6 +421,7 @@ describe('repository and knowledge pages', () => {
     await wrapper.vm.createView()
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('查看跨仓图谱')
+    expect(window.sessionStorage.getItem('codeevolution:last-graph-view-id')).toBe('view-1')
     wrapper.unmount()
   })
 
@@ -343,6 +441,8 @@ describe('repository and knowledge pages', () => {
     const memberCheckboxes = wrapper.findAll('tbody input[type="checkbox"]')
     expect(memberCheckboxes).toHaveLength(2)
     expect(memberCheckboxes.every(({ element }) => !element.checked)).toBe(true)
+    expect(window.sessionStorage.getItem('codeevolution:last-snapshot-id')).toBe('snap-mall')
+    expect(window.sessionStorage.getItem('codeevolution:last-snapshot-member')).toBe('mall')
 
     await wrapper.find('input[aria-label="选择 mall"]').setValue(true)
     await wrapper.findAll('.actions button').find(button => button.text() === '运行分析').trigger('click')

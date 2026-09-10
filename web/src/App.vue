@@ -26,10 +26,17 @@
 <script>
 import RepositoryAssistant from './components/RepositoryAssistant.vue'
 import LLMSettings from './components/LLMSettings.vue'
+import { NAVIGATION_CONTEXT_EVENT, readNavigationContext } from './navigationContext.js'
 
 export default {
   components: { LLMSettings, RepositoryAssistant },
-  data: () => ({ settingsOpen: false }),
+  data: () => ({ settingsOpen: false, navigationContext: readNavigationContext() }),
+  created() {
+    window.addEventListener(NAVIGATION_CONTEXT_EVENT, this.refreshNavigationContext)
+  },
+  beforeUnmount() {
+    window.removeEventListener(NAVIGATION_CONTEXT_EVENT, this.refreshNavigationContext)
+  },
   computed: {
     repoName() {
       return this.$route.params.repoName || ''
@@ -38,18 +45,15 @@ export default {
       return this.$route.params.viewId || ''
     },
     knowledgeRoute() {
-      const snapshotId = this.$route.query?.snapshot_id || ''
-      if (!this.repoName && !snapshotId) return { name: 'knowledge-home' }
-      return {
-        name: 'knowledge',
-        params: { repoName: this.repoName || 'snapshot' },
-        query: snapshotId ? { snapshot_id: snapshotId } : undefined,
-      }
+      return { name: 'knowledge-home' }
     },
     graphViewRoute() {
-      return this.graphViewId
-        ? { name: 'graph-view', params: { viewId: this.graphViewId } }
-        : { name: 'graph-view' }
+      return { name: 'graph-view' }
+    },
+  },
+  methods: {
+    refreshNavigationContext(event) {
+      this.navigationContext = event?.detail || readNavigationContext()
     },
   },
 }

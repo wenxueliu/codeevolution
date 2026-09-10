@@ -34,11 +34,11 @@
         <h2>{{ scope.name }}</h2>
         <table><thead><tr><th><input :aria-label="`选择 ${scope.name} 全部成员`" type="checkbox" :checked="scopeSelected(scope)" :indeterminate.prop="scopeIndeterminate(scope)" @change="toggleScope(scope, $event.target.checked)"></th><th>成员</th><th>当前 Snapshot</th><th>状态</th><th></th></tr></thead>
           <tbody><tr v-for="member in scope.members" :key="member.id">
-            <td><input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="`选择 ${member.display_name}`"></td>
+            <td><input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="`选择 ${member.display_name}`" @change="rememberMemberSnapshot(member)"></td>
             <td>{{ member.display_name }}</td>
             <td><code>{{ member.current_snapshot_id || '—' }}</code></td>
-            <td>{{ member.current_snapshot_id ? '已发布' : '未解析' }}</td>
-            <td><router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id)">查看知识</router-link></td>
+            <td>{{ member.current_snapshot_id ? '已发布' : '未解析' }}<span v-if="member.check" data-testid="change-status" :class="`status-${member.check.status}`"> · {{ changeStatusText(member.check.status) }}</span></td>
+            <td class="member-actions"><router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">查看知识</router-link><button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? '检查中...' : '检查改动' }}</button></td>
           </tr></tbody>
         </table>
       </section>
@@ -49,6 +49,7 @@
 
 <script>
 import UiState from '../components/UiState.vue'
+import { readNavigationContext, rememberNavigationContext } from '../navigationContext.js'
 
 const ACTIVE_RUN_STATUSES = ['pending', 'running']
 const RETRYABLE_ATTEMPT_STATUSES = ['failed', 'cancelled', 'interrupted']
@@ -57,7 +58,7 @@ const LAST_RUN_KEY = 'codeevolution:last-analysis-run-id'
 
 export default {
   components: { UiState },
-  data() { return { scopes: [], selectedIds: [], loading: false, error: null, view: null, activeRun: null, runBusy: false, pollTimer: null } },
+  data() { return { scopes: [], selectedIds: [], loading: false, error: null, view: null, activeRun: null, runBusy: false, pollTimer: null, checkingIds: {} } },
   computed: {
     selectedMemberIds() { return this.selectedIds.filter(id => this.memberIds.includes(id)) },
     memberIds() { return this.scopes.flatMap(scope => scope.members.map(member => member.id)) },
@@ -87,15 +88,41 @@ export default {
         }
         this.scopes = scopes
         this.selectedIds = this.selectedIds.filter(id => this.memberIds.includes(id))
+        const members = scopes.flatMap(scope => scope.members)
+        const context = readNavigationContext()
+        const current = members.find(member => member.current_snapshot_id === context.snapshotId)
+          || members.find(member => member.current_snapshot_id)
+        if (current && current.current_snapshot_id !== context.snapshotId) {
+          rememberNavigationContext({ snapshotId: current.current_snapshot_id, snapshotMember: current.display_name })
+        }
       } catch (error) { this.error = error } finally { this.loading = false }
     },
-    knowledgeLink(snapshotId) { return { name: 'knowledge', params: { repoName: 'snapshot' }, query: { snapshot_id: snapshotId } } },
+    knowledgeLink(snapshotId, memberName) { return { name: 'knowledge', params: { repoName: memberName || 'snapshot' }, query: { snapshot_id: snapshotId } } },
+    rememberMemberSnapshot(member) {
+      if (member?.current_snapshot_id) rememberNavigationContext({ snapshotId: member.current_snapshot_id, snapshotMember: member.display_name })
+    },
+    changeStatusText(status) { return ({ unchanged: '未变化', source_changed: '现场已变化', analyzer_outdated: '分析器已更新', unparsed: '未解析', check_failed: '检查失败' })[status] || status || '未知' },
+    async checkMember(member) {
+      this.checkingIds[member.id] = true
+      try {
+        const response = await this.$api.request('/api/repository-members/check', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ member_ids: [member.id] }),
+        })
+        member.check = response.items?.[0] || { status: 'check_failed', error_message: '检查未返回结果' }
+      } catch (error) {
+        member.check = { status: 'check_failed', error_message: error.message || '检查失败' }
+      } finally {
+        delete this.checkingIds[member.id]
+      }
+    },
     memberName(memberId) { return this.scopes.flatMap(scope => scope.members).find(member => member.id === memberId)?.display_name || memberId },
     scopeSelected(scope) { return scope.members.length > 0 && scope.members.every(member => this.selectedIds.includes(member.id)) },
     scopeIndeterminate(scope) { return !this.scopeSelected(scope) && scope.members.some(member => this.selectedIds.includes(member.id)) },
     toggleScope(scope, checked) {
       const ids = scope.members.map(member => member.id)
       this.selectedIds = checked ? [...new Set([...this.selectedIds, ...ids])] : this.selectedIds.filter(id => !ids.includes(id))
+      if (checked) this.rememberMemberSnapshot(scope.members.find(member => member.current_snapshot_id))
     },
     runStatusText(status) { return ({ pending: '等待中', running: '运行中', completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' })[status] || status || '—' },
     attemptStatusText(status) { return ({ pending: '等待中', running: '运行中', completed: '已完成', unchanged: '无变更', failed: '失败', cancelled: '已取消', interrupted: '已中断', queued: '已排队', already_running: '已有任务运行中' })[status] || status || '—' },
@@ -111,6 +138,14 @@ export default {
       try {
         const response = await this.$api.request('/api/graph-views/current', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ member_ids: this.selectedMemberIds }) })
         this.view = response.view || response
+        if (this.view?.id) {
+          const selected = this.scopes.flatMap(scope => scope.members).find(member => this.selectedMemberIds.includes(member.id) && member.current_snapshot_id)
+          rememberNavigationContext({
+            viewId: this.view.id,
+            snapshotId: selected?.current_snapshot_id,
+            snapshotMember: selected?.display_name,
+          })
+        }
       } catch (error) { this.error = error }
     },
     async createRun() {
@@ -166,6 +201,7 @@ export default {
 .snapshot-scope, .run-card { margin-bottom: 24px; }
 .view-card, .run-card { padding: 12px; background: #f4f7fb; border-radius: 6px; }
 .view-card { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; }
+.member-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .view-card small { color: #777; flex: 1; }
 .run-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .run-actions { display: flex; gap: 8px; flex-wrap: wrap; }

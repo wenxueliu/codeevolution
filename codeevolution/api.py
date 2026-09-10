@@ -730,6 +730,11 @@ def create_current_graph_view(request: CurrentGraphViewRequest):
     return {"view": _resource(view)}
 
 
+@app.get("/api/graph-views")
+def list_graph_views():
+    return {"views": [_resource(item) for item in get_graph_view_service().list_views()]}
+
+
 @app.post("/api/graph-views", status_code=201)
 def create_explicit_graph_view(request: ExplicitGraphViewRequest):
     from .domain.analysis_snapshot import GraphViewMember, ViewAvailability

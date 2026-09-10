@@ -1,8 +1,27 @@
 <template>
   <div class="graph-view-page">
-    <UiState v-if="!viewId" kind="empty" title="尚未选择 Graph View" message="请先在 Snapshots 中创建当前 View。">
-      <router-link class="primary" :to="{ name: 'snapshots' }">前往 Snapshots</router-link>
-    </UiState>
+    <template v-if="!viewId">
+      <div class="page-header">
+        <div><h1>Graph View</h1><p>选择一个已创建的 View，查看固定快照集合的跨仓拓扑。</p></div>
+        <router-link class="secondary" :to="{ name: 'snapshots' }">管理 Snapshots</router-link>
+      </div>
+      <UiState v-if="catalogError" kind="error" title="Graph View 目录加载失败" :message="catalogError.message" action-label="重试" @action="loadCatalog" />
+      <UiState v-else-if="catalogLoading" kind="loading" title="正在加载 Graph View 目录" />
+      <section v-else-if="viewCatalog.length" class="view-list" data-testid="graph-views">
+        <article v-for="view in viewCatalog" :key="view.id" class="view-card" data-testid="graph-view-card">
+          <div>
+            <h2>{{ view.label || '未命名 View' }}</h2>
+            <p>{{ view.lifecycle === 'pinned' ? '已固定' : '临时 View' }} · {{ view.completeness === 'complete' ? '快照完整' : '包含不可用成员' }}</p>
+            <p>{{ view.members?.length || 0 }} 个成员：{{ memberNames(view) }}</p>
+            <code>{{ view.id }}</code>
+          </div>
+          <router-link class="primary" :to="{ name: 'graph-view', params: { viewId: view.id } }">查看 View</router-link>
+        </article>
+      </section>
+      <UiState v-else kind="empty" title="还没有 Graph View" message="请先在 Snapshots 中选择成员并创建当前 View。">
+        <router-link class="primary" :to="{ name: 'snapshots' }">前往 Snapshots</router-link>
+      </UiState>
+    </template>
 
     <template v-else>
     <div class="page-header">
@@ -78,15 +97,38 @@ import UiState from '../components/UiState.vue'
 export default {
   components: { UiState },
   props: { viewId: { type: String, default: '' } },
-  data() { return { artifact: null, selectedService: '', impact: {}, flow: {}, method: 'GET', path: '', loading: false, artifactLoading: false, analysisLoading: false, error: null, analysisError: null, jobStatus: null, pollTimer: null } },
+  data() { return { viewCatalog: [], catalogLoading: false, catalogError: null, artifact: null, selectedService: '', impact: {}, flow: {}, method: 'GET', path: '', loading: false, artifactLoading: false, analysisLoading: false, error: null, analysisError: null, jobStatus: null, pollTimer: null } },
   computed: {
     services() { return this.artifact?.services || [] },
     serviceEdges() { return this.artifact?.service_projections || [] },
   },
-  watch: { viewId() { this.load() } },
-  async created() { await this.load() },
+  watch: {
+    async viewId(value) {
+      if (value) await this.load()
+      else await this.loadCatalog()
+    },
+  },
+  async created() {
+    if (this.viewId) await this.load()
+    else await this.loadCatalog()
+  },
   beforeUnmount() { this.stopPolling() },
   methods: {
+    async loadCatalog() {
+      this.catalogLoading = true
+      this.catalogError = null
+      try {
+        const response = await this.$api.get('/api/graph-views')
+        this.viewCatalog = response.views || []
+      } catch (error) {
+        this.catalogError = error
+      } finally {
+        this.catalogLoading = false
+      }
+    },
+    memberNames(view) {
+      return (view.members || []).map((member) => member.display_name || member.member_id).join('、') || '无成员'
+    },
     async load() {
       if (!this.viewId) {
         this.loading = false
@@ -159,6 +201,11 @@ export default {
 .service-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }.service-list button { border: 1px solid #c7d2e3; background: #f6f8fb; border-radius: 5px; padding: 8px 10px; cursor: pointer; }.service-list button.active { color: #fff; background: #315d9b; border-color: #315d9b; }.service-list small { margin-left: 5px; opacity: .75; }
 .edge-list { display: grid; gap: 10px; }.edge-card p { margin: 8px 0; }.edge-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }.badge, .confidence { padding: 2px 6px; border-radius: 10px; font-size: 12px; background: #e8f0fc; }.confidence { background: #eef2f5; } details { margin-top: 8px; } summary { cursor: pointer; } pre { overflow: auto; padding: 10px; background: #f6f8fa; border-radius: 4px; font-size: 12px; }
 .analysis-heading { display: flex; justify-content: space-between; gap: 20px; align-items: start; }.analysis-heading label { display: grid; gap: 4px; font-size: 13px; }.analysis-heading input { padding: 7px; border: 1px solid #bbb; border-radius: 4px; }.analysis-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }.analysis-columns > div { padding: 12px; background: #f8fafc; border-radius: 6px; }.analysis-columns ul, .analysis-columns ol { margin-bottom: 0; }.muted { color: #667085; }
+.view-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.view-list .view-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px; border: 1px solid var(--border, #ddd); border-radius: 8px; background: #fff; }
+.view-list .view-card h2 { margin: 0 0 6px; font-size: 18px; }
+.view-list .view-card p { margin: 0 0 6px; color: #667085; font-size: 13px; }
+.view-list .view-card code { overflow-wrap: anywhere; font-size: 11px; color: #666; }
 .artifact-empty { text-align: center; }.primary { border: 0; border-radius: 5px; padding: 9px 15px; color: #fff; background: #315d9b; cursor: pointer; }.primary:disabled { opacity: .6; cursor: wait; }.entry-input { display: flex; gap: 6px; }.entry-input input:first-child { width: 58px; }
 @media (max-width: 700px) { .view-meta, .analysis-columns { grid-template-columns: 1fr; }.analysis-heading { display: block; }.analysis-heading label { margin-top: 12px; } }
 </style>

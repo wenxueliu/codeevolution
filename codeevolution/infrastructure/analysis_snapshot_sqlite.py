@@ -2047,6 +2047,28 @@ class AnalysisSnapshotSQLiteStore:
             ).fetchall()
         return self._view(row, member_rows)
 
+    def list_views(self) -> list[GraphView]:
+        """Return all graph views that are still available for browsing.
+
+        Ephemeral views are intentionally omitted after their expiry window;
+        pinned views have no expiry and remain visible in the catalog.
+        """
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM graph_views
+                   WHERE lifecycle='pinned' OR expires_at > ?
+                   ORDER BY created_at DESC,id DESC""",
+                (now,),
+            ).fetchall()
+            members_by_view: dict[str, list[sqlite3.Row]] = {}
+            for row in rows:
+                members_by_view[row["id"]] = connection.execute(
+                    "SELECT * FROM graph_view_members WHERE view_id=? ORDER BY ordinal",
+                    (row["id"],),
+                ).fetchall()
+        return [self._view(row, members_by_view[row["id"]]) for row in rows]
+
     def pin_view(self, view_id: str, *, label: str = "", note: str = "") -> GraphView:
         # Validate expiry before converting temporary references.
         if self.get_view(view_id, touch=False) is None:

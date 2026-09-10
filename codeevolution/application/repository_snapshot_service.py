@@ -72,6 +72,9 @@ class GraphViewService:
             raise KeyError(view_id)
         return view
 
+    def list_views(self):
+        return self.store.list_views()
+
     def pin(self, view_id: str, *, label: str = "", note: str = "") -> GraphView:
         return self.store.pin_view(view_id, label=label, note=note)
 

@@ -4,13 +4,13 @@
     <UiState v-else-if="loading" kind="loading" title="正在加载代码仓" />
     <div class="page-header">
       <div><h1>代码仓列表</h1><p>查看代码仓索引状态，进入仓库继续分析。</p></div>
-      <button class="primary" type="button" @click="showRegister = !showRegister">{{ showRegister ? '取消添加' : '添加代码仓' }}</button>
+      <button data-testid="add-repository" class="primary" type="button" @click="showRegister = !showRegister">{{ showRegister ? '取消添加' : '添加代码仓' }}</button>
     </div>
 
-    <form v-if="showRegister" class="register-form" @submit.prevent="registerRepo">
-      <label>服务名称<input v-model.trim="newRepo.name" required placeholder="例如：mall" /></label>
-      <label>代码仓绝对路径<input v-model.trim="newRepo.path" required placeholder="例如：/workspace/mall" /></label>
-      <button class="primary" :disabled="registering">{{ registering ? '正在注册...' : '注册代码仓' }}</button>
+    <form v-if="showRegister" data-testid="register-form" class="register-form" @submit.prevent="registerRepo">
+      <label>服务名称<input data-testid="repository-name" v-model.trim="newRepo.name" required placeholder="例如：mall" /></label>
+      <label>代码仓绝对路径<input data-testid="repository-path" v-model.trim="newRepo.path" required placeholder="例如：/workspace/mall" /></label>
+      <button data-testid="register-repository" class="primary" :disabled="registering">{{ registering ? '正在注册...' : '注册代码仓' }}</button>
       <p>注册只保存路径，不会修改代码仓。注册后可在卡片中继续添加同服务的其他代码仓。</p>
     </form>
 
@@ -29,15 +29,15 @@
               <code class="member-path">{{ r.path }}</code> · 单仓服务
             </span>
           </div>
-          <div class="member-add" v-if="addMemberForm[r.name] !== undefined">
-            <input v-model.trim="addMemberPath[r.name]" placeholder="代码仓绝对路径" @keyup.enter="addMember(r)" />
-            <button class="primary sm" :disabled="addingMember[r.name]" @click.stop="addMember(r)">{{ addingMember[r.name] ? '添加中...' : '确认' }}</button>
-            <button class="secondary sm" @click.stop="toggleAddMember(r)">取消</button>
-          </div>
           <div class="repo-enter">查看 Snapshots</div>
         </router-link>
+        <div class="member-add" v-if="addMemberForm[r.name] !== undefined" @click.stop>
+          <input data-testid="member-repository-path" v-model.trim="addMemberPath[r.name]" placeholder="代码仓绝对路径" @keyup.enter="addMember(r)" />
+          <button data-testid="confirm-member-repository" class="primary sm" :disabled="addingMember[r.name]" @click.stop="addMember(r)">{{ addingMember[r.name] ? '添加中...' : '确认' }}</button>
+          <button class="secondary sm" @click.stop="toggleAddMember(r)">取消</button>
+        </div>
         <div class="repo-actions">
-          <button class="add-member-button" type="button" title="添加代码仓" @click.stop="toggleAddMember(r)">+ 代码仓</button>
+          <button data-testid="add-member" class="add-member-button" type="button" title="添加代码仓" @click.stop="toggleAddMember(r)">+ 代码仓</button>
           <button
             class="init-button"
             type="button"
