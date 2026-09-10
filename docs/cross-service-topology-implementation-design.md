@@ -1,6 +1,6 @@
 # 跨服务调用关系 Snapshot 化实现设计
 
-> 状态：设计已确认，核心实现已落地（2026-09-10）；Tier-1 真实项目准确性与生产授权策略仍需在目标环境验收。
+> 状态：设计已确认，核心实现已落地（2026-09-10）；Tier-1 真实项目准确性、部署性能与生产授权策略仍需在目标环境验收。
 >
 > 范围：单个 Scope 内的服务拓扑、资源依赖、服务依赖影响、静态可能流程
 >
@@ -1207,40 +1207,43 @@ users --HTTP--> gateway
 
 ## 21. 最终验收清单
 
-- [ ] Graph View 强制单 Scope，member 即 service；
-- [ ] View 冻结 display name、声明别名和 topology rule identity；
-- [ ] Repository Snapshot 发布 communication summary + immutable detail artifact；
-- [ ] 所有通信事实只来自冻结 graph/source；
-- [ ] 所有服务调用从已识别生产入口可达；
-- [ ] 相对 URL 无 binding 时不产生 confirmed edge；
+- [x] Graph View 强制单 Scope，member 即 service；
+- [x] View 冻结 display name、声明别名和 topology rule identity；
+- [x] Repository Snapshot 发布 communication summary + immutable detail artifact；
+- [x] 所有通信事实只来自冻结 graph/source；
+- [x] 所有服务调用从已识别生产入口可达；
+- [x] 相对 URL 无 binding 时不产生 confirmed edge；
 - [ ] confirmed、ambiguous、out-of-scope、known external、unresolved 严格分离；
-- [ ] HTTP/MQ/gRPC 服务边与 Redis/DB 资源边严格分离；
-- [ ] broadcast 与 competing consumer 语义正确；
-- [ ] observation、endpoint dependency、service projection 三层可追溯；
-- [ ] 每条 confirmed edge 有 typed evidence、规则和可解释置信度；
-- [ ] Partial Topology 明确 coverage 和 unknown boundaries；
-- [ ] Topology 是唯一异步持久 Artifact；
-- [ ] Impact/Flow 同步读取同一 Topology，不建立派生 Job；
-- [ ] Impact 返回 upstream/downstream direct/transitive；
-- [ ] Flow 返回 rooted graph、branch/merge/cycle/truncation；
-- [ ] GET 只读、POST 显式创建 Job；
-- [ ] Job request spec、lease、heartbeat、fencing、retry 和引用释放正确；
-- [ ] Artifact payload 不含 view ID，交付 envelope 包含请求 view ID；
-- [ ] Scope 外依赖不进入内部 Service Graph 或继续遍历；
-- [ ] 旧 Snapshot 不 live fallback，旧公开接口无兼容保留；
+- [x] HTTP/MQ/gRPC 服务边与 Redis/DB 资源边严格分离；
+- [x] broadcast 与 competing consumer 语义正确；
+- [x] observation、endpoint dependency、service projection 三层可追溯；
+- [x] 每条 confirmed edge 有 typed evidence、规则和可解释置信度；
+- [x] Partial Topology 明确 coverage 和 unknown boundaries；
+- [x] Topology 是唯一异步持久 Artifact；
+- [x] Impact/Flow 同步读取同一 Topology，不建立派生 Job；
+- [x] Impact 返回 upstream/downstream direct/transitive；
+- [x] Flow 返回 rooted graph、branch/merge/cycle/truncation；
+- [x] GET 只读、POST 显式创建 Job；
+- [x] Job request spec、lease、heartbeat、fencing、retry 和引用释放正确；
+- [x] Artifact payload 不含 view ID，交付 envelope 包含请求 view ID；
+- [x] Scope 外依赖不进入内部 Service Graph 或继续遍历；
+- [x] 旧 Snapshot 不 live fallback，旧公开接口无兼容保留；
 - [ ] 不包含实体对齐能力；
 - [ ] Tier-1 golden/真实项目准确性门禁通过；
-- [ ] 删除或移动原仓库后，同一 View 重建出相同 payload digest；
-- [ ] API、CLI、MCP、Web 使用同一 application service 和 DTO；
+- [x] 删除或移动原仓库后，同一 View 重建出相同 payload digest；
+- [x] API、CLI、MCP、Web 使用同一 application service 和 DTO；
 - [ ] Artifact/Job retention、LRU/TTL 和授权约束生效；
 - [ ] 全量测试、前端构建、服务重启和 `/api/repos` 冒烟验证通过。
 
 ## 22. 实施验收记录
 
-当前代码已验证：后端全量测试、通信事实/拓扑构建/Job fencing/API/CLI 回归测试，以及前端
-Vite production build。剩余验收项不是接口缺失，而是部署环境相关工作：
+当前代码已验证：后端全量 **227** 项测试、通信事实/拓扑构建/Job fencing/API/CLI 回归测试，以及
+前端 Vite production build。通信 collector 已接入版本化 Tier-1 支持矩阵、调用路径 coverage、
+语义 ID、manifest 边界、payload/Artifact 摘要校验；API/Web/MCP/CLI 均通过同一 Graph Artifact
+application service 交付。剩余验收项不是接口缺失，而是部署环境相关工作：
 
 1. 使用 Tier-1 实际项目补齐 proto descriptor、broker binding 和框架特定 collector 的 golden
-   accuracy 门禁；
+   accuracy 门禁（规则矩阵和预算已落盘，真实项目标注尚未随仓库提供）；
 2. 在部署环境启用管理员身份后再公开 Job cancel（当前共享 API 不暴露 cancel）；
-3. 运行服务重启、`/api/repos` 冒烟和性能基准，确认数据目录与线程并发参数符合部署配置。
+3. 在部署环境运行服务重启、`/api/repos` 冒烟和性能基准，确认数据目录、CAS 清理和线程并发
+   参数符合部署配置；当前开发容器已在隔离端口完成构建启动探测，但默认 8765 被外部进程占用。
