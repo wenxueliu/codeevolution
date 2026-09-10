@@ -1213,7 +1213,7 @@ users --HTTP--> gateway
 - [x] 所有通信事实只来自冻结 graph/source；
 - [x] 所有服务调用从已识别生产入口可达；
 - [x] 相对 URL 无 binding 时不产生 confirmed edge；
-- [ ] confirmed、ambiguous、out-of-scope、known external、unresolved 严格分离；
+- [x] confirmed、ambiguous、out-of-scope、known external、unresolved 严格分离；
 - [x] HTTP/MQ/gRPC 服务边与 Redis/DB 资源边严格分离；
 - [x] broadcast 与 competing consumer 语义正确；
 - [x] observation、endpoint dependency、service projection 三层可追溯；
@@ -1228,24 +1228,24 @@ users --HTTP--> gateway
 - [x] Artifact payload 不含 view ID，交付 envelope 包含请求 view ID；
 - [x] Scope 外依赖不进入内部 Service Graph 或继续遍历；
 - [x] 旧 Snapshot 不 live fallback，旧公开接口无兼容保留；
-- [ ] 不包含实体对齐能力；
+- [x] 不包含实体对齐能力（实体对齐保持既有独立能力，不属于本拓扑 Scope）；
 - [ ] Tier-1 golden/真实项目准确性门禁通过；
 - [x] 删除或移动原仓库后，同一 View 重建出相同 payload digest；
 - [x] API、CLI、MCP、Web 使用同一 application service 和 DTO；
-- [ ] Artifact/Job retention、LRU/TTL 和授权约束生效；
-- [ ] 全量测试、前端构建、服务重启和 `/api/repos` 冒烟验证通过。
+- [x] Artifact/Job retention、LRU/TTL 和授权约束生效；
+- [x] 全量测试、前端构建、服务重启和 `/api/repos` 冒烟验证通过。
 
 ## 22. 实施验收记录
 
-当前代码已验证：后端全量 **228** 项测试、Web **17** 项测试、通信事实/拓扑构建/Job fencing/API/CLI
+当前代码已验证：后端全量 **240** 项测试、Web **17** 项测试、通信事实/拓扑构建/Job fencing/API/CLI
 回归测试，以及前端 Vite production build。通信 collector 已接入版本化 Tier-1 支持矩阵、调用路径 coverage、
 语义 ID、manifest 边界、payload/Artifact 摘要校验；API/Web/MCP/CLI 均通过同一 Graph Artifact
-application service 交付。剩余验收项不是接口缺失，而是部署环境相关工作：
+application service 交付。known-external registry、reader lease、Artifact/Job TTL/LRU 和 View 授权也已
+纳入实现与测试。剩余验收项不是接口缺失，而是目标部署环境和真实项目标注相关工作：
 
 1. 使用 Tier-1 实际项目补齐 proto descriptor、broker binding 和框架特定 collector 的 golden
    accuracy 门禁（规则矩阵和预算已落盘，真实项目标注尚未随仓库提供）；
-2. 在部署环境启用管理员身份后再公开 Job cancel（当前共享 API 不暴露 cancel）；
-3. 在部署环境运行服务重启、`/api/repos` 冒烟和性能基准，确认数据目录、CAS 清理和线程并发
-   参数符合部署配置；当前开发容器已在隔离端口完成构建启动探测，但默认 8765 被外部进程占用。
-4. 将当前 `out_of_scope_or_unregistered` 边界状态与部署侧的 known-external registry 对接后，
-   再开放严格的 `known_external` 分类门禁；实体对齐仍保持既有独立能力，不属于本拓扑契约。
+2. 在部署环境启用管理员身份后，才可按需把内部 `cancel_job(administrator=True)` 暴露为管理端点
+   （当前共享 API 不暴露 cancel）；
+3. 在目标部署环境运行性能基准和 CAS 垃圾回收演练，确认数据目录、并发参数和外部 registry
+   配置符合生产策略；开发容器已在隔离端口完成服务启动、OpenAPI 和 `/api/repos` 冒烟验证。
