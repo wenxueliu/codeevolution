@@ -38,21 +38,45 @@ def _authority_matches_alias(authority: str, alias: str) -> bool:
     return bool(normalized_authority and normalized_authority == normalized_alias)
 
 
-def _message_match_key(messaging: Mapping[str, Any]) -> tuple[Any, ...]:
+def _message_match_key(messaging: Mapping[str, Any], *, include_channel: bool = True) -> tuple[Any, ...]:
     """Return the broker identity fields required for safe message pairing."""
-    return tuple(
-        messaging.get(name)
-        for name in (
+    names = (
             "protocol",
             "broker_instance_hint",
             "destination_kind",
             "exchange",
             "routing_key",
             "queue",
-            "channel",
             "consumer_group",
         )
-    )
+    if include_channel:
+        names = names + ("channel",)
+    return tuple(messaging.get(name) for name in names)
+
+
+def _message_channel_matches(protocol: str, source: str, target: str) -> bool:
+    """Apply only broker wildcard semantics that are statically unambiguous."""
+    if not source or not target:
+        return False
+    if source == target:
+        return True
+    protocol = str(protocol or "").lower()
+    if protocol == "rabbitmq":
+        source_parts, target_parts = source.split("."), target.split(".")
+        if len(source_parts) != len(target_parts):
+            return False
+        return all(a == b or a == "*" or b == "*" for a, b in zip(source_parts, target_parts))
+    if protocol == "nats":
+        source_parts, target_parts = source.split("."), target.split(".")
+        for left, right in zip(source_parts, target_parts):
+            if left in {"*", ">"} or right in {"*", ">"}:
+                if left == ">" or right == ">":
+                    return True
+                continue
+            if left != right:
+                return False
+        return len(source_parts) == len(target_parts)
+    return False
 
 
 def _plain_json(value: Any) -> Any:
@@ -370,7 +394,11 @@ class TopologyArtifactBuilder:
                 if target.member_id == member.member_id:
                     continue
                 target_messaging = dict(subscription.payload).get("messaging", {})
-                if _message_match_key(messaging) != _message_match_key(target_messaging):
+                if _message_match_key(messaging, include_channel=False) != _message_match_key(
+                    target_messaging, include_channel=False
+                ):
+                    continue
+                if not _message_channel_matches(protocol, channel, str(target_messaging.get("channel") or "")):
                     continue
                 matched_identity = True
                 if delivery not in {"broadcast", "fanout"} or target_messaging.get("delivery_semantics", "unknown") not in {"broadcast", "fanout"}:

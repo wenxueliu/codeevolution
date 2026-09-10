@@ -255,3 +255,24 @@ def test_message_publisher_without_consumer_is_retained_as_unresolved_candidate(
     )
     assert payload["endpoint_dependencies"] == []
     assert any(item["reason"] == "no_matching_consumer" for item in payload["candidates"])
+
+
+def test_message_matching_applies_broker_wildcards_without_substring_matching():
+    producer = SnapshotHandle("producer", "snap-producer", "producer", (), "facts", "artifact", "complete")
+    consumer = SnapshotHandle("consumer", "snap-consumer", "consumer", (), "facts", "artifact", "complete")
+    pub = _observation(
+        "message:rabbit-pub", "producer.entry",
+        {"messaging": {"channel": "orders.created", "protocol": "rabbitmq", "delivery_semantics": "broadcast"}},
+    )
+    sub = _observation(
+        "message:rabbit-sub", "consumer.entry",
+        {"messaging": {"channel": "orders.*", "protocol": "rabbitmq", "delivery_semantics": "broadcast"}},
+    )
+    payload = TopologyArtifactBuilder().build(
+        _view(producer, consumer),
+        {
+            "snap-producer": _artifact("snap-producer", entries=(_entry("snap-producer", "producer.entry", "POST", "/"),), messages=(pub,)),
+            "snap-consumer": _artifact("snap-consumer", entries=(_entry("snap-consumer", "consumer.entry", "POST", "/"),), subscriptions=(sub,)),
+        },
+    )
+    assert any(item["kind"] == "message" for item in payload["endpoint_dependencies"])
