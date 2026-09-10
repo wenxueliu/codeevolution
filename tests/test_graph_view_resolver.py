@@ -3,7 +3,10 @@ from types import SimpleNamespace
 import pytest
 
 from codeevolution.analysis.communication.schema import RepositoryCommunicationArtifact
-from codeevolution.application.graph_view_resolver import GraphViewResolutionError, GraphViewResolver
+from codeevolution.application.graph_view_resolver import (
+    GraphViewResolutionError,
+    GraphViewResolver,
+)
 from codeevolution.domain.analysis_snapshot import GraphViewMember, ViewAvailability
 from codeevolution.domain.topology import UnavailableMember
 

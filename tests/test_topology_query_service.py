@@ -1,6 +1,9 @@
 import pytest
 
-from codeevolution.application.topology_query_service import TopologyQueryError, TopologyQueryService
+from codeevolution.application.topology_query_service import (
+    TopologyQueryError,
+    TopologyQueryService,
+)
 
 
 def _artifact():

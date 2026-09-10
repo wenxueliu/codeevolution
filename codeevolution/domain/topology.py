@@ -8,14 +8,13 @@ of the persisted artifact contract.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass
-from hashlib import sha256
 import json
 import posixpath
 import re
+from dataclasses import asdict, dataclass, is_dataclass
+from hashlib import sha256
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
-
 
 TOPOLOGY_ARTIFACT_SCHEMA_VERSION = "topology-artifact/v1"
 GRAPH_ARTIFACT_KEY_SCHEMA_VERSION = "graph-artifact-key/v1"

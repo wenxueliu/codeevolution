@@ -9,17 +9,17 @@ from codeevolution.application.analysis_run_service import (
     RepositoryCatalogService,
 )
 from codeevolution.application.analysis_scheduler import AnalysisScheduler
+from codeevolution.application.graph_artifact_scheduler import GraphArtifactScheduler
+from codeevolution.application.graph_artifact_service import GraphArtifactService
 from codeevolution.application.repository_attempt_worker import RepositoryAttemptWorker
+from codeevolution.application.snapshot_query_service import SnapshotQueryService
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
 from codeevolution.infrastructure.artifact_store_fs import FileSystemArtifactStore
-from codeevolution.infrastructure.snapshot_bundle_resolver import SnapshotBundleResolver
-from codeevolution.application.snapshot_query_service import SnapshotQueryService
-from codeevolution.application.graph_artifact_service import GraphArtifactService
-from codeevolution.application.graph_artifact_scheduler import GraphArtifactScheduler
 from codeevolution.infrastructure.registry_snapshot_migration import (
     legacy_registry_migrated,
     migrate_legacy_registry,
 )
+from codeevolution.infrastructure.snapshot_bundle_resolver import SnapshotBundleResolver
 
 
 class SnapshotRuntime:

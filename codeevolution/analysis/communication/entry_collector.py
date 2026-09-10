@@ -86,7 +86,7 @@ def _entry_kind(entry_type: str, method: str | None, path: str | None) -> str:
 
 
 def _excluded_path(path: str) -> bool:
-    normalized = f"/{path.replace('\\', '/').lower()}/"
+    normalized = "/" + path.replace("\\", "/").lower() + "/"
     return any(token in normalized for token in ("/test/", "/tests/", "/benchmark/", "/benchmarks/", "/example/", "/examples/", "/migration/", "/migrations/", "/dev/"))
 
 

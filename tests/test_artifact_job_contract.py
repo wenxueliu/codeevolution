@@ -1,14 +1,17 @@
 import json
 
 from codeevolution.domain.analysis_snapshot import EvidenceBundle, RepositoryAnalysisSnapshot
-from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore, SnapshotStoreError
+from codeevolution.infrastructure.analysis_snapshot_sqlite import (
+    AnalysisSnapshotSQLiteStore,
+    SnapshotStoreError,
+)
 
 
 def _store(tmp_path):
     store = AnalysisSnapshotSQLiteStore(tmp_path / "analysis.db")
     store.create_scope("shop", scope_id="scope")
     store.create_member("scope", "orders", "/repos/orders", "path:orders", member_id="orders")
-    run = store.create_run(["orders"])
+    store.create_run(["orders"])
     attempt = store.claim_next_attempt("worker")
     evidence = EvidenceBundle("evidence", "sha256:evidence", "1", "source", "graph", "blob", 1, "capture", "complete")
     snapshot = RepositoryAnalysisSnapshot(

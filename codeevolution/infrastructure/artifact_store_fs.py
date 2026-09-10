@@ -12,8 +12,8 @@ import hashlib
 import os
 import re
 import shutil
-import uuid
 import time
+import uuid
 from pathlib import Path
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")

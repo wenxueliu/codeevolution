@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 
 from codeevolution.analysis.communication.extractor import CommunicationFactExtractor, _sanitize_url
 from codeevolution.analysis.communication.schema import CollectorRuleSet

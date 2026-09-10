@@ -64,7 +64,7 @@ def test_snapshot_queries_do_not_need_the_original_checkout(tmp_path):
     store = AnalysisSnapshotSQLiteStore(data / "analysis.db")
     scope = store.create_scope("scope")
     member = RepositoryCatalogService(store).add_member(scope.id, "checkout", str(repo))
-    run = store.create_run([member.id])
+    store.create_run([member.id])
     attempt = store.claim_next_attempt("test-worker")
     artifacts = FileSystemArtifactStore(data)
     RepositoryAttemptWorker(store, artifacts, command_runner=_Runner(), analyzer=lambda *_: {"answer": 42})(attempt)

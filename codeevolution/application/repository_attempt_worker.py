@@ -6,8 +6,8 @@ import hashlib
 import json
 import shutil
 import sqlite3
-from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -29,7 +29,10 @@ from codeevolution.domain.analysis_snapshot import (
     RepositoryAnalysisSnapshot,
     RepositoryAttempt,
 )
-from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore, SnapshotStoreError
+from codeevolution.infrastructure.analysis_snapshot_sqlite import (
+    AnalysisSnapshotSQLiteStore,
+    SnapshotStoreError,
+)
 from codeevolution.infrastructure.artifact_store_fs import (
     FileSystemArtifactStore,
     directory_digest,
@@ -87,11 +90,9 @@ class RepositoryAttemptWorker:
 
     def __call__(self, attempt: RepositoryAttempt) -> None:
         staging: Path | None = None
-        reserved = False
         try:
             staging = self.artifacts.create_staging(attempt.id)
             self._execute(attempt, staging)
-            reserved = True
         except AttemptCancelledError:
             self._finish_cancelled(attempt.id)
             if staging is not None:
