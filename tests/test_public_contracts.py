@@ -125,6 +125,7 @@ def test_openapi_path_snapshot():
         "/api/call-tree/rule/generate",
         "/api/chat",
         "/api/graph-artifact-jobs/{job_id}",
+        "/api/graph-artifact-jobs/{job_id}/retry",
         "/api/graph-views",
         "/api/graph-views/current",
         "/api/graph-views/{view_id}",

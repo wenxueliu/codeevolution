@@ -71,3 +71,17 @@ def test_extractor_drops_test_entries_and_keeps_dynamic_calls_unresolved():
 
 def test_http_url_sanitization_preserves_identity_but_not_credentials_or_query_values():
     assert _sanitize_url("https://user:secret@users.internal:8443/orders?id=42&token=hidden#fragment") == "https://users.internal:8443/orders?id&token"
+
+
+def test_message_consumer_without_framework_entry_is_promoted_to_entry():
+    graph = _Graph()
+    consumer = FunctionDef("consumer-node", "consume", "app.consume", "src/consumer.py", "python", 20, 22, "function")
+    graph.functions = lambda: [graph.handler, graph.client, consumer]
+    graph.mq_consumers = lambda pattern: [{"node_id": "consumer-node", "name": "kafka.consume", "start_line": 20}] if pattern == "consume" else []
+    graph.callees = lambda node_id: []
+    sources = _Sources()
+    artifact = CommunicationFactExtractor().collect(
+        graph, sources, CollectorRuleSet("sha256:rules", "rules/v1"), snapshot_id="snapshot-1"
+    )
+    assert any(item.kind == "message_consumer" for item in artifact.entries)
+    assert artifact.message_subscriptions

@@ -13,6 +13,7 @@ from codeevolution.application.graph_view_resolver import (
     GraphViewResolver,
 )
 from codeevolution.domain.topology import SnapshotHandle
+from codeevolution.infrastructure.analysis_snapshot_sqlite import ViewExpiredError
 from codeevolution.infrastructure.artifact_store_fs import directory_digest
 
 
@@ -68,7 +69,10 @@ class GraphArtifactService:
         params = params or {}
         if artifact_kind != "topology" or params:
             raise GraphArtifactRequestError("invalid_artifact_request")
-        self._ensure_analyzable(view_id)
+        try:
+            self._ensure_analyzable(view_id)
+        except GraphViewResolutionError as error:
+            raise GraphArtifactRequestError(str(error)) from error
         spec = self.topology_request_spec(view_id)
         return self.store.create_artifact_job(
             view_id=view_id, artifact_kind=artifact_kind, cache_key=spec.cache_key,
@@ -189,7 +193,10 @@ class GraphArtifactService:
             raise GraphArtifactRequestError("view_has_no_analyzable_members")
 
     def _view(self, view_id: str):
-        view = self.store.get_view(view_id)
+        try:
+            view = self.store.get_view(view_id)
+        except ViewExpiredError as error:
+            raise GraphArtifactRequestError("view_expired") from error
         if view is None:
             raise KeyError(view_id)
         return view

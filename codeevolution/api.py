@@ -772,7 +772,7 @@ def create_graph_artifact_job(
         raise HTTPException(404, "view_not_found") from error
     except GraphArtifactRequestError as error:
         code = str(error)
-        status = 409 if code in {"view_has_no_analyzable_members", "legacy_mixed_scope_view"} else 424 if code in {"snapshot_unavailable", "snapshot_artifact_corrupt"} else 422
+        status = 410 if code in {"view_expired", "snapshot_gone"} else 409 if code in {"view_has_no_analyzable_members", "legacy_mixed_scope_view"} else 424 if code in {"snapshot_unavailable", "snapshot_artifact_corrupt"} else 422
         raise HTTPException(status, code) from error
     response.headers["Location"] = f"/api/graph-artifact-jobs/{job['id']}"
     scheduler = get_graph_artifact_scheduler()
@@ -803,7 +803,8 @@ def _topology_artifact_delivery(view_id: str) -> dict[str, Any]:
         raise HTTPException(404, "view_not_found") from error
     except GraphArtifactRequestError as error:
         code = str(error)
-        raise HTTPException(409 if code == "legacy_mixed_scope_view" else 424, code) from error
+        status = 410 if code == "view_expired" else 409 if code == "legacy_mixed_scope_view" else 424
+        raise HTTPException(status, code) from error
     if cached is None:
         raise HTTPException(404, "artifact_not_generated")
     payload_json = cached.get("payload_json")
@@ -857,18 +858,16 @@ def get_graph_artifact_job_contract(job_id: str):
     return {"job": job}
 
 
-@app.post("/api/graph-artifact-jobs/{job_id}/cancel", include_in_schema=False)
-def cancel_graph_artifact_job(job_id: str):
-    try:
-        return {"job": get_snapshot_runtime().store.cancel_artifact_job(job_id)}
-    except KeyError as error:
-        raise HTTPException(404, "artifact job not found") from error
-
-
-@app.post("/api/graph-artifact-jobs/{job_id}/retry", status_code=202, include_in_schema=False)
+@app.post("/api/graph-artifact-jobs/{job_id}/retry", status_code=202)
 def retry_graph_artifact_job(job_id: str):
     try:
-        return {"job": get_snapshot_runtime().store.retry_artifact_job(job_id)}
+        job = get_graph_artifact_store().retry_artifact_job(job_id)
+        scheduler = get_graph_artifact_scheduler()
+        if scheduler is None and job.get("status") == "pending":
+            raise HTTPException(503, "artifact_scheduler_unavailable")
+        if scheduler is not None and job.get("status") == "pending":
+            scheduler.submit(job["id"])
+        return {"job": job}
     except KeyError as error:
         raise HTTPException(404, "artifact job not found") from error
 

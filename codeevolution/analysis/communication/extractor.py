@@ -15,6 +15,7 @@ from codeevolution.analysis.communication.schema import (
     CollectorRuleSet,
     CollectorStatus,
     CommunicationObservation,
+    EntryFact,
     Location,
     NodeRef,
     RepositoryCommunicationArtifact,
@@ -52,7 +53,7 @@ class CommunicationFactExtractor:
         functions = {item.node_id: item for item in graph.functions()}
         result = [
             self._http_result(graph, sources, entries, paths, functions, rules),
-            self._message_result(graph, sources, entries, paths, functions, rules),
+            self._message_result(graph, sources, entries, paths, functions, rules, snapshot_id),
             self._grpc_result(graph, sources, entries, paths, functions, rules),
             self._resource_result(graph, sources, entries, paths, functions, rules),
         ]
@@ -84,8 +85,10 @@ class CommunicationFactExtractor:
             http_outbounds=tuple(_unique(observations)), unresolved_observations=tuple(_unique(unresolved)),
         )
 
-    def _message_result(self, graph, sources, entries, paths, functions, rules):
+    def _message_result(self, graph, sources, entries, paths, functions, rules, snapshot_id):
         publications, subscriptions, unresolved = [], [], []
+        synthetic_entries = []
+        entry_by_node = {entry.handler.node_id: entry for entry in entries}
         for pattern in MQ_PATTERNS:
             for row in graph.mq_producer_calls(pattern):
                 entry = _entry_for_node(row.get("caller_node_id"), paths, {item.entry_id: item for item in entries})
@@ -107,7 +110,29 @@ class CommunicationFactExtractor:
                 if entry is None:
                     # A consumer is itself a production entry even when the
                     # graph adapter did not classify the framework decorator.
-                    continue
+                    consumer = functions.get(row["node_id"])
+                    if consumer is None:
+                        continue
+                    entry = entry_by_node.get(consumer.node_id)
+                    if entry is None:
+                        entry_id = f"entry:message:{consumer.node_id}"
+                        entry = EntryFact(
+                            entry_id=entry_id,
+                            kind="message_consumer",
+                            protocol="message",
+                            handler=NodeRef(
+                                snapshot_id=snapshot_id,
+                                node_id=consumer.node_id,
+                                kind=consumer.kind,
+                                name=consumer.name,
+                                qualified_name=consumer.qualified_name,
+                                location=Location(consumer.file_path, max(1, consumer.start_line)),
+                            ),
+                            evidence={"entry_type": "message_consumer", "synthetic": True},
+                        )
+                        synthetic_entries.append(entry)
+                        entry_by_node[consumer.node_id] = entry
+                        paths[entry_id] = {consumer.node_id: [consumer.node_id]}
                 caller = functions.get(row["node_id"])
                 channel = _channel(sources, caller, int(row.get("start_line") or 1))
                 observation = self._observation(
@@ -118,6 +143,7 @@ class CommunicationFactExtractor:
                 (subscriptions if channel else unresolved).append(observation)
         return CollectorResult(
             CollectorCoverage("message", "message-collector/v1", CollectorStatus.COMPLETE),
+            entries=tuple(synthetic_entries),
             message_publications=tuple(_unique(publications)), message_subscriptions=tuple(_unique(subscriptions)),
             unresolved_observations=tuple(_unique(unresolved)),
         )

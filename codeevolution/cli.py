@@ -278,6 +278,7 @@ def _payload_from_cache(runtime, cached: dict) -> dict:
 
 def _local_topology(args, *, generate: bool) -> dict:
     runtime = SnapshotRuntime(analysis_data_dir())
+    owned_job_id = None
     try:
         service = runtime.graph_artifacts
         if not generate:
@@ -288,6 +289,8 @@ def _local_topology(args, *, generate: bool) -> dict:
         if args.no_wait:
             raise CLIContractError("--no-wait requires --server", 2)
         job = service.create_job(args.view_id, "topology", {})
+        if not job.get("reused"):
+            owned_job_id = job.get("id")
         if job.get("status") == "pending":
             job = service.run_job(job["id"])
         deadline = time.monotonic() + args.timeout
@@ -305,6 +308,13 @@ def _local_topology(args, *, generate: bool) -> dict:
         if cached is None:
             raise CLIContractError("artifact_not_generated", 3)
         return _payload_from_cache(runtime, cached)
+    except KeyboardInterrupt:
+        if owned_job_id:
+            try:
+                runtime.store.cancel_artifact_job(owned_job_id)
+            except (KeyError, RuntimeError):
+                pass
+        raise
     except CLIContractError:
         raise
     except KeyError as error:
