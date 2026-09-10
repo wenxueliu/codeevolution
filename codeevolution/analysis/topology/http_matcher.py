@@ -102,8 +102,13 @@ class KnownExternalRule:
             return False
         if protocol.lower() not in self.protocols:
             return False
-        if self.methods and (not method or method.upper() not in self.methods):
-            return False
+        if self.methods:
+            if not method:
+                return False
+            candidates = {method.upper()}
+            candidates.add(method.rsplit("/", 1)[-1].rsplit(".", 1)[-1].upper())
+            if not candidates.intersection(self.methods):
+                return False
         if self.path_prefixes:
             normalized = normalize_path(path or "")
             if not normalized or not any(_path_prefix_matches(normalized, prefix) for prefix in self.path_prefixes):
@@ -156,6 +161,9 @@ class KnownExternalRegistry:
             raise ValueError("known external registry must be an object or list")
         rules: list[KnownExternalRule] = []
         for index, raw in enumerate(raw_rules):
+            if isinstance(raw, KnownExternalRule):
+                rules.append(raw)
+                continue
             if isinstance(raw, str):
                 raw = {"rule_id": f"external-{index + 1}", "authority": raw}
             if not isinstance(raw, Mapping):
