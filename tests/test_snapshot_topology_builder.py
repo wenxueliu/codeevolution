@@ -220,6 +220,27 @@ def test_grpc_unknown_authority_uses_explicit_known_external_registry_boundary()
     assert boundary["external_provider"] == "stripe"
 
 
+def test_grpc_unregistered_authority_is_an_explicit_scope_boundary():
+    caller = SnapshotHandle("caller", "snap-caller", "caller", (), "facts", "artifact", "complete")
+    client = _observation(
+        "grpc:unregistered",
+        "caller.entry",
+        {"rpc": {"authority": "unknown.internal:9090", "fully_qualified_method": "/x.Service/Get"}},
+    )
+    payload = TopologyArtifactBuilder().build(
+        _view(caller),
+        {"snap-caller": RepositoryCommunicationArtifact(
+            snapshot_id="snap-caller",
+            rules_digest="sha256:rules",
+            entries=(_entry("snap-caller", "caller.entry", "GET", "/"),),
+            grpc_clients=(client,),
+            collector_coverage=(_coverage(),),
+        )},
+    )
+    assert payload["endpoint_dependencies"] == []
+    assert payload["boundary_dependencies"][0]["kind"] == "out_of_scope_or_unregistered"
+
+
 def test_competing_message_consumers_are_alternatives_not_confirmed_edges():
     producer = SnapshotHandle("producer", "snap-producer", "producer", (), "facts", "artifact", "complete")
     first = SnapshotHandle("first", "snap-first", "first", (), "facts", "artifact", "complete")

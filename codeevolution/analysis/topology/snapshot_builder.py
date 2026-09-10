@@ -550,14 +550,27 @@ class TopologyArtifactBuilder:
                 reason = "known_external_rule_constraints_not_matched" if any(
                     item.authority == canonical_rpc_authority for item in self.known_external_registry.rules
                 ) else "authority_not_registered_in_view"
-                candidates.append({
-                    "kind": "ambiguous" if len(aliases) > 1 else "out_of_scope_or_unregistered",
-                    "observation_id": observation.observation_id,
-                    "source_member_id": member.member_id,
-                    "authority": authority,
-                    "candidate_member_ids": [item.member_id for item in aliases],
-                    "reason": reason,
-                })
+                if len(aliases) > 1:
+                    candidates.append({
+                        "kind": "ambiguous",
+                        "observation_id": observation.observation_id,
+                        "source_member_id": member.member_id,
+                        "authority": authority,
+                        "candidate_member_ids": [item.member_id for item in aliases],
+                        "reason": reason,
+                    })
+                else:
+                    boundary = {
+                        "kind": "out_of_scope_or_unregistered",
+                        "observation_id": observation.observation_id,
+                        "source": {"member_id": member.member_id, "entry_id": observation.entry_id or method},
+                        "authority": authority,
+                        "rpc_method": method,
+                        "reason": reason,
+                        "rules_digest": rules_digest,
+                    }
+                    boundary["boundary_id"] = stable_edge_id("boundary", boundary)
+                    boundary_dependencies.append(boundary)
                 continue
             target = aliases[0]
             method_name = method.rsplit("/", 1)[-1].rsplit(".", 1)[-1]
