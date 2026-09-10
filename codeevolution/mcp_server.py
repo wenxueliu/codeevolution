@@ -7,6 +7,7 @@ is performed through ``SnapshotQueryService`` against frozen evidence.
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any
@@ -137,14 +138,36 @@ def _read_topology_payload(runtime: SnapshotRuntime, view_id: str) -> dict[str, 
     payload_json = cached.get("payload_json")
     if not payload_json and cached.get("payload_storage") == "artifact":
         try:
-            root = runtime.artifacts.open(cached["artifact_key"])
-            payload_json = (root / "payload.json").read_text(encoding="utf-8")
+            lease_factory = getattr(runtime.store, "artifact_cache_reader", None)
+            lease = (
+                lease_factory(cached["cache_key_digest"])
+                if callable(lease_factory) and cached.get("cache_key_digest")
+                else nullcontext()
+            )
+            with lease:
+                root = runtime.artifacts.open(cached["artifact_key"])
+                from .infrastructure.artifact_store_fs import directory_digest
+
+                if directory_digest(root) != str(cached["artifact_key"]).removeprefix("sha256:"):
+                    raise ValueError("artifact directory digest mismatch")
+                payload_json = (root / "payload.json").read_text(encoding="utf-8")
         except (KeyError, OSError, ValueError):
             return {"error": "snapshot_artifact_corrupt"}
     try:
-        return json.loads(payload_json or "{}")
+        payload = json.loads(payload_json or "{}")
     except json.JSONDecodeError:
         return {"error": "snapshot_artifact_corrupt"}
+    if not isinstance(payload, dict):
+        return {"error": "snapshot_artifact_corrupt"}
+    expected_digest = cached.get("payload_digest")
+    if expected_digest:
+        from .domain.topology import canonical_digest
+
+        digest_payload = dict(payload)
+        digest_payload.pop("payload_digest", None)
+        if canonical_digest(digest_payload) != expected_digest:
+            return {"error": "snapshot_artifact_corrupt"}
+    return payload
 
 
 @mcp.tool()
@@ -250,9 +273,12 @@ def get_graph_artifact_job(job_id: str) -> str:
     runtime = _require_runtime()
     if isinstance(runtime, str):
         return runtime
-    job = runtime.store.get_artifact_job(job_id)
-    if job is None:
+    try:
+        job = runtime.graph_artifacts.get_job(job_id)
+    except KeyError:
         return _result({"error": "job_not_found", "job_id": job_id})
+    except ValueError as error:
+        return _result({"error": str(error), "job_id": job_id})
     return _result({"job": job})
 
 

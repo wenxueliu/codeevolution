@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -262,7 +263,19 @@ def _payload_from_cache(runtime, cached: dict) -> dict:
     payload_json = cached.get("payload_json")
     if not payload_json and cached.get("payload_storage") == "artifact":
         try:
-            payload_json = (runtime.artifacts.open(cached["artifact_key"]) / "payload.json").read_text(encoding="utf-8")
+            lease_factory = getattr(runtime.store, "artifact_cache_reader", None)
+            lease = (
+                lease_factory(cached["cache_key_digest"])
+                if callable(lease_factory) and cached.get("cache_key_digest")
+                else nullcontext()
+            )
+            with lease:
+                root = runtime.artifacts.open(cached["artifact_key"])
+                from .infrastructure.artifact_store_fs import directory_digest
+
+                if directory_digest(root) != str(cached["artifact_key"]).removeprefix("sha256:"):
+                    raise ValueError("artifact directory digest mismatch")
+                payload_json = (root / "payload.json").read_text(encoding="utf-8")
         except (KeyError, OSError, ValueError) as error:
             raise CLIContractError("snapshot_artifact_corrupt", 5) from error
     if not payload_json:
@@ -273,6 +286,14 @@ def _payload_from_cache(runtime, cached: dict) -> dict:
         raise CLIContractError("snapshot_artifact_corrupt", 5) from error
     if not isinstance(value, dict):
         raise CLIContractError("invalid topology artifact payload", 5)
+    expected_digest = cached.get("payload_digest")
+    if expected_digest:
+        from .domain.topology import canonical_digest
+
+        digest_payload = dict(value)
+        digest_payload.pop("payload_digest", None)
+        if canonical_digest(digest_payload) != expected_digest:
+            raise CLIContractError("snapshot_artifact_corrupt", 5)
     return value
 
 
