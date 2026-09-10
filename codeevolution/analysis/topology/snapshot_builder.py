@@ -8,7 +8,6 @@ View.  This makes a topology reproducible after a checkout is deleted.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
@@ -29,6 +28,16 @@ from codeevolution.domain.topology import (
     canonical_digest,
     stable_edge_id,
 )
+
+
+def _authority_matches_alias(authority: str, alias: str) -> bool:
+    authority = authority.strip().lower().rstrip("/")
+    alias = alias.strip().lower().rstrip("/")
+    if not authority or not alias:
+        return False
+    host = authority.split(":", 1)[0]
+    alias_host = alias.split(":", 1)[0]
+    return host == alias_host or authority == alias
 
 
 class TopologyBuildError(RuntimeError):
@@ -122,6 +131,9 @@ class TopologyArtifactBuilder:
 
             self._append_message_dependencies(
                 member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates
+            )
+            self._append_grpc_dependencies(
+                member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates,
             )
 
         for projection in service_edges.values():
@@ -267,7 +279,10 @@ class TopologyArtifactBuilder:
             for observation in getattr(artifacts[target.snapshot_id], "message_subscriptions", ()):
                 consumers.append((target, observation))
         for publication in artifact.message_publications:
-            channel = dict(publication.payload).get("messaging", {}).get("channel", "")
+            messaging = dict(publication.payload).get("messaging", {})
+            channel = messaging.get("channel", "")
+            protocol = messaging.get("protocol", "")
+            delivery = messaging.get("delivery_semantics", "unknown")
             if not channel:
                 candidates.append({"kind": "unresolved", "observation_id": publication.observation_id,
                                    "source_member_id": member.member_id, "reason": "empty_channel"})
@@ -275,13 +290,36 @@ class TopologyArtifactBuilder:
             for target, subscription in consumers:
                 if target.member_id == member.member_id:
                     continue
-                target_channel = dict(subscription.payload).get("messaging", {}).get("channel", "")
-                if channel != target_channel:
+                target_messaging = dict(subscription.payload).get("messaging", {})
+                target_channel = target_messaging.get("channel", "")
+                target_protocol = target_messaging.get("protocol", "")
+                if channel != target_channel or protocol != target_protocol:
                     continue
-                dependency = {"kind": "message", "source_member_id": member.member_id,
-                              "target_member_id": target.member_id,
-                              "observation_ids": [publication.observation_id, subscription.observation_id],
-                              "channel": channel}
+                if delivery not in {"broadcast", "fanout"} or target_messaging.get("delivery_semantics", "unknown") not in {"broadcast", "fanout"}:
+                    candidates.append({
+                        "kind": "candidate",
+                        "observation_id": publication.observation_id,
+                        "source_member_id": member.member_id,
+                        "target_member_id": target.member_id,
+                        "channel": channel,
+                        "reason": "unknown_delivery_semantics",
+                    })
+                    continue
+                dependency = {
+                    "kind": "message",
+                    "source_member_id": member.member_id,
+                    "target_member_id": target.member_id,
+                    "source": {
+                        "member_id": member.member_id,
+                        "entry_id": publication.entry_id or channel,
+                    },
+                    "target": {
+                        "member_id": target.member_id,
+                        "entry_ids": [subscription.entry_id or channel],
+                    },
+                    "observation_ids": [publication.observation_id, subscription.observation_id],
+                    "channel": channel,
+                }
                 dependency["edge_id"] = stable_edge_id("message", dependency)
                 endpoint_dependencies.append(dependency)
                 key = (member.member_id, target.member_id, "message")
@@ -291,3 +329,84 @@ class TopologyArtifactBuilder:
                                   "supporting_endpoint_dependency_ids": [dependency["edge_id"]]}
                     projection["edge_id"] = stable_edge_id("service", projection)
                     service_edges[key] = projection
+
+    def _append_grpc_dependencies(
+        self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates
+    ):
+        """Match gRPC only when a frozen authority alias identifies one target.
+
+        Generated-stub/proto descriptors are represented in the observation
+        payload when available.  A bare callee name is deliberately retained as
+        a candidate instead of creating a service edge.
+        """
+        for observation in artifact.grpc_clients:
+            rpc = dict(observation.payload).get("rpc", {})
+            method = str(rpc.get("fully_qualified_method") or rpc.get("method") or "")
+            authority = str(rpc.get("authority") or "")
+            if not method or not authority:
+                candidates.append({
+                    "kind": "candidate",
+                    "observation_id": observation.observation_id,
+                    "source_member_id": member.member_id,
+                    "reason": "grpc_identity_unresolved",
+                })
+                continue
+            aliases = [
+                target for target in available
+                if any(_authority_matches_alias(authority, alias) for alias in target.declared_aliases)
+            ]
+            if len(aliases) != 1:
+                candidates.append({
+                    "kind": "ambiguous" if len(aliases) > 1 else "out_of_scope_or_unregistered",
+                    "observation_id": observation.observation_id,
+                    "source_member_id": member.member_id,
+                    "authority": authority,
+                    "candidate_member_ids": [item.member_id for item in aliases],
+                })
+                continue
+            target = aliases[0]
+            method_name = method.rsplit("/", 1)[-1].rsplit(".", 1)[-1]
+            target_entries = [
+                entry for entry in artifacts[target.snapshot_id].entries
+                if entry.protocol.lower() in {"grpc", "grpc_server", "rpc"}
+            ]
+            target_entries = [
+                entry for entry in target_entries
+                if entry.method == method_name or entry.path_template == method
+                or entry.handler.name == method_name or entry.handler.qualified_name.endswith(method_name)
+            ]
+            if len(target_entries) != 1:
+                candidates.append({
+                    "kind": "candidate",
+                    "observation_id": observation.observation_id,
+                    "source_member_id": member.member_id,
+                    "target_member_id": target.member_id,
+                    "rpc_method": method,
+                    "reason": "grpc_server_method_unresolved",
+                })
+                continue
+            target_entry = target_entries[0]
+            dependency = {
+                "kind": "grpc",
+                "source_member_id": member.member_id,
+                "target_member_id": target.member_id,
+                "source": {"member_id": member.member_id, "entry_id": observation.entry_id or method},
+                "target": {"member_id": target.member_id, "entry_ids": [target_entry.entry_id]},
+                "rpc_method": method,
+                "observation_id": observation.observation_id,
+                "confidence": {"level": "high", "reasons": ["authority_alias", "fully_qualified_method"]},
+            }
+            dependency["edge_id"] = stable_edge_id("grpc", dependency)
+            endpoint_dependencies.append(dependency)
+            key = (member.member_id, target.member_id, "grpc")
+            projection = service_edges.get(key)
+            if projection is None:
+                projection = {
+                    "kind": "grpc",
+                    "source_member_id": member.member_id,
+                    "target_member_id": target.member_id,
+                    "supporting_endpoint_dependency_ids": [],
+                }
+                projection["edge_id"] = stable_edge_id("service", projection)
+                service_edges[key] = projection
+            projection["supporting_endpoint_dependency_ids"].append(dependency["edge_id"])

@@ -83,15 +83,20 @@ class GraphArtifactService:
             return job
         if job["status"] != "pending":
             return job
-        self.store.start_artifact_job(job_id)
+        running = self.store.start_artifact_job(job_id)
+        if running.get("status") != "running" or not running.get("lease_token"):
+            return running
+        lease_token = running["lease_token"]
         try:
+            self.store.heartbeat_artifact_job(job_id, lease_token)
             resolved, artifacts = self.resolver.resolve(job["view_id"])
             payload = self.builder.build(resolved, artifacts)
-            return self._complete(job_id, payload)
+            self.store.heartbeat_artifact_job(job_id, lease_token)
+            return self._complete(job_id, payload, lease_token=lease_token)
         except GraphViewResolutionError as error:
-            return self.store.fail_artifact_job(job_id, str(error), code=str(error))
+            return self.store.fail_artifact_job(job_id, str(error), code=str(error), lease_token=lease_token)
         except Exception as error:  # the Job retains an auditable failure
-            return self.store.fail_artifact_job(job_id, str(error), code="artifact_generation_failed")
+            return self.store.fail_artifact_job(job_id, str(error), code="artifact_generation_failed", lease_token=lease_token)
 
     def generate(self, view_id: str, artifact_kind: str = "topology", params: dict | None = None) -> dict:
         """Compatibility helper used by local callers; creates then runs a Job."""
@@ -116,6 +121,13 @@ class GraphArtifactService:
         result = dict(cache)
         result["status"] = "completed"
         return result
+
+    def history(self, view_id: str, artifact_kind: str = "topology", *, limit: int = 20) -> list[dict]:
+        """Return generation attempts for audit/progress display, newest first."""
+        if artifact_kind != "topology":
+            raise GraphArtifactRequestError("invalid_artifact_request")
+        self._view(view_id)
+        return self.store.list_artifact_jobs(view_id, artifact_kind=artifact_kind, limit=limit)
 
     def _read_cache(self, view_id: str, artifact_kind: str, params: dict) -> dict | None:
         view = self._view(view_id)
@@ -156,14 +168,14 @@ class GraphArtifactService:
         except Exception as error:
             return self.store.fail_artifact_job(job["id"], str(error))
 
-    def _complete(self, job_id: str, payload: dict) -> dict:
+    def _complete(self, job_id: str, payload: dict, *, lease_token: str | None = None) -> dict:
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if self.artifacts is not None and len(payload_json.encode("utf-8")) >= 1024 * 1024:
             staging = self.artifacts.create_staging(f"artifact-job-{uuid4().hex}")
             (Path(staging) / "payload.json").write_text(payload_json, encoding="utf-8")
             key = self.artifacts.publish(staging, directory_digest(staging))
-            return self.store.complete_artifact_job(job_id, payload, artifact_key=key)
-        return self.store.complete_artifact_job(job_id, payload)
+            return self.store.complete_artifact_job(job_id, payload, artifact_key=key, lease_token=lease_token)
+        return self.store.complete_artifact_job(job_id, payload, lease_token=lease_token)
 
     def _ensure_analyzable(self, view_id: str) -> None:
         resolved, _ = self.resolver.resolve(view_id)

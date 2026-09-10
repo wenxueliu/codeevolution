@@ -1305,6 +1305,20 @@ class AnalysisSnapshotSQLiteStore:
             row = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row) if row else None
 
+    def list_artifact_jobs(
+        self, view_id: str, *, artifact_kind: str = "topology", limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """List durable generation attempts without exposing payload contents."""
+        bounded = max(1, min(int(limit), 100))
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM graph_view_artifact_jobs
+                   WHERE view_id=? AND artifact_kind=?
+                   ORDER BY requested_at DESC, attempt_no DESC LIMIT ?""",
+                (view_id, artifact_kind, bounded),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_artifact_cache(self, cache_key: str) -> dict[str, Any] | None:
         with self.connection() as connection:
             row = connection.execute("SELECT * FROM graph_view_artifact_cache WHERE cache_key_digest=?", (cache_key,)).fetchone()
@@ -1395,14 +1409,21 @@ class AnalysisSnapshotSQLiteStore:
             row = connection.execute("SELECT * FROM deletion_jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row)
 
-    def complete_artifact_job(self, job_id: str, payload: dict[str, Any], artifact_key: str | None = None) -> dict[str, Any]:
+    def complete_artifact_job(
+        self, job_id: str, payload: dict[str, Any], artifact_key: str | None = None,
+        *, lease_token: str | None = None,
+    ) -> dict[str, Any]:
         with self.connection() as connection, connection:
             existing = connection.execute("SELECT * FROM graph_view_artifact_jobs WHERE id=?", (job_id,)).fetchone()
             if existing is None:
                 raise KeyError(job_id)
+            lease_clause = " AND lease_token=?" if lease_token else ""
+            params: tuple[Any, ...] = (_canonical_json(payload), utc_now(), job_id)
+            if lease_token:
+                params += (lease_token,)
             updated = connection.execute(
-                "UPDATE graph_view_artifact_jobs SET status='completed',payload_json=?,completed_at=?,stage='finished',lease_until=NULL WHERE id=? AND status IN ('pending','running')",
-                (_canonical_json(payload), utc_now(), job_id),
+                f"UPDATE graph_view_artifact_jobs SET status='completed',payload_json=?,completed_at=?,stage='finished',lease_until=NULL WHERE id=? AND status IN ('pending','running'){lease_clause}",
+                params,
             )
             if updated.rowcount != 1:
                 raise SnapshotStoreError("artifact job is not active")
@@ -1477,11 +1498,17 @@ class AnalysisSnapshotSQLiteStore:
             raise KeyError(job_id)
         return dict(row)
 
-    def fail_artifact_job(self, job_id: str, error: str, *, code: str = "artifact_failed") -> dict[str, Any]:
+    def fail_artifact_job(
+        self, job_id: str, error: str, *, code: str = "artifact_failed", lease_token: str | None = None
+    ) -> dict[str, Any]:
         with self.connection() as connection, connection:
+            lease_clause = " AND lease_token=?" if lease_token else ""
+            params: tuple[Any, ...] = (code, error[:2000], utc_now(), job_id)
+            if lease_token:
+                params += (lease_token,)
             updated = connection.execute(
-                "UPDATE graph_view_artifact_jobs SET status='failed',error_code=?,error_message=?,completed_at=?,stage='finished',lease_until=NULL WHERE id=? AND status IN ('pending','running')",
-                (code, error[:2000], utc_now(), job_id),
+                f"UPDATE graph_view_artifact_jobs SET status='failed',error_code=?,error_message=?,completed_at=?,stage='finished',lease_until=NULL WHERE id=? AND status IN ('pending','running'){lease_clause}",
+                params,
             )
             if updated.rowcount != 1:
                 raise SnapshotStoreError("artifact job is not active")

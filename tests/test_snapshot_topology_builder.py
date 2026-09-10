@@ -14,8 +14,8 @@ def _node(snapshot_id: str, name: str) -> NodeRef:
     return NodeRef(snapshot_id, f"node:{name}", "function", name, f"app.{name}")
 
 
-def _entry(snapshot_id: str, entry_id: str, method: str, path: str) -> EntryFact:
-    return EntryFact(entry_id, "http", "http", _node(snapshot_id, entry_id), method, path)
+def _entry(snapshot_id: str, entry_id: str, method: str, path: str, *, protocol: str = "http") -> EntryFact:
+    return EntryFact(entry_id, "http" if protocol == "http" else "grpc_server", protocol, _node(snapshot_id, entry_id), method, path)
 
 
 def _artifact(snapshot_id: str, *, entries=(), http=(), messages=(), subscriptions=(), resources=()):
@@ -91,3 +91,35 @@ def test_builder_marks_unavailable_member_and_partial_coverage():
     assert payload["coverage"]["status"] == "partial"
     assert payload["services"][1]["availability"] == "unparsed"
     assert "users" in payload["coverage"]["unknown_boundaries"]
+
+
+def test_message_dependency_keeps_entry_endpoints_for_static_flow():
+    producer = SnapshotHandle("producer", "snap-producer", "producer", (), "facts", "artifact", "complete")
+    consumer = SnapshotHandle("consumer", "snap-consumer", "consumer", (), "facts", "artifact", "complete")
+    publication = _observation("message:pub", "producer.entry", {"messaging": {"channel": "orders.created", "protocol": "kafka", "delivery_semantics": "broadcast"}})
+    subscription = _observation("message:sub", "consumer.entry", {"messaging": {"channel": "orders.created", "protocol": "kafka", "delivery_semantics": "broadcast"}})
+    artifacts = {
+        "snap-producer": _artifact("snap-producer", entries=(_entry("snap-producer", "producer.entry", "POST", "/publish"),), messages=(publication,)),
+        "snap-consumer": _artifact("snap-consumer", entries=(_entry("snap-consumer", "consumer.entry", "POST", "/consume"),), subscriptions=(subscription,)),
+    }
+    payload = TopologyArtifactBuilder().build(_view(producer, consumer), artifacts)
+    edge = next(item for item in payload["endpoint_dependencies"] if item["kind"] == "message")
+    assert edge["source"]["entry_id"] == "producer.entry"
+    assert edge["target"]["entry_ids"] == ["consumer.entry"]
+
+
+def test_grpc_dependency_requires_authority_alias_and_server_method():
+    caller = SnapshotHandle("caller", "snap-caller", "caller", (), "facts", "artifact", "complete")
+    users = SnapshotHandle("users", "snap-users", "users", ("users.internal:9090",), "facts", "artifact", "complete")
+    client = _observation("grpc:client", "caller.entry", {"rpc": {"authority": "users.internal:9090", "fully_qualified_method": "/users.v1.UserService/GetUser"}})
+    server = _entry("snap-users", "users.get", "GetUser", "/users.v1.UserService/GetUser", protocol="grpc")
+    artifacts = {
+        "snap-caller": _artifact("snap-caller", entries=(_entry("snap-caller", "caller.entry", "GET", "/"),),),
+        "snap-users": _artifact("snap-users", entries=(server, ),),
+    }
+    artifacts["snap-caller"] = RepositoryCommunicationArtifact(
+        snapshot_id="snap-caller", rules_digest="sha256:rules", entries=artifacts["snap-caller"].entries,
+        grpc_clients=(client,), collector_coverage=artifacts["snap-caller"].collector_coverage,
+    )
+    payload = TopologyArtifactBuilder().build(_view(caller, users), artifacts)
+    assert any(item["kind"] == "grpc" for item in payload["endpoint_dependencies"])

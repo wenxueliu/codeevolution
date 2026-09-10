@@ -1,7 +1,7 @@
 import json
 
 from codeevolution.domain.analysis_snapshot import EvidenceBundle, RepositoryAnalysisSnapshot
-from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
+from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore, SnapshotStoreError
 
 
 def _store(tmp_path):
@@ -45,3 +45,19 @@ def test_retry_reuses_exact_request_spec(tmp_path):
     retry = store.retry_artifact_job(job["id"])
     assert retry["request_spec_json"] == job["request_spec_json"]
     assert retry["request_spec_digest"] == job["request_spec_digest"]
+
+
+def test_artifact_completion_is_fenced_by_worker_lease(tmp_path):
+    store = _store(tmp_path)
+    view = store.create_current_view(member_ids=["orders"])
+    job = store.create_artifact_job(view_id=view.id, artifact_kind="topology", cache_key="sha256:cache")
+    running = store.start_artifact_job(job["id"], worker_id="worker-a")
+    assert running["lease_token"]
+    try:
+        store.complete_artifact_job(job["id"], {"x": 1}, lease_token="stale-token")
+    except SnapshotStoreError:
+        pass
+    else:
+        raise AssertionError("stale worker must not publish an artifact")
+    assert store.get_artifact_job(job["id"])["status"] == "running"
+    store.complete_artifact_job(job["id"], {"x": 1}, lease_token=running["lease_token"])

@@ -49,6 +49,7 @@ def test_new_graph_artifact_and_query_contracts_are_explicit_and_read_only():
         artifact = client.get("/api/graph-views/view-1/artifacts/topology")
         assert artifact.status_code == 200
         assert "view_id" not in artifact.json()["artifact"]
+        assert artifact.headers["etag"] == '"sha256:payload"'
 
         impact = client.get("/api/graph-views/view-1/impact", params={"member_id": "gateway"})
         assert impact.status_code == 200

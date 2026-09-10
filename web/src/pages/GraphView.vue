@@ -13,42 +13,49 @@
     <template v-else>
       <section class="view-meta">
         <div><small>View ID</small><code>{{ viewId }}</code></div>
-        <div><small>完整性</small><span>{{ topology.completeness || '—' }}</span></div>
-        <div><small>服务</small><span>{{ services.length }}</span></div>
-        <div><small>调用边</small><span>{{ topology.edges?.length || 0 }}</span></div>
+        <div><small>Artifact</small><span>{{ artifact ? '已生成' : '未生成' }}</span></div>
+        <div><small>服务</small><span>{{ services.length || '—' }}</span></div>
+        <div><small>调用边</small><span>{{ serviceEdges.length || '—' }}</span></div>
       </section>
 
-      <UiState v-if="!services.length" kind="empty" title="此 View 没有可浏览的服务" message="请先为 Scope 成员生成快照并创建新的 Graph View。" />
+      <section v-if="!artifact" class="panel artifact-empty">
+        <h2>尚未生成拓扑 Artifact</h2>
+        <p class="muted">Graph View 只固定 Scope 和 Snapshot；拓扑分析需要显式创建一次 Artifact Job。</p>
+        <button class="primary" :disabled="artifactLoading" @click="generate">{{ artifactLoading ? '正在创建…' : '生成拓扑' }}</button>
+        <p v-if="jobStatus" class="muted">Job {{ jobStatus.id }}：{{ jobStatus.status }}</p>
+      </section>
+      <UiState v-else-if="!services.length" kind="empty" title="此 View 没有可浏览的服务" message="当前 Artifact 没有可分析的 Scope 成员。" />
       <template v-else>
         <section class="panel">
           <h2>服务拓扑</h2>
-          <p class="muted">边仅来自此 View 固定快照中的 API 调用链；点击服务查看影响和流程。</p>
+          <p class="muted">边仅来自此 View 固定快照中的通信事实；点击服务查看影响和流程。</p>
           <div class="service-list" aria-label="服务列表">
             <button v-for="service in services" :key="service.member_id" :class="{ active: selectedService === service.member_id }" @click="selectService(service.member_id)">
-              {{ service.member_id }} <small>{{ service.availability || `${service.endpoints?.length || 0} APIs` }}</small>
+              {{ service.display_name || service.member_id }} <small>{{ service.availability || `${service.entries?.length || 0} entries` }}</small>
             </button>
           </div>
-          <div v-if="topology.edges?.length" class="edge-list">
-            <article v-for="(edge, index) in topology.edges" :key="edgeKey(edge, index)" class="edge-card">
+          <div v-if="serviceEdges.length" class="edge-list">
+            <article v-for="(edge, index) in serviceEdges" :key="edgeKey(edge, index)" class="edge-card">
               <div class="edge-heading"><b>{{ edge.source_member_id }}</b><span>→</span><b>{{ targetName(edge) }}</b><span class="badge">{{ edge.kind }}</span><span v-if="edge.confidence" class="confidence">{{ edge.confidence }}</span></div>
-              <p v-if="edge.source_endpoint || edge.target_endpoint || edge.target_path"><code>{{ edge.source_endpoint || '—' }}</code> → <code>{{ edge.target_endpoint || edge.target_path || '—' }}</code></p>
+              <p v-if="edge.source_entry_id || edge.target_entry_id"><code>{{ edge.source_entry_id || '—' }}</code> → <code>{{ edge.target_entry_id || '—' }}</code></p>
               <details v-if="edge.evidence"><summary>调用证据</summary><pre>{{ formatJson(edge.evidence) }}</pre></details>
               <details v-else-if="edge.dependency"><summary>依赖证据</summary><pre>{{ formatJson(edge.dependency) }}</pre></details>
             </article>
           </div>
           <p v-else class="muted">未在当前快照中发现跨服务调用边。</p>
+          <details v-if="artifact.coverage" open><summary>覆盖情况</summary><pre>{{ formatJson(artifact.coverage) }}</pre></details>
         </section>
 
         <section class="panel analysis-panel">
-          <div class="analysis-heading"><div><h2>影响与流程</h2><p class="muted">选择服务后，以同一 <code>view_id</code> 查询。</p></div><label>起始 API（可选）<input v-model="path" placeholder="/api/orders" @change="loadAnalysis" /></label></div>
+          <div class="analysis-heading"><div><h2>影响与流程</h2><p class="muted">选择服务后，以同一 <code>view_id</code> 查询。</p></div><label>起始 API（可选）<span class="entry-input"><input v-model="method" placeholder="GET" @change="loadAnalysis" /><input v-model="path" placeholder="/api/orders" @change="loadAnalysis" /></span></label></div>
           <UiState v-if="analysisError" kind="error" title="分析加载失败" :message="analysisError.message" action-label="重试" @action="loadAnalysis" />
           <div v-else-if="analysisLoading" class="muted">正在查询影响与流程…</div>
           <template v-else>
             <div class="analysis-columns">
-              <div><h3>{{ selectedService }} 的影响范围</h3><ul><li v-for="item in impact.affected || []" :key="item.member_id">{{ item.member_id }}</li></ul><p v-if="!(impact.affected || []).length" class="muted">没有受影响的服务。</p></div>
-              <div><h3>流程步骤</h3><ol><li v-for="item in flow.steps || []" :key="item.member_id">{{ item.member_id }}</li></ol><p v-if="!(flow.steps || []).length" class="muted">没有可追踪的跨服务流程。</p></div>
+              <div><h3>{{ selectedService }} 的下游依赖</h3><ul><li v-for="item in impact.downstream_dependencies || []" :key="item.member_id">{{ item.member_id }} <small>{{ item.path?.join(' → ') }}</small></li></ul><p v-if="!(impact.downstream_dependencies || []).length" class="muted">没有确认的下游服务。</p></div>
+              <div><h3>上游依赖方</h3><ul><li v-for="item in impact.upstream_dependents || []" :key="item.member_id">{{ item.member_id }} <small>{{ item.path?.join(' → ') }}</small></li></ul><p v-if="!(impact.upstream_dependents || []).length" class="muted">没有确认的上游服务。</p></div>
             </div>
-            <details v-if="impact.edges?.length" open><summary>影响关联边（{{ impact.edges.length }}）</summary><pre>{{ formatJson(impact.edges) }}</pre></details>
+            <details v-if="flow.nodes?.length" open><summary>静态流程（{{ flow.nodes.length }} 个节点）</summary><pre>{{ formatJson(flow) }}</pre></details>
           </template>
         </section>
       </template>
@@ -62,28 +69,65 @@ import UiState from '../components/UiState.vue'
 export default {
   components: { UiState },
   props: { viewId: { type: String, required: true } },
-  data() { return { topology: { services: [], edges: [] }, selectedService: '', impact: {}, flow: {}, path: '', loading: false, analysisLoading: false, error: null, analysisError: null } },
-  computed: { services() { return this.topology.services || [] } },
+  data() { return { artifact: null, selectedService: '', impact: {}, flow: {}, method: 'GET', path: '', loading: false, artifactLoading: false, analysisLoading: false, error: null, analysisError: null, jobStatus: null, pollTimer: null } },
+  computed: {
+    services() { return this.artifact?.services || [] },
+    serviceEdges() { return this.artifact?.service_projections || [] },
+  },
   watch: { viewId() { this.load() } },
   async created() { await this.load() },
+  beforeUnmount() { this.stopPolling() },
   methods: {
     async load() {
       this.loading = true; this.error = null
       try {
-        this.topology = await this.$api.get('/api/topology', { view_id: this.viewId })
+        const response = await this.$api.get(`/api/graph-views/${this.viewId}/artifacts/topology`)
+        this.artifact = response.artifact
         const first = this.services[0]?.member_id
         if (first) await this.selectService(first)
-      } catch (error) { this.error = error } finally { this.loading = false }
+      } catch (error) {
+        if (error.status === 404 && error.body?.detail === 'artifact_not_generated') this.artifact = null
+        else this.error = error
+      } finally { this.loading = false }
     },
+    async generate() {
+      this.artifactLoading = true; this.error = null
+      try {
+        const response = await this.$api.request(`/api/graph-views/${this.viewId}/artifact-jobs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ artifact_kind: 'topology', params: {} }) })
+        this.jobStatus = response.job
+        if (response.job?.status === 'completed') await this.load()
+        else this.startPolling(response.job?.id)
+      } catch (error) { this.error = error } finally { this.artifactLoading = false }
+    },
+    startPolling(jobId) {
+      this.stopPolling()
+      if (!jobId) return
+      const poll = async () => {
+        try {
+          const response = await this.$api.get(`/api/graph-artifact-jobs/${jobId}`)
+          this.jobStatus = response.job
+          if (['completed', 'failed', 'cancelled', 'interrupted'].includes(response.job?.status)) {
+            this.stopPolling()
+            if (response.job.status === 'completed') await this.load()
+            else this.error = new Error(response.job.error_message || `Artifact Job ${response.job.status}`)
+          }
+        } catch (error) { this.stopPolling(); this.error = error }
+      }
+      this.pollTimer = window.setInterval(poll, 2000)
+      poll()
+    },
+    stopPolling() { if (this.pollTimer) { window.clearInterval(this.pollTimer); this.pollTimer = null } },
     async selectService(service) { this.selectedService = service; await this.loadAnalysis() },
     async loadAnalysis() {
       if (!this.selectedService) return
       this.analysisLoading = true; this.analysisError = null
       try {
-        const query = { view_id: this.viewId, service: this.selectedService }
-        const flowQuery = { ...query, path: this.path }
-        const [impact, flow] = await Promise.all([this.$api.get('/api/impact', query), this.$api.get('/api/flow', flowQuery)])
-        this.impact = impact; this.flow = flow
+        const query = { member_id: this.selectedService }
+        const impact = await this.$api.get(`/api/graph-views/${this.viewId}/impact`, query)
+        this.impact = impact
+        this.flow = this.path
+          ? await this.$api.get(`/api/graph-views/${this.viewId}/flow`, { ...query, method: this.method || 'GET', path: this.path })
+          : {}
       } catch (error) { this.analysisError = error } finally { this.analysisLoading = false }
     },
     targetName(edge) { return edge.target_member_id || (edge.target_candidates || []).join(', ') || '外部依赖' },
@@ -101,5 +145,6 @@ export default {
 .service-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }.service-list button { border: 1px solid #c7d2e3; background: #f6f8fb; border-radius: 5px; padding: 8px 10px; cursor: pointer; }.service-list button.active { color: #fff; background: #315d9b; border-color: #315d9b; }.service-list small { margin-left: 5px; opacity: .75; }
 .edge-list { display: grid; gap: 10px; }.edge-card p { margin: 8px 0; }.edge-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }.badge, .confidence { padding: 2px 6px; border-radius: 10px; font-size: 12px; background: #e8f0fc; }.confidence { background: #eef2f5; } details { margin-top: 8px; } summary { cursor: pointer; } pre { overflow: auto; padding: 10px; background: #f6f8fa; border-radius: 4px; font-size: 12px; }
 .analysis-heading { display: flex; justify-content: space-between; gap: 20px; align-items: start; }.analysis-heading label { display: grid; gap: 4px; font-size: 13px; }.analysis-heading input { padding: 7px; border: 1px solid #bbb; border-radius: 4px; }.analysis-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }.analysis-columns > div { padding: 12px; background: #f8fafc; border-radius: 6px; }.analysis-columns ul, .analysis-columns ol { margin-bottom: 0; }.muted { color: #667085; }
+.artifact-empty { text-align: center; }.primary { border: 0; border-radius: 5px; padding: 9px 15px; color: #fff; background: #315d9b; cursor: pointer; }.primary:disabled { opacity: .6; cursor: wait; }.entry-input { display: flex; gap: 6px; }.entry-input input:first-child { width: 58px; }
 @media (max-width: 700px) { .view-meta, .analysis-columns { grid-template-columns: 1fr; }.analysis-heading { display: block; }.analysis-heading label { margin-top: 12px; } }
 </style>

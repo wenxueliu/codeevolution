@@ -1,7 +1,7 @@
 """FastAPI backend for the CodeEvolution web dashboard — multi-repo support."""
 
-import json
 import hashlib
+import json
 import os
 import subprocess
 import threading
@@ -18,13 +18,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .analysis.knowledge.call_tree import CallTreeService
 from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService, SnapshotChatService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
-from .application.snapshot_runtime import SnapshotRuntime
 from .application.snapshot_query_service import SnapshotQueryService
+from .application.snapshot_runtime import SnapshotRuntime
 from .application.ui_recording_service import UiRecordingService
+from .infrastructure.analysis_snapshot_sqlite import utc_now
 from .infrastructure.audit_store import AuditStore
 from .infrastructure.business_rule_store import BusinessRuleStore
 from .infrastructure.explanation_snapshot_store import (
@@ -33,7 +33,6 @@ from .infrastructure.explanation_snapshot_store import (
 )
 from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.node_rule_store import NodeRuleStore
-from .infrastructure.analysis_snapshot_sqlite import utc_now
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
 from .paths import analysis_data_dir, data_dir, repo_data_file
@@ -752,15 +751,6 @@ def export_graph_view(view_id: str):
         raise HTTPException(409, str(error)) from error
 
 
-@app.post("/api/graph-views/{view_id}/artifacts/{artifact_kind}/generate", status_code=202, include_in_schema=False)
-def generate_graph_artifact(view_id: str, artifact_kind: str):
-    try:
-        job = get_graph_artifact_service().generate(view_id, artifact_kind)
-        return {"job": job}
-    except KeyError as error:
-        raise HTTPException(404, "graph view not found") from error
-
-
 @app.post("/api/graph-views/{view_id}/artifact-jobs")
 def create_graph_artifact_job(
     view_id: str, request: GraphArtifactJobCreateRequest, response: Response
@@ -785,14 +775,21 @@ def create_graph_artifact_job(
         scheduler.submit(job["id"])
     if job.get("status") == "completed":
         response.status_code = 200
+        return _topology_artifact_delivery(view_id)
     else:
         response.status_code = 202
         response.headers["Retry-After"] = "2"
-    return {"job": job}
+    return {
+        "job_id": job["id"],
+        "status": job.get("status", "pending"),
+        "reused": job.get("attempt_no", 1) > 1,
+        "status_url": f"/api/graph-artifact-jobs/{job['id']}",
+        "retry_after_seconds": 2,
+        "job": job,
+    }
 
 
-@app.get("/api/graph-views/{view_id}/artifacts/topology")
-def get_topology_artifact(view_id: str):
+def _topology_artifact_delivery(view_id: str) -> dict[str, Any]:
     from .application.graph_artifact_service import GraphArtifactRequestError
 
     try:
@@ -823,35 +820,28 @@ def get_topology_artifact(view_id: str):
     }
 
 
-@app.get("/api/graph-views/{view_id}/artifacts/{artifact_kind}", include_in_schema=False)
-def get_graph_artifact(view_id: str, artifact_kind: str):
+@app.get("/api/graph-views/{view_id}/artifacts/topology")
+def get_topology_artifact(view_id: str, response: Response):
+    delivery = _topology_artifact_delivery(view_id)
+    if delivery.get("payload_digest"):
+        response.headers["ETag"] = f'"{delivery["payload_digest"]}"'
+    return delivery
+
+
+@app.get("/api/graph-views/{view_id}/artifacts/topology/history")
+def get_topology_artifact_history(view_id: str, limit: int = Query(20, ge=1, le=100)):
+    from .application.graph_artifact_service import GraphArtifactRequestError
+
     try:
-        job = get_graph_artifact_service().get(view_id, artifact_kind)
-        if job is None or job.get("status") != "completed":
-            return Response(
-                status_code=202,
-                content=json.dumps({"status": job.get("status", "pending") if job else "pending",
-                                     "job": job}, ensure_ascii=False),
-                media_type="application/json",
-            )
-        payload_json = job.get("payload_json")
-        if not payload_json:
-            cached = get_snapshot_runtime().store.get_artifact_cache(job["cache_key_digest"])
-            if cached and cached.get("payload_storage") == "artifact":
-                artifact = get_snapshot_runtime().artifacts.open(cached["artifact_key"])
-                payload_json = (artifact / "payload.json").read_text(encoding="utf-8")
-        payload = json.loads(payload_json) if payload_json else job
-        return payload
+        return {
+            "view_id": view_id,
+            "artifact_kind": "topology",
+            "items": get_graph_artifact_service().history(view_id, "topology", limit=limit),
+        }
     except KeyError as error:
-        raise HTTPException(404, "graph view not found") from error
-
-
-@app.get("/api/graph-artifact-jobs/{job_id}", include_in_schema=False)
-def get_graph_artifact_job(job_id: str):
-    job = get_snapshot_runtime().store.get_artifact_job(job_id)
-    if job is None:
-        raise HTTPException(404, "artifact job not found")
-    return {"job": job}
+        raise HTTPException(404, "view_not_found") from error
+    except GraphArtifactRequestError as error:
+        raise HTTPException(422, str(error)) from error
 
 
 @app.get("/api/graph-artifact-jobs/{job_id}")
@@ -893,7 +883,7 @@ def query_graph_impact(
     from .application.topology_query_service import TopologyQueryError
 
     try:
-        payload = get_topology_artifact(view_id)["artifact"]
+        payload = _topology_artifact_delivery(view_id)["artifact"]
         return get_topology_query_service().impact(
             payload,
             member_id,
@@ -929,7 +919,7 @@ def query_graph_flow(
     from .application.topology_query_service import TopologyQueryError
 
     try:
-        payload = get_topology_artifact(view_id)["artifact"]
+        payload = _topology_artifact_delivery(view_id)["artifact"]
         return get_topology_query_service().flow(
             payload,
             member_id,
@@ -948,30 +938,6 @@ def query_graph_flow(
         raise
     except TopologyQueryError as error:
         raise HTTPException(422, str(error)) from error
-
-
-@app.get("/api/topology", include_in_schema=False)
-def snapshot_topology(view_id: str = Query(...)):
-    try:
-        return get_snapshot_topology_service().topology(view_id)
-    except KeyError as error:
-        raise HTTPException(404, "graph view not found") from error
-
-
-@app.get("/api/impact", include_in_schema=False)
-def snapshot_impact(view_id: str = Query(...), service: str = Query(...)):
-    try:
-        return get_snapshot_topology_service().impact(view_id, service)
-    except KeyError as error:
-        raise HTTPException(404, "graph view not found") from error
-
-
-@app.get("/api/flow", include_in_schema=False)
-def snapshot_flow(view_id: str = Query(...), service: str = Query(...), path: str = Query("")):
-    try:
-        return get_snapshot_topology_service().flow(view_id, service, path)
-    except KeyError as error:
-        raise HTTPException(404, "graph view not found") from error
 
 
 @app.get("/api/entities", include_in_schema=False)
