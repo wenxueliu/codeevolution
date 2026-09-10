@@ -67,7 +67,7 @@ class TopologyQueryService:
                 if item.get("source", {}).get("member_id") == member_id
                 or item.get("source_member_id") == member_id
             ]
-        result["message_alternatives"] = [
+        result["message_alternatives"] = [] if "message" not in allowed else [
             item for item in artifact.get("message_alternatives", [])
             if item.get("source_member_id") == member_id
             or member_id in item.get("consumer_member_ids", [])
