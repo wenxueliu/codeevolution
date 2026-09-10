@@ -56,3 +56,16 @@ def test_flow_method_path_requires_unique_entry():
 def test_flow_rejects_limits_above_hard_cap():
     with pytest.raises(TopologyQueryError, match="flow_limits_exceeded"):
         TopologyQueryService().flow(_artifact(), "gateway", entry_id="gateway.root", max_nodes=5001)
+
+
+def test_flow_exposes_competing_message_alternatives_as_labelled_branches():
+    artifact = _artifact()
+    artifact["message_alternatives"] = [{
+        "alternative_group_id": "alternative-1",
+        "protocol": "kafka",
+        "source_member_id": "gateway",
+        "source_entry_id": "gateway.root",
+        "consumers": [{"member_id": "orders", "entry_id": "orders.root"}],
+    }]
+    result = TopologyQueryService().flow(artifact, "gateway", entry_id="gateway.root")
+    assert any(item.get("alternative_group_id") == "alternative-1" for item in result["edges"])

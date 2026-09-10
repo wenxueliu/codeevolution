@@ -459,6 +459,14 @@ class TopologyArtifactBuilder:
                     "channel": channel,
                     "protocol": protocol,
                     "source_member_id": member.member_id,
+                    "source_entry_id": publication.entry_id or channel,
+                    "consumers": [
+                        {"member_id": target.member_id, "entry_id": subscription.entry_id or channel}
+                        for target, subscription in sorted(
+                            matched_competing,
+                            key=lambda item: (item[0].member_id, item[1].entry_id or ""),
+                        )
+                    ],
                     "consumer_member_ids": sorted({target.member_id for target, _ in matched_competing}),
                     "consumer_entry_ids": sorted({subscription.entry_id for _, subscription in matched_competing if subscription.entry_id}),
                     "rules_digest": rules_digest,

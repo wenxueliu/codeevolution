@@ -114,6 +114,24 @@ class TopologyQueryService:
             item for item in artifact.get("endpoint_dependencies", [])
             if item.get("kind") in allowed
         ]
+        # Competing consumers are not confirmed service edges, but Flow still
+        # exposes their frozen alternatives as explicitly labelled branches.
+        for group in artifact.get("message_alternatives", []):
+            if "message" not in allowed:
+                continue
+            source_member = group.get("source_member_id")
+            source_entry = group.get("source_entry_id") or group.get("channel")
+            for consumer in group.get("consumers", []):
+                if not isinstance(consumer, Mapping):
+                    continue
+                dependencies.append({
+                    "kind": "message",
+                    "edge_id": f"{group.get('alternative_group_id', 'message-alternative')}:{consumer.get('member_id')}:{consumer.get('entry_id')}",
+                    "source": {"member_id": source_member, "entry_id": source_entry},
+                    "target": {"member_id": consumer.get("member_id"), "entry_ids": [consumer.get("entry_id")]},
+                    "confidence": {"level": "medium", "reasons": ["message_competing_alternative"]},
+                    "alternative_group_id": group.get("alternative_group_id"),
+                })
         while queue:
             source_member, source_entry, depth = queue.popleft()
             if depth >= max_depth:
@@ -136,6 +154,8 @@ class TopologyQueryService:
                         "depth": depth + 1,
                         "confidence": dependency.get("confidence", {}),
                     }
+                    if dependency.get("alternative_group_id"):
+                        edge["alternative_group_id"] = dependency["alternative_group_id"]
                     if len(edges) >= max_edges:
                         truncation = {"reason": "max_edges", "frontier": [{"member_id": source_member, "entry_id": source_entry}]}
                         break
