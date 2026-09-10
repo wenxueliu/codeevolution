@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from hashlib import sha256
 from typing import Any
@@ -27,13 +28,14 @@ def collect_entries(
     for entry in selected:
         if _excluded_path(entry.file_path):
             continue
-        kind = _entry_kind(entry.entry_type, entry.http_method, entry.http_path)
+        method, path = _http_identity(entry)
+        kind = _entry_kind(entry.entry_type, method, path)
         protocol = "http" if kind == "http" else kind
         identity = {
             "kind": kind,
             "protocol": protocol,
-            "method": entry.http_method,
-            "path_template": entry.http_path,
+            "method": method,
+            "path_template": path,
             "handler": {
                 "qualified_name": entry.qualified_name,
                 "file": entry.file_path,
@@ -59,8 +61,8 @@ def collect_entries(
                 kind=kind,
                 protocol=protocol,
                 handler=handler,
-                method=entry.http_method,
-                path_template=entry.http_path,
+                method=method,
+                path_template=path,
                 channel=None,
                 evidence={"entry_type": entry.entry_type},
             )
@@ -83,6 +85,7 @@ def reachable_call_paths(
     *,
     max_depth: int = 12,
     max_nodes: int = 10000,
+    max_edges: int = 50000,
     return_coverage: bool = False,
 ) -> dict[str, dict[str, list[str]]] | tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, Any]]]:
     """Return shortest entry-rooted node paths using only frozen calls edges."""
@@ -94,6 +97,7 @@ def reachable_call_paths(
         alternatives: dict[str, int] = {entry.handler.node_id: 0}
         edge_kinds: dict[str, list[str]] = {entry.handler.node_id: []}
         truncated = False
+        edges_examined = 0
         queue = deque([(entry.handler.node_id, 0)])
         while queue:
             current, depth = queue.popleft()
@@ -106,6 +110,10 @@ def reachable_call_paths(
                 key=lambda item: (item.callee_node_id, item.call_line, item.callee_name),
             )
             for target in targets:
+                edges_examined += 1
+                if edges_examined > max_edges:
+                    truncated = True
+                    break
                 node_id = target.callee_node_id
                 if node_id in paths:
                     if depths[node_id] == depth + 1:
@@ -124,6 +132,8 @@ def reachable_call_paths(
             "truncated": truncated,
             "max_depth": max_depth,
             "max_nodes": max_nodes,
+            "max_edges": max_edges,
+            "edges_examined": edges_examined,
             "node_count": len(paths),
             "depth": depths,
             "edge_kinds": edge_kinds,
@@ -148,6 +158,28 @@ def _entry_kind(entry_type: str, method: str | None, path: str | None) -> str:
     if "cli" in normalized or "command" in normalized:
         return "cli"
     return normalized
+
+
+def _http_identity(entry) -> tuple[str | None, str | None]:
+    method = entry.http_method.upper() if entry.http_method else None
+    path = entry.http_path
+    if method and path:
+        return method, path
+    for decorator in getattr(entry, "decorators", ()) or ():
+        text = str(decorator)
+        match = re.search(
+            r"(?:^|[.@])(?P<method>get|post|put|patch|delete|head|options|route)\s*\(\s*['\"`]?(?P<path>/[^'\"`), ]*)",
+            text,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        candidate_method = match.group("method").upper()
+        if candidate_method == "ROUTE":
+            method_match = re.search(r"methods?\s*=\s*\[?['\"`]?(GET|POST|PUT|PATCH|DELETE|HEAD)", text, re.IGNORECASE)
+            candidate_method = method_match.group(1).upper() if method_match else None
+        return method or candidate_method, path or match.group("path")
+    return method, path
 
 
 def _excluded_path(path: str) -> bool:

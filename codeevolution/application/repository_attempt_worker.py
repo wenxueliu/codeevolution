@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from codeevolution import __version__
 from codeevolution.analysis.communication.extractor import CommunicationFactExtractor
+from codeevolution.analysis.communication.rules import TIER1_RULES, TIER1_RULES_DIGEST
 from codeevolution.analysis.communication.schema import (
     CollectorCoverage,
     CollectorRuleSet,
@@ -72,7 +73,7 @@ class RepositoryAttemptWorker:
         analyzer: Callable[[Path, SnapshotSourceInventory], dict[str, Any]] | None = None,
         codegraph_version: str = "0.9.x",
         analyzer_bundle_digest: str | None = None,
-        rules_digest: str = "rules:phase1",
+        rules_digest: str | None = None,
         report_schema_version: str = "1",
         options_digest: str = "sha256:default",
     ):
@@ -84,7 +85,7 @@ class RepositoryAttemptWorker:
         self.analyzer = analyzer or _analyze_existing_report
         self.codegraph_version = codegraph_version
         self.analyzer_bundle_digest = analyzer_bundle_digest or f"codeevolution:{__version__}"
-        self.rules_digest = rules_digest
+        self.rules_digest = rules_digest or TIER1_RULES_DIGEST
         self.report_schema_version = report_schema_version
         self.options_digest = options_digest
 
@@ -235,8 +236,9 @@ class RepositoryAttemptWorker:
 
         rules = CollectorRuleSet(
             digest=self.rules_digest,
-            version="communication/v1",
-            budgets={"call_depth": 12, "call_nodes": 10000, "entries": 5000},
+            version=str(TIER1_RULES["version"]),
+            budgets=dict(TIER1_RULES["budgets"]),
+            options={"support": TIER1_RULES["support"]},
         )
         try:
             with SQLiteCodeGraphRepository(str(graph_path)) as repository:

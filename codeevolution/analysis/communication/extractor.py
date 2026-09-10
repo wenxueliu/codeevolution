@@ -60,6 +60,7 @@ class CommunicationFactExtractor:
             entries,
             max_depth=rules.budgets.get("call_depth", 12),
             max_nodes=rules.budgets.get("call_nodes", 10000),
+            max_edges=rules.budgets.get("call_edges", 50000),
             return_coverage=True,
         )
         functions = {item.node_id: item for item in graph.functions()}
@@ -120,9 +121,10 @@ class CommunicationFactExtractor:
                 call_line = int(row.get("call_line") or row.get("start_line") or 1)
                 channel = _channel(sources, caller, call_line)
                 for entry in _entries_for_node(row.get("caller_node_id"), paths, entry_by_id):
+                    protocol = _broker(row.get("callee_name", ""))
                     observation = self._observation(
                         "message", entry, caller, call_line,
-                        {"messaging": {"protocol": _broker(row.get("callee_name", "")), "channel": channel, "delivery_semantics": "unknown"}},
+                        {"messaging": {"protocol": protocol, "channel": channel, "delivery_semantics": _delivery_semantics(protocol, row.get("callee_name", ""), "publish")}},
                         row, extraction_confidence=0.9 if channel else 0.35,
                         call_path=paths.get(entry.entry_id, {}).get(row.get("caller_node_id"), []),
                         call_path_meta=_path_meta(reachability, entry.entry_id, row.get("caller_node_id")),
@@ -161,6 +163,7 @@ class CommunicationFactExtractor:
                         paths[entry_id] = {consumer.node_id: [consumer.node_id]}
                         reachability[entry_id] = {
                             "truncated": False, "max_depth": 0, "max_nodes": 1,
+                            "max_edges": 0, "edges_examined": 0,
                             "node_count": 1, "depth": {consumer.node_id: 0},
                             "edge_kinds": {consumer.node_id: []},
                             "alternative_shortest_path_count": {consumer.node_id: 0},
@@ -170,9 +173,10 @@ class CommunicationFactExtractor:
                 caller = functions.get(row["node_id"])
                 channel = _channel(sources, caller, int(row.get("start_line") or 1))
                 for entry in matched_entries:
+                    protocol = _broker(row.get("name", ""))
                     observation = self._observation(
                         "message", entry, caller, int(row.get("start_line") or 1),
-                        {"messaging": {"protocol": _broker(row.get("name", "")), "channel": channel, "delivery_semantics": "unknown"}},
+                        {"messaging": {"protocol": protocol, "channel": channel, "delivery_semantics": _delivery_semantics(protocol, row.get("name", ""), "consume")}},
                         row, extraction_confidence=0.7 if channel else 0.3,
                         call_path=paths.get(entry.entry_id, {}).get(row.get("node_id"), []),
                         call_path_meta=_path_meta(reachability, entry.entry_id, row.get("node_id")),
@@ -196,9 +200,10 @@ class CommunicationFactExtractor:
                 call_line = int(row.get("call_line") or row.get("start_line") or 1)
                 rpc = str(row.get("callee_name") or "")
                 for entry in _entries_for_node(row.get("caller_node_id"), paths, {item.entry_id: item for item in entries}):
+                    payload = _rpc_payload(sources, caller, call_line, rpc, row)
                     clients.append(self._observation(
                         "grpc", entry, caller, call_line,
-                        {"rpc": {"method": rpc, "identity_resolution": "callee_name"}}, row,
+                        payload, row,
                         extraction_confidence=0.65,
                         call_path=paths.get(entry.entry_id, {}).get(row.get("caller_node_id"), []),
                         call_path_meta=_path_meta(reachability, entry.entry_id, row.get("caller_node_id")), functions=functions,
@@ -219,6 +224,8 @@ class CommunicationFactExtractor:
             if _is_message_operation(operation):
                 # Redis Pub/Sub and Streams are communication observations;
                 # do not duplicate them as shared data resources.
+                continue
+            if not _looks_like_resource(row, operation):
                 continue
             for entry in _entries_for_node(caller_id, paths, {item.entry_id: item for item in entries}):
                 resource_type = _resource_type(operation)
@@ -417,7 +424,11 @@ def _http_payload(graph, sources, caller, call_line, callee_name):
                 candidates = graph.url_candidate_nodes(caller.file_path, max(1, call_line - 10), call_line + 10)
             except Exception:
                 candidates = []
-            authorities = sorted({urlsplit(_sanitize_url(str(item.get("value") or item.get("url") or ""))).netloc for item in candidates if isinstance(item, dict) and _sanitize_url(str(item.get("value") or item.get("url") or "")).startswith("http")})
+            authorities = sorted({
+                urlsplit(_sanitize_url(_candidate_text(item))).netloc
+                for item in candidates
+                if isinstance(item, dict) and _sanitize_url(_candidate_text(item)).startswith("http")
+            })
             if len(authorities) == 1:
                 binding = {"base_authority": authorities[0], "source": "frozen_graph_config", "resolution": "static"}
         elif base:
@@ -441,6 +452,10 @@ def _http_payload(graph, sources, caller, call_line, callee_name):
 def _first_absolute_url(text):
     match = re.search(r"https?://[^\s'\"`),]+", text)
     return match.group(0).rstrip(")]}>.,") if match else ""
+
+
+def _candidate_text(item):
+    return str(item.get("value") or item.get("url") or item.get("signature") or item.get("qualified_name") or item.get("name") or "")
 
 
 def _sanitize_url(raw: str) -> str:
@@ -501,9 +516,51 @@ def _broker(name):
     return "unknown"
 
 
+def _delivery_semantics(protocol, name, direction):
+    lower = str(name).lower()
+    if protocol == "redis":
+        if any(token in lower for token in ("xreadgroup", "consumer_group", "group")):
+            return "competing"
+        if any(token in lower for token in ("publish", "subscribe")):
+            return "broadcast"
+    if direction == "consume" and any(token in lower for token in ("group", "worker", "queue")):
+        return "competing"
+    return "broadcast" if direction == "publish" and protocol == "kafka" else "unknown"
+
+
+def _rpc_payload(sources, caller, line, method, row):
+    qualified = str(row.get("callee_qualified_name") or method)
+    text = sources.snippet(caller.file_path, max(1, line - 3), line + 3) if caller else ""
+    authority_match = re.search(r"['\"`]([A-Za-z0-9_.-]+:\d{2,6})['\"`]", text or "")
+    authority = authority_match.group(1) if authority_match else None
+    fully_qualified = method if method.startswith("/") else None
+    if fully_qualified is None and "." in qualified:
+        pieces = qualified.replace("::", ".").split(".")
+        if len(pieces) >= 3:
+            fully_qualified = "/" + ".".join(pieces[:-2]) + "." + pieces[-2] + "/" + pieces[-1]
+    return {
+        "rpc": {
+            "method": method,
+            "fully_qualified_method": fully_qualified,
+            "authority": authority,
+            "streaming": "streaming" if any(token in method.lower() for token in ("stream", "watch")) else "unary",
+            "identity_resolution": "generated_stub" if "stub" in qualified.lower() or fully_qualified else "callee_name",
+        }
+    }
+
+
 def _resource_type(name):
     lower = name.lower()
     return "redis" if "redis" in lower else "sql" if any(token in lower for token in ("query", "execute", "select", "insert", "update")) else "resource"
+
+
+def _looks_like_resource(row, operation):
+    text = " ".join(str(row.get(key) or "") for key in ("name", "target", "signature", "metadata", "callee_name", "function", "file_path", "operation")).lower()
+    return any(token in text for token in (
+        "redis", "cache", "query", "execute", "select", "insert", "update", "delete",
+        "dynamo", "mongo", "postgres", "mysql", "sqlite", "sqlalchemy", "jdbc", "database",
+        "transaction", "session", "get_item", "put_item", "collection", "keyvalue",
+    ))
 
 
 def _is_message_operation(name: str) -> bool:

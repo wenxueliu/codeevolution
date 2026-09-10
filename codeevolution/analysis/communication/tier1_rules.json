@@ -1,0 +1,42 @@
+{
+  "schema": "communication-rules/v1",
+  "version": "tier1/v1",
+  "support": {
+    "python": {
+      "server_entry": ["fastapi", "flask"],
+      "http_client": ["requests", "httpx", "aiohttp"],
+      "message": ["kafka-python", "confluent-kafka", "pika"],
+      "grpc": ["grpcio"],
+      "resource": ["redis-py", "sqlalchemy", "db-api"]
+    },
+    "typescript": {
+      "server_entry": ["express", "nestjs"],
+      "http_client": ["fetch", "axios"],
+      "message": [],
+      "grpc": [],
+      "resource": []
+    },
+    "java": {
+      "server_entry": ["spring-mvc", "spring-webflux"],
+      "http_client": ["resttemplate", "webclient", "openfeign"],
+      "message": ["spring-kafka", "spring-amqp"],
+      "grpc": ["grpc-java"],
+      "resource": ["jedis", "lettuce", "jdbc", "jpa"]
+    },
+    "go": {
+      "server_entry": ["net/http", "gin"],
+      "http_client": ["net/http"],
+      "message": [],
+      "grpc": ["grpc-go"],
+      "resource": []
+    }
+  },
+  "budgets": {
+    "entries": 5000,
+    "call_depth": 12,
+    "call_nodes": 10000,
+    "call_edges": 50000,
+    "observations": 10000,
+    "payload_bytes": 65536
+  }
+}

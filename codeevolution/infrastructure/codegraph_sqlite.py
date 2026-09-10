@@ -969,7 +969,7 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
         self, file_path: str, start_line: int, end_line: int
     ) -> list[dict[str, Any]]:
         return self.query(
-            """SELECT name, start_line FROM nodes WHERE file_path = ?
+            """SELECT id, name, qualified_name, signature, start_line FROM nodes WHERE file_path = ?
                AND start_line BETWEEN ? AND ? AND kind IN ('variable', 'constant')
                AND (name LIKE '%http%' OR name LIKE '%://%' OR name LIKE '%/api/%'
                     OR name LIKE '%base_url%' OR name LIKE '%endpoint%'
@@ -1012,10 +1012,13 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
 
     def rpc_calls(self, pattern: str) -> list[dict[str, Any]]:
         return self.query(
-            """SELECT n1.qualified_name AS caller, n1.file_path, n1.start_line,
-                      n2.name AS callee_name, e.line AS call_line FROM edges e
+            """SELECT n1.id AS caller_node_id, n2.id AS callee_node_id,
+                      n1.qualified_name AS caller, n1.file_path, n1.start_line,
+                      n2.name AS callee_name, n2.qualified_name AS callee_qualified_name,
+                      n2.file_path AS callee_file, n2.start_line AS callee_line,
+                      e.line AS call_line FROM edges e
                JOIN nodes n1 ON n1.id = e.source JOIN nodes n2 ON n2.id = e.target
-               WHERE e.kind = 'calls' AND n2.name LIKE ? LIMIT 20""",
+               WHERE e.kind = 'calls' AND n2.name LIKE ?""",
             [f"%{pattern}%"],
         )
 

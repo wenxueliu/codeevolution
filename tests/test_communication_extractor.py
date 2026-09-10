@@ -143,3 +143,29 @@ def test_locations_are_not_emitted_for_paths_outside_the_frozen_manifest():
     )
     assert artifact.entries[0].handler.location is None
     assert artifact.http_outbounds[0].caller.location is None
+
+
+def test_decorator_route_path_is_part_of_entry_identity():
+    graph = _Graph()
+    graph.entry = EntryPointDef(
+        "entry-node", "create", "app.create", "src/app.py", 1, "http", decorators=["@router.post('/orders/{id}')"]
+    )
+    artifact = CommunicationFactExtractor().collect(
+        graph, _Sources(), CollectorRuleSet("sha256:rules", "rules/v1"), snapshot_id="snapshot-1"
+    )
+    assert artifact.entries[0].method == "POST"
+    assert artifact.entries[0].path_template == "/orders/{id}"
+
+
+def test_grpc_rows_with_frozen_caller_identity_are_collected():
+    graph = _Graph()
+    graph.rpc_calls = lambda pattern: [{
+        "caller_node_id": "client-node", "callee_node_id": "rpc-node",
+        "callee_name": "GetUser", "callee_qualified_name": "users.v1.UserServiceStub.GetUser",
+        "call_line": 7,
+    }] if pattern == "Stub" else []
+    artifact = CommunicationFactExtractor().collect(
+        graph, _Sources(), CollectorRuleSet("sha256:rules", "rules/v1"), snapshot_id="snapshot-1"
+    )
+    assert artifact.grpc_clients
+    assert artifact.grpc_clients[0].payload["rpc"]["identity_resolution"] == "generated_stub"
