@@ -59,6 +59,15 @@ def _message_match_key(messaging: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _plain_json(value: Any) -> Any:
+    """Materialize immutable artifact mappings before API/CAS serialization."""
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain_json(item) for item in value]
+    return value
+
+
 class TopologyBuildError(RuntimeError):
     """Raised when a bound Snapshot cannot supply its immutable artifact."""
 
@@ -268,7 +277,7 @@ class TopologyArtifactBuilder:
     @staticmethod
     def _transport(observation: CommunicationObservation) -> dict[str, Any]:
         payload = observation.payload
-        return dict(payload) if isinstance(payload, Mapping) else {}
+        return _plain_json(payload) if isinstance(payload, Mapping) else {}
 
     @staticmethod
     def _evidence(observation: CommunicationObservation) -> dict[str, Any]:
@@ -335,7 +344,7 @@ class TopologyArtifactBuilder:
             artifact = artifacts[member.snapshot_id]
             for observation in artifact.resource_accesses:
                 item = {"source_member_id": member.member_id, "observation_id": observation.observation_id,
-                        "resource": dict(observation.payload.get("resource", observation.payload)),
+                        "resource": _plain_json(observation.payload.get("resource", observation.payload)),
                         "rules_digest": rules_digest,
                         "evidence": TopologyArtifactBuilder._evidence(observation)}
                 item["edge_id"] = stable_edge_id("resource", item)

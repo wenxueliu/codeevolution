@@ -1,3 +1,5 @@
+import json
+
 from codeevolution.analysis.communication.schema import (
     CollectorCoverage,
     CollectorStatus,
@@ -63,6 +65,28 @@ def test_builder_creates_confirmed_http_endpoint_and_service_projection():
     assert edge["target"]["member_id"] == "users"
     assert payload["service_projections"][0]["source_member_id"] == "orders"
     assert payload["coverage"]["status"] == "complete"
+
+
+def test_builder_materializes_immutable_observation_payload_for_cas_json():
+    caller = SnapshotHandle("caller", "snap-caller", "caller", (), "facts", "artifact", "complete")
+    target = SnapshotHandle("target", "snap-target", "target", ("target.internal",), "facts", "artifact", "complete")
+    artifacts = {
+        "snap-caller": _artifact(
+            "snap-caller",
+            entries=(_entry("snap-caller", "caller.entry", "GET", "/"),),
+            http=(_observation(
+                "http:json",
+                "caller.entry",
+                {"request": {"method": "GET", "authority": "target.internal", "normalized_path": "/users/1"}},
+            ),),
+        ),
+        "snap-target": _artifact(
+            "snap-target",
+            entries=(_entry("snap-target", "target.entry", "GET", "/users/{id}"),),
+        ),
+    }
+    payload = TopologyArtifactBuilder().build(_view(caller, target), artifacts)
+    json.dumps(payload)
 
 
 def test_builder_does_not_confirm_relative_url_and_keeps_resource_separate():
