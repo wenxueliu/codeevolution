@@ -51,3 +51,8 @@ def test_flow_returns_rooted_graph_and_cycle_reference():
 def test_flow_method_path_requires_unique_entry():
     with pytest.raises(TopologyQueryError, match="entry_not_in_view"):
         TopologyQueryService().flow(_artifact(), "gateway", method="POST", path="/")
+
+
+def test_flow_rejects_limits_above_hard_cap():
+    with pytest.raises(TopologyQueryError, match="flow_limits_exceeded"):
+        TopologyQueryService().flow(_artifact(), "gateway", entry_id="gateway.root", max_nodes=5001)

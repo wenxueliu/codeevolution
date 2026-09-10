@@ -12,6 +12,10 @@ class TopologyQueryError(ValueError):
 
 
 class TopologyQueryService:
+    MAX_FLOW_NODES = 5_000
+    MAX_FLOW_EDGES = 10_000
+    MAX_DEPTH = 20
+
     def impact(
         self,
         artifact: Mapping[str, Any],
@@ -94,6 +98,8 @@ class TopologyQueryService:
         self._check_depth(max_depth)
         if max_nodes < 1 or max_edges < 1:
             raise TopologyQueryError("invalid_flow_limits")
+        if max_nodes > self.MAX_FLOW_NODES or max_edges > self.MAX_FLOW_EDGES:
+            raise TopologyQueryError("flow_limits_exceeded")
         root_entry = self._resolve_entry(artifact, member_id, entry_id, method, path)
         root = {"member_id": member_id, "entry_id": root_entry}
         nodes: list[dict[str, Any]] = [{**root, "node_id": self._node_key(member_id, root_entry), "depth": 0}]
@@ -267,7 +273,7 @@ class TopologyQueryService:
 
     @staticmethod
     def _check_depth(max_depth):
-        if max_depth < 0 or max_depth > 20:
+        if max_depth < 0 or max_depth > TopologyQueryService.MAX_DEPTH:
             raise TopologyQueryError("invalid_max_depth")
 
 
