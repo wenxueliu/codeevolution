@@ -236,3 +236,22 @@ def test_competing_message_consumers_are_alternatives_not_confirmed_edges():
     assert payload["endpoint_dependencies"] == []
     assert len(payload["message_alternatives"]) == 1
     assert payload["message_alternatives"][0]["consumer_member_ids"] == ["first", "second"]
+
+
+def test_message_publisher_without_consumer_is_retained_as_unresolved_candidate():
+    producer = SnapshotHandle("producer", "snap-producer", "producer", (), "facts", "artifact", "complete")
+    publication = _observation(
+        "message:orphan",
+        "producer.entry",
+        {"messaging": {"channel": "orders.created", "protocol": "kafka", "delivery_semantics": "broadcast"}},
+    )
+    payload = TopologyArtifactBuilder().build(
+        _view(producer),
+        {"snap-producer": _artifact(
+            "snap-producer",
+            entries=(_entry("snap-producer", "producer.entry", "POST", "/publish"),),
+            messages=(publication,),
+        )},
+    )
+    assert payload["endpoint_dependencies"] == []
+    assert any(item["reason"] == "no_matching_consumer" for item in payload["candidates"])

@@ -369,12 +369,14 @@ class TopologyArtifactBuilder:
                                    "source_member_id": member.member_id, "reason": "empty_channel"})
                 continue
             matched_competing: list[tuple[Any, Any]] = []
+            matched_identity = False
             for target, subscription in consumers:
                 if target.member_id == member.member_id:
                     continue
                 target_messaging = dict(subscription.payload).get("messaging", {})
                 if _message_match_key(messaging) != _message_match_key(target_messaging):
                     continue
+                matched_identity = True
                 if delivery not in {"broadcast", "fanout"} or target_messaging.get("delivery_semantics", "unknown") not in {"broadcast", "fanout"}:
                     if delivery == "competing" and target_messaging.get("delivery_semantics") == "competing":
                         matched_competing.append((target, subscription))
@@ -424,6 +426,15 @@ class TopologyArtifactBuilder:
                 }
                 group["alternative_group_id"] = stable_edge_id("message-alternative", group)
                 alternatives.append(group)
+            elif not matched_identity:
+                candidates.append({
+                    "kind": "unresolved",
+                    "observation_id": publication.observation_id,
+                    "source_member_id": member.member_id,
+                    "channel": channel,
+                    "protocol": protocol,
+                    "reason": "no_matching_consumer",
+                })
 
     def _append_grpc_dependencies(
         self, member, artifact, available, artifacts, endpoint_dependencies, service_edges, candidates,
