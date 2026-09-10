@@ -228,6 +228,10 @@ class TopologyArtifactBuilder:
             result["callsite"] = observation.callsite.to_dict()
         if observation.caller:
             result["caller"] = observation.caller.to_dict()
+        if observation.call_path:
+            result["call_path"] = [item.to_dict() for item in observation.call_path]
+        if observation.call_path_evidence is not None:
+            result["call_path_evidence"] = observation.call_path_evidence.to_dict()
         return result
 
     @staticmethod

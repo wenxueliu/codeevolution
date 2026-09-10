@@ -65,7 +65,9 @@ def test_artifact_post_rejects_non_topology_or_filtered_variant():
     client = TestClient(create_app({"graph_artifact_service": service}))
 
     with client:
-        assert client.post(
+        invalid = client.post(
             "/api/graph-views/view-1/artifact-jobs",
             json={"artifact_kind": "topology", "params": {"channels": ["http"]}},
-        ).status_code == 422
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["error"]["code"] == "invalid_artifact_request"

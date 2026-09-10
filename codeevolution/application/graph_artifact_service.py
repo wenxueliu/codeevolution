@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -213,12 +214,25 @@ class GraphArtifactService:
             root = self.artifacts.open(key)
         except Exception:
             return None
+        try:
+            expected_tree = str(key).removeprefix("sha256:")
+            if directory_digest(root) != expected_tree:
+                return None
+        except Exception:
+            return None
         for filename in ("communication.json", "repository-communication.json", "payload.json"):
             candidate = root / filename
             if not candidate.is_file():
                 continue
             try:
-                return deserialize_communication_artifact(candidate.read_bytes())
+                raw = candidate.read_bytes()
+                expected_size = summary.get("byte_size") if isinstance(summary, dict) else None
+                expected_payload = summary.get("payload_digest") if isinstance(summary, dict) else None
+                if expected_size is not None and int(expected_size) != len(raw):
+                    return None
+                if expected_payload and str(expected_payload) != "sha256:" + hashlib.sha256(raw).hexdigest():
+                    return None
+                return deserialize_communication_artifact(raw)
             except ValueError:
                 return None
         return None

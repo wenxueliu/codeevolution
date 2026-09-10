@@ -229,6 +229,8 @@ class CommunicationObservation:
     callsite: Location | None
     payload: Mapping[str, Any] = field(default_factory=dict)
     extraction_confidence: float | None = None
+    call_path: tuple[NodeRef, ...] = ()
+    call_path_evidence: "CallPathEvidence | None" = None
 
     def __post_init__(self) -> None:
         _require_nonempty(self.observation_id, "observation.observation_id")
@@ -241,6 +243,7 @@ class CommunicationObservation:
         object.__setattr__(
             self, "payload", _freeze_json(self.payload, field_name="observation.payload")
         )
+        object.__setattr__(self, "call_path", tuple(self.call_path))
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -253,6 +256,10 @@ class CommunicationObservation:
             result["caller"] = self.caller.to_dict()
         if self.callsite is not None:
             result["callsite"] = self.callsite.to_dict()
+        if self.call_path:
+            result["call_path"] = [item.to_dict() for item in self.call_path]
+        if self.call_path_evidence is not None:
+            result["call_path_evidence"] = self.call_path_evidence.to_dict()
         return result
 
     @classmethod
@@ -266,6 +273,79 @@ class CommunicationObservation:
             callsite=Location.from_dict(callsite) if isinstance(callsite, Mapping) else None,
             payload=value.get("payload", {}),
             extraction_confidence=value.get("extraction_confidence"),
+            call_path=tuple(
+                NodeRef.from_dict(item)
+                for item in value.get("call_path", [])
+                if isinstance(item, Mapping)
+            ),
+            call_path_evidence=(
+                CallPathEvidence.from_dict(value["call_path_evidence"])
+                if isinstance(value.get("call_path_evidence"), Mapping)
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CallPathEvidence:
+    """Typed, bounded evidence for an entry-rooted shortest call path."""
+
+    nodes: tuple[NodeRef, ...] = ()
+    edge_kinds: tuple[str, ...] = ()
+    entry_id: str | None = None
+    callsite: Location | None = None
+    depth: int = 0
+    truncated: bool = False
+    max_depth: int = 0
+    reachability_rule: str = "shortest-call-path/v1"
+    alternative_shortest_path_count: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "nodes", tuple(self.nodes))
+        object.__setattr__(self, "edge_kinds", tuple(_require_nonempty(str(item), "call_path.edge_kind") for item in self.edge_kinds))
+        if self.entry_id is not None:
+            _require_nonempty(self.entry_id, "call_path.entry_id")
+        _require_nonempty(self.reachability_rule, "call_path.reachability_rule")
+        if self.depth < 0 or self.max_depth < 0:
+            raise CommunicationSchemaError("call_path depth values must not be negative")
+        if self.nodes and self.depth != len(self.nodes) - 1:
+            raise CommunicationSchemaError("call_path.depth must match nodes")
+        if len(self.edge_kinds) != max(0, len(self.nodes) - 1):
+            raise CommunicationSchemaError("call_path.edge_kinds must match nodes")
+        if self.depth > self.max_depth:
+            raise CommunicationSchemaError("call_path.depth must not exceed max_depth")
+        if self.alternative_shortest_path_count < 0:
+            raise CommunicationSchemaError("call_path alternative count must not be negative")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "nodes": [item.to_dict() for item in self.nodes],
+            "edge_kinds": list(self.edge_kinds),
+            "entry_id": self.entry_id,
+            "callsite": self.callsite.to_dict() if self.callsite is not None else None,
+            "depth": self.depth,
+            "truncated": self.truncated,
+            "max_depth": self.max_depth,
+            "reachability_rule": self.reachability_rule,
+            "alternative_shortest_path_count": self.alternative_shortest_path_count,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "CallPathEvidence":
+        raw_nodes = value.get("nodes", [])
+        raw_edges = value.get("edge_kinds", [])
+        if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+            raise CommunicationSchemaError("call_path nodes and edge_kinds must be arrays")
+        return cls(
+            nodes=tuple(NodeRef.from_dict(item) for item in raw_nodes if isinstance(item, Mapping)),
+            edge_kinds=tuple(str(item) for item in raw_edges),
+            entry_id=value.get("entry_id"),
+            callsite=(Location.from_dict(value["callsite"]) if isinstance(value.get("callsite"), Mapping) else None),
+            depth=value.get("depth", 0),
+            truncated=bool(value.get("truncated", False)),
+            max_depth=value.get("max_depth", 0),
+            reachability_rule=value.get("reachability_rule", ""),
+            alternative_shortest_path_count=value.get("alternative_shortest_path_count", 0),
         )
 
 

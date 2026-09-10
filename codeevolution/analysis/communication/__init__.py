@@ -6,6 +6,7 @@ repository snapshot attempt.
 """
 
 from .schema import (
+    CallPathEvidence,
     CollectorCoverage,
     CollectorResult,
     CollectorRuleSet,
@@ -32,6 +33,7 @@ __all__ = [
     "CollectorResult",
     "CollectorRuleSet",
     "CollectorStatus",
+    "CallPathEvidence",
     "EntryFact",
     "Location",
     "NodeRef",

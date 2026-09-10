@@ -1,4 +1,6 @@
 
+from dataclasses import dataclass
+
 from codeevolution.analysis.communication.extractor import CommunicationFactExtractor, _sanitize_url
 from codeevolution.analysis.communication.schema import CollectorRuleSet
 from codeevolution.domain.knowledge import CallTarget, EntryPointDef, FunctionDef
@@ -44,6 +46,16 @@ class _Sources:
         return 'requests.get("http://users.internal/users/1")'
 
 
+@dataclass(frozen=True)
+class _SourceFile:
+    path: str
+
+
+class _ManifestSources(_Sources):
+    def list_files(self, categories=None, globs=None):
+        return [_SourceFile("src/other.py")]
+
+
 def test_extractor_only_emits_entry_reachable_http_observations():
     artifact = CommunicationFactExtractor().collect(
         _Graph(), _Sources(), CollectorRuleSet("sha256:rules", "rules/v1"), snapshot_id="snapshot-1"
@@ -54,6 +66,7 @@ def test_extractor_only_emits_entry_reachable_http_observations():
     observation = artifact.http_outbounds[0]
     assert observation.entry_id == artifact.entries[0].entry_id
     assert observation.payload["request"]["authority"] == "users.internal"
+    assert [item.node_id for item in observation.call_path] == ["entry-node", "client-node"]
 
 
 def test_extractor_drops_test_entries_and_keeps_dynamic_calls_unresolved():
@@ -84,3 +97,49 @@ def test_message_consumer_without_framework_entry_is_promoted_to_entry():
     )
     assert any(item.kind == "message_consumer" for item in artifact.entries)
     assert artifact.message_subscriptions
+
+
+def test_redis_pubsub_is_not_duplicated_as_resource_access():
+    graph = _Graph()
+    graph.mq_producer_calls = lambda pattern: [{
+        "caller_node_id": "client-node", "callee_name": "redis.publish", "call_line": 7,
+    }] if pattern == "publish" else []
+    graph.database_call_candidates = lambda: [{
+        "caller_node_id": "client-node", "name": "redis.publish", "call_line": 7,
+    }]
+    artifact = CommunicationFactExtractor().collect(
+        graph, _Sources(), CollectorRuleSet("sha256:rules", "rules/v1"), snapshot_id="snapshot-1"
+    )
+    assert artifact.message_publications
+    assert artifact.resource_accesses == ()
+
+
+def test_callsite_reachable_from_multiple_entries_is_emitted_per_entry():
+    graph = _Graph()
+    second = EntryPointDef("entry-two", "submit", "app.submit", "src/app.py", 2, "http", "POST", "/submit")
+    graph.inbound_endpoints = lambda: [graph.entry, second]
+    graph.callees = lambda node_id: [CallTarget(node_id, "client-node", "requests.get", "function", "src/app.py", 7, 7)] if node_id in {"entry-node", "entry-two"} else []
+    artifact = CommunicationFactExtractor().collect(
+        graph, _Sources(), CollectorRuleSet("sha256:rules", "rules/v1"), snapshot_id="snapshot-1"
+    )
+    assert len(artifact.http_outbounds) == 2
+    assert {item.entry_id for item in artifact.http_outbounds} == {item.entry_id for item in artifact.entries}
+    assert len({item.observation_id for item in artifact.http_outbounds}) == 2
+
+
+def test_reachability_budget_is_explicitly_truncated():
+    artifact = CommunicationFactExtractor().collect(
+        _Graph(), _Sources(), CollectorRuleSet("sha256:rules", "rules/v1", budgets={"call_depth": 0}), snapshot_id="snapshot-1"
+    )
+    http = next(item for item in artifact.collector_coverage if item.collector == "http")
+    assert http.status.value == "truncated"
+    assert http.coverage["reachability"][artifact.entries[0].entry_id]["truncated"] is True
+    assert artifact.http_outbounds == ()
+
+
+def test_locations_are_not_emitted_for_paths_outside_the_frozen_manifest():
+    artifact = CommunicationFactExtractor().collect(
+        _Graph(), _ManifestSources(), CollectorRuleSet("sha256:rules", "rules/v1"), snapshot_id="snapshot-1"
+    )
+    assert artifact.entries[0].handler.location is None
+    assert artifact.http_outbounds[0].caller.location is None

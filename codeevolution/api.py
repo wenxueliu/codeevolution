@@ -13,10 +13,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.responses import JSONResponse
 
 from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService, SnapshotChatService
@@ -67,6 +69,29 @@ _request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies
 _init_tasks: dict[str, dict] = {}
 _init_lock = threading.Lock()
 _explanation_generation_lock = threading.Lock()
+
+
+async def _topology_http_exception_handler(request: Request, exc: HTTPException):
+    """Use the documented error envelope for topology delivery endpoints."""
+    if request.url.path.startswith(("/api/graph-views/", "/api/graph-artifact-jobs/")):
+        detail = exc.detail
+        if isinstance(detail, dict) and "error" in detail:
+            error = detail["error"]
+        else:
+            error = str(detail)
+        return JSONResponse(
+            status_code=exc.status_code,
+            headers=exc.headers,
+            content={
+                "error": {
+                    "code": error,
+                    "message": error,
+                    "details": {},
+                    "request_id": request.headers.get("x-request-id", ""),
+                }
+            },
+        )
+    return await http_exception_handler(request, exc)
 
 
 class ChatRequest(BaseModel):
@@ -2041,6 +2066,7 @@ def run_ui_recording(recording_id: int):
         raise HTTPException(400, str(error)) from error
 
 
+app.add_exception_handler(HTTPException, _topology_http_exception_handler)
 _route_app = app
 
 
@@ -2087,6 +2113,7 @@ def create_app(dependencies: dict | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    created.add_exception_handler(HTTPException, _topology_http_exception_handler)
 
     @created.middleware("http")
     async def bind_dependencies(request, call_next):

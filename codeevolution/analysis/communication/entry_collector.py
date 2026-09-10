@@ -9,10 +9,22 @@ from typing import Any
 from codeevolution.analysis.communication.schema import EntryFact, Location, NodeRef
 
 
-def collect_entries(graph, snapshot_id: str, *, max_entries: int = 5000) -> tuple[EntryFact, ...]:
+def collect_entries(
+    graph,
+    snapshot_id: str,
+    *,
+    max_entries: int = 5000,
+    allowed_paths: set[str] | frozenset[str] | None = None,
+    return_coverage: bool = False,
+) -> tuple[EntryFact, ...] | tuple[tuple[EntryFact, ...], dict[str, Any]]:
     """Convert CodeGraph entry declarations into stable Snapshot facts."""
     result: list[EntryFact] = []
-    for entry in sorted(graph.inbound_endpoints(), key=lambda item: (item.file_path, item.start_line, item.node_id))[:max_entries]:
+    candidates = sorted(
+        graph.inbound_endpoints(), key=lambda item: (item.file_path, item.start_line, item.qualified_name, item.node_id)
+    )
+    eligible = [entry for entry in candidates if not _excluded_path(entry.file_path)]
+    selected = eligible[: max(0, max_entries)]
+    for entry in selected:
         if _excluded_path(entry.file_path):
             continue
         kind = _entry_kind(entry.entry_type, entry.http_method, entry.http_path)
@@ -22,7 +34,11 @@ def collect_entries(graph, snapshot_id: str, *, max_entries: int = 5000) -> tupl
             "protocol": protocol,
             "method": entry.http_method,
             "path_template": entry.http_path,
-            "handler": entry.node_id,
+            "handler": {
+                "qualified_name": entry.qualified_name,
+                "file": entry.file_path,
+                "start_line": entry.start_line,
+            },
         }
         entry_id = "entry:sha256:" + sha256(_canonical(identity).encode()).hexdigest()
         handler = NodeRef(
@@ -31,7 +47,11 @@ def collect_entries(graph, snapshot_id: str, *, max_entries: int = 5000) -> tupl
             kind="method" if "method" in entry.qualified_name.lower() else "function",
             name=entry.name,
             qualified_name=entry.qualified_name,
-            location=Location(entry.file_path, entry.start_line),
+            location=(
+                Location(entry.file_path, entry.start_line)
+                if allowed_paths is None or entry.file_path in allowed_paths
+                else None
+            ),
         )
         result.append(
             EntryFact(
@@ -45,29 +65,74 @@ def collect_entries(graph, snapshot_id: str, *, max_entries: int = 5000) -> tupl
                 evidence={"entry_type": entry.entry_type},
             )
         )
-    return tuple(result)
+    output = tuple(result)
+    if not return_coverage:
+        return output
+    return output, {
+        "candidate_count": len(eligible),
+        "emitted_count": len(output),
+        "max_entries": max_entries,
+        "truncated": len(eligible) > len(output),
+        "excluded_count": len(candidates) - len(eligible),
+    }
 
 
-def reachable_call_paths(graph, entries: tuple[EntryFact, ...], *, max_depth: int = 12, max_nodes: int = 10000) -> dict[str, dict[str, list[str]]]:
+def reachable_call_paths(
+    graph,
+    entries: tuple[EntryFact, ...],
+    *,
+    max_depth: int = 12,
+    max_nodes: int = 10000,
+    return_coverage: bool = False,
+) -> dict[str, dict[str, list[str]]] | tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, Any]]]:
     """Return shortest entry-rooted node paths using only frozen calls edges."""
     result: dict[str, dict[str, list[str]]] = {}
+    coverage: dict[str, dict[str, Any]] = {}
     for entry in entries:
         paths: dict[str, list[str]] = {entry.handler.node_id: [entry.handler.node_id]}
+        depths: dict[str, int] = {entry.handler.node_id: 0}
+        alternatives: dict[str, int] = {entry.handler.node_id: 0}
+        edge_kinds: dict[str, list[str]] = {entry.handler.node_id: []}
+        truncated = False
         queue = deque([(entry.handler.node_id, 0)])
-        while queue and len(paths) <= max_nodes:
+        while queue:
             current, depth = queue.popleft()
             if depth >= max_depth:
+                if graph.callees(current):
+                    truncated = True
                 continue
-            for target in graph.callees(current):
+            targets = sorted(
+                graph.callees(current),
+                key=lambda item: (item.callee_node_id, item.call_line, item.callee_name),
+            )
+            for target in targets:
                 node_id = target.callee_node_id
                 if node_id in paths:
+                    if depths[node_id] == depth + 1:
+                        alternatives[node_id] = alternatives.get(node_id, 0) + 1
                     continue
-                paths[node_id] = paths[current] + [node_id]
-                queue.append((node_id, depth + 1))
                 if len(paths) >= max_nodes:
+                    truncated = True
                     break
+                paths[node_id] = paths[current] + [node_id]
+                depths[node_id] = depth + 1
+                alternatives[node_id] = 0
+                edge_kinds[node_id] = edge_kinds[current] + [target.provenance or "calls"]
+                queue.append((node_id, depth + 1))
         result[entry.entry_id] = paths
-    return result
+        coverage[entry.entry_id] = {
+            "truncated": truncated,
+            "max_depth": max_depth,
+            "max_nodes": max_nodes,
+            "node_count": len(paths),
+            "depth": depths,
+            "edge_kinds": edge_kinds,
+            "alternative_shortest_path_count": alternatives,
+            "reachability_rule": "shortest-call-path/v1",
+        }
+    if not return_coverage:
+        return result
+    return result, coverage
 
 
 def _entry_kind(entry_type: str, method: str | None, path: str | None) -> str:
