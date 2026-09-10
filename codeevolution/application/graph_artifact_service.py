@@ -208,7 +208,10 @@ class GraphArtifactService:
         if artifact_kind != "topology":
             raise GraphArtifactRequestError("invalid_artifact_request")
         self._view(view_id)
-        return self.store.list_artifact_jobs(view_id, artifact_kind=artifact_kind, limit=limit)
+        return [
+            self.store.public_artifact_job(item)
+            for item in self.store.list_artifact_jobs(view_id, artifact_kind=artifact_kind, limit=limit)
+        ]
 
     def _read_cache(self, view_id: str, artifact_kind: str, params: dict) -> dict | None:
         view = self._view(view_id)

@@ -160,3 +160,13 @@ def test_job_status_is_view_authorized_and_does_not_return_inline_payload(tmp_pa
         )
     with pytest.raises(GraphArtifactRequestError, match="view_expired"):
         service.get_job(job["id"])
+
+
+def test_job_history_does_not_return_inline_payload(tmp_path):
+    store = _store(tmp_path)
+    view = store.create_current_view(member_ids=["orders"])
+    job = store.create_artifact_job(view_id=view.id, artifact_kind="topology", cache_key="sha256:history")
+    store.start_artifact_job(job["id"])
+    store.complete_artifact_job(job["id"], {"secret": "not-history"})
+    history = GraphArtifactService(store, queries=object()).history(view.id)
+    assert history and "payload_json" not in history[0]
