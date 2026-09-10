@@ -591,6 +591,10 @@ def _channel(sources, caller, line):
 
 def _message_payload(row, *, protocol, channel, direction):
     name = str(row.get("callee_name") or row.get("name") or row.get("target") or "")
+    consumer_group = row.get("consumer_group") or row.get("group")
+    delivery = _delivery_semantics(protocol, name, direction)
+    if direction == "consume" and consumer_group:
+        delivery = "competing"
     destination_kind = str(
         row.get("destination_kind")
         or ("stream" if protocol == "redis" and any(token in name.lower() for token in ("xadd", "xread")) else "topic" if protocol in {"kafka", "nats"} else "queue" if protocol == "rabbitmq" else "channel")
@@ -602,10 +606,10 @@ def _message_payload(row, *, protocol, channel, direction):
         "exchange": row.get("exchange"),
         "routing_key": row.get("routing_key"),
         "queue": row.get("queue"),
-        "consumer_group": row.get("consumer_group") or row.get("group"),
+        "consumer_group": consumer_group,
         "event_type": row.get("event_type") or row.get("message_type"),
         "channel": channel,
-        "delivery_semantics": _delivery_semantics(protocol, name, direction),
+        "delivery_semantics": delivery,
         "name_resolution": "literal" if channel else "unresolved",
     }
     return {"direction": direction, "messaging": messaging}
