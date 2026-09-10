@@ -873,7 +873,7 @@ def _topology_artifact_delivery(view_id: str) -> dict[str, Any]:
                 if directory_digest(root) != str(cached["artifact_key"]).removeprefix("sha256:"):
                     raise ValueError("artifact directory digest mismatch")
                 payload_json = (root / "payload.json").read_text(encoding="utf-8")
-        except (OSError, KeyError, ValueError) as error:
+        except (OSError, KeyError, ValueError, RuntimeError) as error:
             raise HTTPException(424, "snapshot_artifact_corrupt") from error
     try:
         payload = json.loads(payload_json) if payload_json else {}

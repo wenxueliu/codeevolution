@@ -276,7 +276,7 @@ def _payload_from_cache(runtime, cached: dict) -> dict:
                 if directory_digest(root) != str(cached["artifact_key"]).removeprefix("sha256:"):
                     raise ValueError("artifact directory digest mismatch")
                 payload_json = (root / "payload.json").read_text(encoding="utf-8")
-        except (KeyError, OSError, ValueError) as error:
+        except (KeyError, OSError, ValueError, RuntimeError) as error:
             raise CLIContractError("snapshot_artifact_corrupt", 5) from error
     if not payload_json:
         raise CLIContractError("topology artifact payload is unavailable", 5)

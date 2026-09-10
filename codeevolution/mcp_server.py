@@ -151,7 +151,7 @@ def _read_topology_payload(runtime: SnapshotRuntime, view_id: str) -> dict[str, 
                 if directory_digest(root) != str(cached["artifact_key"]).removeprefix("sha256:"):
                     raise ValueError("artifact directory digest mismatch")
                 payload_json = (root / "payload.json").read_text(encoding="utf-8")
-        except (KeyError, OSError, ValueError):
+        except (KeyError, OSError, ValueError, RuntimeError):
             return {"error": "snapshot_artifact_corrupt"}
     try:
         payload = json.loads(payload_json or "{}")
