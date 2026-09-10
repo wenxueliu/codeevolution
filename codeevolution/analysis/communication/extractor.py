@@ -81,9 +81,10 @@ class CommunicationFactExtractor:
         observations = []
         unresolved = []
         entry_by_id = {entry.entry_id: entry for entry in entries}
-        if not callable(getattr(graph, "http_client_calls", None)):
+        if not _protocol_supported(graph, rules, "http_client") or not callable(getattr(graph, "http_client_calls", None)):
             return CollectorResult(
                 CollectorCoverage("http", "http-collector/v1", CollectorStatus.UNSUPPORTED, reason="graph_adapter_missing_http_client_calls"),
+                entries=entries,
             )
         for pattern in HTTP_PATTERNS:
             for row in graph.http_client_calls(pattern):
@@ -111,7 +112,7 @@ class CommunicationFactExtractor:
         synthetic_entries = []
         entry_by_node = {entry.handler.node_id: entry for entry in entries}
         entry_by_id = {entry.entry_id: entry for entry in entries}
-        if not callable(getattr(graph, "mq_producer_calls", None)) or not callable(getattr(graph, "mq_consumers", None)):
+        if not _protocol_supported(graph, rules, "message") or not callable(getattr(graph, "mq_producer_calls", None)) or not callable(getattr(graph, "mq_consumers", None)):
             return CollectorResult(
                 CollectorCoverage("message", "message-collector/v1", CollectorStatus.UNSUPPORTED, reason="graph_adapter_missing_message_calls"),
             )
@@ -192,7 +193,7 @@ class CommunicationFactExtractor:
 
     def _grpc_result(self, graph, sources, entries, paths, reachability, functions, rules, entry_coverage):
         clients, unresolved = [], []
-        if not callable(getattr(graph, "rpc_calls", None)):
+        if not _protocol_supported(graph, rules, "grpc") or not callable(getattr(graph, "rpc_calls", None)):
             return CollectorResult(CollectorCoverage("grpc", "grpc-collector/v1", CollectorStatus.UNSUPPORTED, reason="graph_adapter_missing_rpc_calls"))
         for pattern in RPC_PATTERNS:
             for row in graph.rpc_calls(pattern):
@@ -215,7 +216,7 @@ class CommunicationFactExtractor:
 
     def _resource_result(self, graph, sources, entries, paths, reachability, functions, rules, entry_coverage):
         accesses = []
-        if not callable(getattr(graph, "database_call_candidates", None)):
+        if not _protocol_supported(graph, rules, "resource") or not callable(getattr(graph, "database_call_candidates", None)):
             return CollectorResult(CollectorCoverage("resource", "resource-collector/v1", CollectorStatus.UNSUPPORTED, reason="graph_adapter_missing_resource_calls"))
         for row in graph.database_call_candidates():
             caller_id = row.get("caller_node_id")
@@ -342,6 +343,18 @@ def _manifest_paths(sources):
         return frozenset(item.path for item in list_files())
     except Exception:
         return frozenset()
+
+
+def _protocol_supported(graph, rules, protocol):
+    support = rules.options.get("support", {}) if isinstance(rules.options, dict) else rules.options.get("support", {})
+    primary_language = getattr(graph, "primary_language", None)
+    if not callable(primary_language) or not support:
+        return True
+    language = str(primary_language() or "").lower().replace("javascript", "typescript")
+    entry = support.get(language)
+    if entry is None:
+        return False
+    return bool(entry.get(protocol, ()))
 
 
 def _collector_coverage(name, rule, entries, entry_coverage, reachability):

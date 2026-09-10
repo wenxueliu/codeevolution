@@ -169,3 +169,14 @@ def test_grpc_rows_with_frozen_caller_identity_are_collected():
     )
     assert artifact.grpc_clients
     assert artifact.grpc_clients[0].payload["rpc"]["identity_resolution"] == "generated_stub"
+
+
+def test_missing_protocol_adapter_is_unsupported_but_keeps_entry_inventory():
+    graph = _Graph()
+    graph.http_client_calls = None
+    artifact = CommunicationFactExtractor().collect(
+        graph, _Sources(), CollectorRuleSet("sha256:rules", "rules/v1"), snapshot_id="snapshot-1"
+    )
+    http = next(item for item in artifact.collector_coverage if item.collector == "http")
+    assert http.status.value == "unsupported"
+    assert artifact.entries
