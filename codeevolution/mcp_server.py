@@ -234,6 +234,8 @@ def get_topology_artifact(view_id: str) -> str:
         payload = _read_topology_payload(runtime, view_id)
     except KeyError:
         return _result({"error": "view_not_found", "view_id": view_id})
+    except ValueError as error:
+        return _result({"error": str(error), "view_id": view_id})
     if payload is None:
         return _result({"error": "artifact_not_generated", "view_id": view_id})
     if payload.get("error"):
@@ -315,6 +317,8 @@ def query_dependency_impact(
         return _result({"error": "view_not_found", "view_id": view_id})
     except TopologyQueryError as error:
         return _result({"error": str(error), "view_id": view_id, "member_id": member_id})
+    except ValueError as error:
+        return _result({"error": str(error), "view_id": view_id, "member_id": member_id})
 
 
 @mcp.tool()
@@ -352,6 +356,8 @@ def query_static_flow(
     except KeyError:
         return _result({"error": "view_not_found", "view_id": view_id})
     except TopologyQueryError as error:
+        return _result({"error": str(error), "view_id": view_id, "member_id": member_id})
+    except ValueError as error:
         return _result({"error": str(error), "view_id": view_id, "member_id": member_id})
 
 
