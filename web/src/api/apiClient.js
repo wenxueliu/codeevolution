@@ -31,7 +31,7 @@ export function createApiClient(fetchAdapter = globalThis.fetch) {
     const contentType = response.headers?.get?.('content-type') || ''
     const body = contentType.includes('application/json') ? await response.json() : await response.text()
     if (!response.ok) {
-      const detail = body?.detail || body?.message || response.statusText || 'Request failed'
+      const detail = body?.detail || body?.error?.message || body?.error?.code || body?.message || response.statusText || 'Request failed'
       throw new HttpError(detail, { status: response.status, url, body })
     }
     return body

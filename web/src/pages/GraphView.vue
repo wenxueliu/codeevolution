@@ -86,7 +86,7 @@ export default {
         const first = this.services[0]?.member_id
         if (first) await this.selectService(first)
       } catch (error) {
-        if (error.status === 404 && error.body?.detail === 'artifact_not_generated') this.artifact = null
+        if (error.status === 404 && (error.body?.detail === 'artifact_not_generated' || error.body?.error?.code === 'artifact_not_generated')) this.artifact = null
         else this.error = error
       } finally { this.loading = false }
     },

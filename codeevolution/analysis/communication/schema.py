@@ -318,10 +318,17 @@ class CallPathEvidence:
             raise CommunicationSchemaError("call_path alternative count must not be negative")
 
     def to_dict(self) -> dict[str, Any]:
+        entry_ref = None
+        if self.entry_id is not None:
+            entry_ref = {
+                "snapshot_id": self.nodes[0].snapshot_id if self.nodes else "",
+                "entry_id": self.entry_id,
+            }
         return {
             "nodes": [item.to_dict() for item in self.nodes],
             "edge_kinds": list(self.edge_kinds),
             "entry_id": self.entry_id,
+            "entry_ref": entry_ref,
             "callsite": self.callsite.to_dict() if self.callsite is not None else None,
             "depth": self.depth,
             "truncated": self.truncated,
@@ -336,10 +343,14 @@ class CallPathEvidence:
         raw_edges = value.get("edge_kinds", [])
         if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
             raise CommunicationSchemaError("call_path nodes and edge_kinds must be arrays")
+        entry_ref = value.get("entry_ref")
+        entry_id = value.get("entry_id")
+        if entry_id is None and isinstance(entry_ref, Mapping):
+            entry_id = entry_ref.get("entry_id")
         return cls(
             nodes=tuple(NodeRef.from_dict(item) for item in raw_nodes if isinstance(item, Mapping)),
             edge_kinds=tuple(str(item) for item in raw_edges),
-            entry_id=value.get("entry_id"),
+            entry_id=entry_id,
             callsite=(Location.from_dict(value["callsite"]) if isinstance(value.get("callsite"), Mapping) else None),
             depth=value.get("depth", 0),
             truncated=bool(value.get("truncated", False)),

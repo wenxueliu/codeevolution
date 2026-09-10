@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -92,6 +93,25 @@ async def _topology_http_exception_handler(request: Request, exc: HTTPException)
             },
         )
     return await http_exception_handler(request, exc)
+
+
+async def _topology_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Keep malformed topology requests on the same documented envelope."""
+    if request.url.path.startswith(("/api/graph-views/", "/api/graph-artifact-jobs/")):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "malformed_request",
+                    "message": "request validation failed",
+                    "details": {"errors": exc.errors()},
+                    "request_id": request.headers.get("x-request-id", ""),
+                }
+            },
+        )
+    from fastapi.exception_handlers import request_validation_exception_handler
+
+    return await request_validation_exception_handler(request, exc)
 
 
 class ChatRequest(BaseModel):
@@ -836,6 +856,10 @@ def _topology_artifact_delivery(view_id: str) -> dict[str, Any]:
     if not payload_json and cached.get("payload_storage") == "artifact":
         try:
             root = get_snapshot_runtime().artifacts.open(cached["artifact_key"])
+            from .infrastructure.artifact_store_fs import directory_digest
+
+            if directory_digest(root) != str(cached["artifact_key"]).removeprefix("sha256:"):
+                raise ValueError("artifact directory digest mismatch")
             payload_json = (root / "payload.json").read_text(encoding="utf-8")
         except (OSError, KeyError, ValueError) as error:
             raise HTTPException(424, "snapshot_artifact_corrupt") from error
@@ -843,6 +867,16 @@ def _topology_artifact_delivery(view_id: str) -> dict[str, Any]:
         payload = json.loads(payload_json) if payload_json else {}
     except json.JSONDecodeError as error:
         raise HTTPException(424, "snapshot_artifact_corrupt") from error
+    if not isinstance(payload, dict):
+        raise HTTPException(424, "snapshot_artifact_corrupt")
+    expected_digest = cached.get("payload_digest")
+    if expected_digest:
+        from .domain.topology import canonical_digest
+
+        digest_payload = dict(payload)
+        digest_payload.pop("payload_digest", None)
+        if canonical_digest(digest_payload) != expected_digest:
+            raise HTTPException(424, "snapshot_artifact_corrupt")
     return {
         "view_id": view_id,
         "artifact_url": f"/api/graph-views/{view_id}/artifacts/topology",
@@ -2067,6 +2101,7 @@ def run_ui_recording(recording_id: int):
 
 
 app.add_exception_handler(HTTPException, _topology_http_exception_handler)
+app.add_exception_handler(RequestValidationError, _topology_validation_exception_handler)
 _route_app = app
 
 
@@ -2114,6 +2149,7 @@ def create_app(dependencies: dict | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     created.add_exception_handler(HTTPException, _topology_http_exception_handler)
+    created.add_exception_handler(RequestValidationError, _topology_validation_exception_handler)
 
     @created.middleware("http")
     async def bind_dependencies(request, call_next):

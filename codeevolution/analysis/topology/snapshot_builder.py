@@ -271,7 +271,8 @@ class TopologyArtifactBuilder:
             artifact = artifacts[member.snapshot_id]
             for observation in artifact.resource_accesses:
                 item = {"source_member_id": member.member_id, "observation_id": observation.observation_id,
-                        "resource": dict(observation.payload), "evidence": TopologyArtifactBuilder._evidence(observation)}
+                        "resource": dict(observation.payload.get("resource", observation.payload)),
+                        "evidence": TopologyArtifactBuilder._evidence(observation)}
                 item["edge_id"] = stable_edge_id("resource", item)
                 result.append(item)
         return sorted(result, key=lambda item: item["edge_id"])

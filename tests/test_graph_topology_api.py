@@ -3,6 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from codeevolution.api import create_app
+from codeevolution.domain.topology import canonical_digest
 
 
 class _Store:
@@ -30,7 +31,9 @@ class _ArtifactService:
         return {"id": "job-1", "status": "pending", "artifact_kind": artifact_kind}
 
     def get(self, view_id, artifact_kind, params):
-        return {"status": "completed", "payload_json": json.dumps(self.payload), "payload_digest": "sha256:payload"}
+        digest_payload = dict(self.payload)
+        digest_payload.pop("payload_digest", None)
+        return {"status": "completed", "payload_json": json.dumps(self.payload), "payload_digest": canonical_digest(digest_payload)}
 
 
 def test_new_graph_artifact_and_query_contracts_are_explicit_and_read_only():
@@ -49,7 +52,7 @@ def test_new_graph_artifact_and_query_contracts_are_explicit_and_read_only():
         artifact = client.get("/api/graph-views/view-1/artifacts/topology")
         assert artifact.status_code == 200
         assert "view_id" not in artifact.json()["artifact"]
-        assert artifact.headers["etag"] == '"sha256:payload"'
+        assert artifact.headers["etag"].startswith('"sha256:')
 
         impact = client.get("/api/graph-views/view-1/impact", params={"member_id": "gateway"})
         assert impact.status_code == 200
@@ -71,3 +74,10 @@ def test_artifact_post_rejects_non_topology_or_filtered_variant():
         )
         assert invalid.status_code == 422
         assert invalid.json()["error"]["code"] == "invalid_artifact_request"
+
+        malformed = client.post(
+            "/api/graph-views/view-1/artifact-jobs",
+            json={"artifact_kind": "topology", "unexpected": True},
+        )
+        assert malformed.status_code == 422
+        assert malformed.json()["error"]["code"] == "malformed_request"

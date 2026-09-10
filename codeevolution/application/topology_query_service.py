@@ -63,6 +63,10 @@ class TopologyQueryService:
                 if item.get("source", {}).get("member_id") == member_id
                 or item.get("source_member_id") == member_id
             ]
+        result["unknown_frontier"] = [
+            {"kind": "coverage", "member_id": item, "reason": "partial_coverage"}
+            for item in result["unknown_boundaries"]
+        ]
         if direction in {"upstream", "both"} and not upstream and result["unknown_boundaries"]:
             result["upstream_status"] = "no_confirmed_upstream_within_coverage"
         if direction in {"downstream", "both"} and not downstream and result["unknown_boundaries"]:
@@ -147,7 +151,22 @@ class TopologyQueryService:
         if include_resources:
             for resource in artifact.get("resource_dependencies", []):
                 if resource.get("source_member_id") == member_id:
+                    if len(nodes) >= max_nodes:
+                        truncation = truncation or {
+                            "reason": "max_nodes",
+                            "frontier": [{"member_id": member_id, "entry_id": root_entry}],
+                        }
+                        break
                     nodes.append({"node_id": resource.get("edge_id"), "kind": "resource", "resource": resource})
+        unknown_frontier = [
+            {"kind": "coverage", "member_id": item, "reason": "partial_coverage"}
+            for item in artifact.get("coverage", {}).get("unknown_boundaries", [])
+        ]
+        unknown_frontier.extend(
+            {"kind": "candidate", "observation_id": item.get("observation_id"), "reason": item.get("reason", "candidate")}
+            for item in artifact.get("candidates", [])
+            if item.get("source", {}).get("member_id") == member_id or item.get("source_member_id") == member_id
+        )
         result = {
             "root": root,
             "nodes": nodes,
@@ -156,6 +175,7 @@ class TopologyQueryService:
             "cycles": cycles,
             "coverage": artifact.get("coverage", {}),
             "truncation": truncation,
+            "unknown_frontier": unknown_frontier,
         }
         if include_candidates:
             result["candidate_edges"] = [
@@ -206,7 +226,12 @@ class TopologyQueryService:
     @staticmethod
     def _resolve_entry(artifact, member_id, entry_id, method, path):
         if entry_id:
-            return entry_id
+            for service in artifact.get("services", []):
+                if service.get("member_id") != member_id:
+                    continue
+                if any(entry.get("entry_id") == entry_id for entry in service.get("entries", [])):
+                    return entry_id
+            raise TopologyQueryError("entry_not_in_view")
         if not method or not path:
             raise TopologyQueryError("entry_not_in_view")
         matches = []
