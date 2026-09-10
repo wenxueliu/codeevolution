@@ -1237,8 +1237,8 @@ users --HTTP--> gateway
 
 ## 22. 实施验收记录
 
-当前代码已验证：后端全量 **227** 项测试、通信事实/拓扑构建/Job fencing/API/CLI 回归测试，以及
-前端 Vite production build。通信 collector 已接入版本化 Tier-1 支持矩阵、调用路径 coverage、
+当前代码已验证：后端全量 **228** 项测试、Web **17** 项测试、通信事实/拓扑构建/Job fencing/API/CLI
+回归测试，以及前端 Vite production build。通信 collector 已接入版本化 Tier-1 支持矩阵、调用路径 coverage、
 语义 ID、manifest 边界、payload/Artifact 摘要校验；API/Web/MCP/CLI 均通过同一 Graph Artifact
 application service 交付。剩余验收项不是接口缺失，而是部署环境相关工作：
 
@@ -1247,3 +1247,5 @@ application service 交付。剩余验收项不是接口缺失，而是部署环
 2. 在部署环境启用管理员身份后再公开 Job cancel（当前共享 API 不暴露 cancel）；
 3. 在部署环境运行服务重启、`/api/repos` 冒烟和性能基准，确认数据目录、CAS 清理和线程并发
    参数符合部署配置；当前开发容器已在隔离端口完成构建启动探测，但默认 8765 被外部进程占用。
+4. 将当前 `out_of_scope_or_unregistered` 边界状态与部署侧的 known-external registry 对接后，
+   再开放严格的 `known_external` 分类门禁；实体对齐仍保持既有独立能力，不属于本拓扑契约。
