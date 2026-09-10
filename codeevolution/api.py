@@ -236,6 +236,8 @@ class ExplicitGraphViewMemberRequest(BaseModel):
     member_id: str
     snapshot_id: str | None = None
     availability: str = Field(pattern="^(available|unparsed|retired)$")
+    display_name: str | None = Field(default=None, max_length=200)
+    declared_aliases: list[str] = Field(default_factory=list, max_length=32)
 
 
 class ExplicitGraphViewRequest(BaseModel):
@@ -738,6 +740,8 @@ def create_explicit_graph_view(request: ExplicitGraphViewRequest):
             ordinal=index,
             snapshot_id=item.snapshot_id,
             availability=ViewAvailability(item.availability),
+            display_name=item.display_name or "",
+            declared_aliases=tuple(item.declared_aliases),
         )
         for index, item in enumerate(request.members)
     ]

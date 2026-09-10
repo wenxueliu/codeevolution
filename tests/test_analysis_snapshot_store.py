@@ -260,6 +260,18 @@ def test_history_explicit_view_is_stable_and_validates_snapshot_ownership(store)
         )
 
 
+def test_explicit_view_freezes_request_display_name_and_aliases(store):
+    snapshot, _ = publish(store, "orders")
+    view = store.create_explicit_view([
+        GraphViewMember(
+            "orders", 0, snapshot.id, ViewAvailability.AVAILABLE,
+            display_name="Orders v2", declared_aliases=("orders-v2.internal",),
+        )
+    ])
+    assert view.members[0].display_name == "Orders v2"
+    assert view.members[0].declared_aliases == ("orders-v2.internal",)
+
+
 def test_pin_view_changes_reference_lifetime_without_changing_digest(store):
     snapshot, _ = publish(store, "orders")
     view = store.create_current_view(scope_ids=["scope"])

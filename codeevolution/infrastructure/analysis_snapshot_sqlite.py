@@ -1947,8 +1947,10 @@ class AnalysisSnapshotSQLiteStore:
         normalized = [
             GraphViewMember(
                 item.member_id, ordinal, item.snapshot_id, item.availability,
-                metadata[item.member_id]["display_name"],
-                tuple(json.loads(metadata[item.member_id]["declared_aliases_json"])),
+                item.display_name or metadata[item.member_id]["display_name"],
+                canonical_aliases(item.declared_aliases)
+                if item.declared_aliases
+                else tuple(json.loads(metadata[item.member_id]["declared_aliases_json"])),
             )
             for ordinal, item in enumerate(sorted(members, key=lambda item: item.member_id))
         ]
