@@ -34,6 +34,15 @@ def test_impact_returns_both_direction_transitive_paths():
     assert result["upstream_dependents"] == [{"member_id": "gateway", "path": ["orders", "gateway"], "depth": 1}]
 
 
+def test_impact_reconstructs_upstream_from_confirmed_endpoint_dependency():
+    artifact = _artifact()
+    artifact.pop("service_projections")
+
+    result = TopologyQueryService().impact(artifact, "orders")
+
+    assert result["upstream_dependents"] == [{"member_id": "gateway", "path": ["orders", "gateway"], "depth": 1}]
+
+
 def test_flow_returns_rooted_graph_and_cycle_reference():
     artifact = _artifact()
     artifact["endpoint_dependencies"].append(

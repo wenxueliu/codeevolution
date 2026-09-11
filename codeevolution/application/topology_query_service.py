@@ -36,10 +36,7 @@ class TopologyQueryService:
         if member_id not in services:
             raise TopologyQueryError("member_not_in_view")
         allowed = set(channels)
-        edges = [
-            item for item in artifact.get("service_projections", [])
-            if item.get("kind") in allowed
-        ]
+        edges = self._service_edges(artifact, allowed)
         downstream = self._walk(member_id, edges, reverse=False, max_depth=max_depth) if direction in {"downstream", "both"} else {}
         upstream = self._walk(member_id, edges, reverse=True, max_depth=max_depth) if direction in {"upstream", "both"} else {}
         result: dict[str, Any] = {
@@ -238,6 +235,49 @@ class TopologyQueryService:
                 paths[next_member] = next_path
                 queue.append((next_member, next_path, depth + 1))
         return paths
+
+    @staticmethod
+    def _service_edges(artifact: Mapping[str, Any], allowed: set[str]) -> list[dict[str, Any]]:
+        """Return confirmed service edges across current and legacy artifacts.
+
+        New artifacts persist a service projection, while older artifacts may
+        only contain confirmed endpoint dependencies (or the legacy ``edges``
+        array).  Impact analysis must use all three shapes; candidates and
+        unresolved observations are intentionally excluded because they are not
+        confirmed dependencies.
+        """
+        result: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+        def add(item: Mapping[str, Any]) -> None:
+            kind = str(item.get("kind") or "")
+            if kind not in allowed:
+                return
+            source = item.get("source")
+            target = item.get("target")
+            source_member = item.get("source_member_id")
+            target_member = item.get("target_member_id")
+            if isinstance(source, Mapping):
+                source_member = source_member or source.get("member_id")
+            if isinstance(target, Mapping):
+                target_member = target_member or target.get("member_id")
+            if not source_member or not target_member or source_member == target_member:
+                return
+            key = (str(source_member), str(target_member), kind)
+            normalized = dict(item)
+            normalized["source_member_id"] = key[0]
+            normalized["target_member_id"] = key[1]
+            result.setdefault(key, normalized)
+
+        for item in artifact.get("service_projections", []):
+            if isinstance(item, Mapping):
+                add(item)
+        for item in artifact.get("endpoint_dependencies", []):
+            if isinstance(item, Mapping):
+                add(item)
+        for item in artifact.get("edges", []):
+            if isinstance(item, Mapping):
+                add(item)
+        return list(result.values())
 
     @staticmethod
     def _paths(paths: dict[str, list[str]]) -> list[dict[str, Any]]:
