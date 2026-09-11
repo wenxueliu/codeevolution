@@ -8,6 +8,7 @@ case.
 
 from __future__ import annotations
 
+import errno
 import ntpath
 import os
 import shutil
@@ -328,6 +329,19 @@ def atomic_rename(source: str | Path, target: str | Path, *, retries: int = 5) -
             os.rename(source_path, target_path)
             return
         except OSError as exc:
+            # MoveFileEx, which backs Python's Windows rename, can report
+            # ERROR_ACCESS_DENIED rather than ERROR_ALREADY_EXISTS when the
+            # destination is an existing directory.  CAS publication must
+            # surface that case as EEXIST so the caller can verify and reuse
+            # the immutable object instead of treating it as a sharing lock.
+            if (
+                os.name == "nt"
+                and getattr(exc, "winerror", None) == 5
+                and target_path.exists()
+            ):
+                raise FileExistsError(
+                    errno.EEXIST, "destination already exists", os.fspath(target_path)
+                ) from exc
             if not _is_transient_windows_sharing_error(exc) or attempt + 1 >= retries:
                 raise
             time.sleep(0.05 * (2**attempt))

@@ -2,11 +2,12 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import PurePosixPath
+from pathlib import PosixPath, PurePosixPath
 
 import pytest
 
 from codeevolution.platform import (
+    atomic_rename,
     manifest_collision_key,
     normalize_manifest_path,
     open_beneath,
@@ -51,6 +52,29 @@ def test_open_beneath_rejects_unsafe_relative_paths(tmp_path):
 def test_process_probe_is_non_destructive():
     assert process_exists(os.getpid())
     assert not process_exists(-1)
+
+
+def test_windows_rename_reports_existing_directory_as_eexist(monkeypatch, tmp_path):
+    import codeevolution.platform as platform
+
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    def access_denied(_source, _target):
+        error = PermissionError(13, "access denied", str(target))
+        error.winerror = 5
+        raise error
+
+    monkeypatch.setattr(platform.os, "name", "nt")
+    monkeypatch.setattr(platform.os, "rename", access_denied)
+    monkeypatch.setattr(platform, "Path", PosixPath)
+
+    with pytest.raises(FileExistsError) as raised:
+        atomic_rename(source, target)
+
+    assert raised.value.errno == 17
 
 
 def test_pid_only_termination_escalates_without_a_popen_handle():
