@@ -682,7 +682,6 @@ def _reconstruct(cls, do_method, verb, helper, args, facts, leaf) -> tuple[str |
 
 def _neighbour_params(substr: str, bindings, args, helper_params):
     """Names of dynamic segments around a middle substring like ``/messages/``."""
-    tok = substr.strip("/")
     before: list[str] = []
     after: list[str] = []
     ordinal = 0

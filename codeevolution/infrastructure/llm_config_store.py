@@ -8,6 +8,13 @@ import tempfile
 from pathlib import Path
 
 from ..paths import data_dir
+from ..platform import (
+    atomic_replace,
+    ensure_supported_storage_path,
+    fsync_directory,
+    fsync_file,
+    set_private_permissions,
+)
 
 
 def _optional_int(value) -> int | None:
@@ -62,6 +69,7 @@ class LLMConfigStore:
         for key in ("disable_thinking", "context_window", "max_output_tokens"):
             if key in config:
                 payload[key] = bool(config[key]) if key == "disable_thinking" else _optional_int(config[key])
+        ensure_supported_storage_path(self.path.parent)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{self.path.name}.", dir=self.path.parent
@@ -70,9 +78,10 @@ class LLMConfigStore:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False)
                 handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, self.path)
+                fsync_file(handle)
+            set_private_permissions(temporary, sensitive=True)
+            atomic_replace(temporary, self.path)
+            fsync_directory(self.path.parent)
         finally:
             Path(temporary).unlink(missing_ok=True)
         return payload

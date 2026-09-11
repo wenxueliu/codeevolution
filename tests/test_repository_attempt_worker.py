@@ -6,7 +6,11 @@ from codeevolution.application.repository_attempt_worker import RepositoryAttemp
 from codeevolution.domain.analysis_snapshot import AttemptStatus
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
 from codeevolution.infrastructure.artifact_store_fs import FileSystemArtifactStore
-from codeevolution.infrastructure.codegraph_command import CommandResult
+from codeevolution.infrastructure.codegraph_capture import CodeGraphCaptureError
+from codeevolution.infrastructure.codegraph_command import (
+    CodeGraphTerminationError,
+    CommandResult,
+)
 
 
 def _graph(path: Path):
@@ -32,6 +36,16 @@ def _graph(path: Path):
 class SuccessfulRunner:
     def init_or_sync(self, _root, _cancellation):
         return CommandResult(("codegraph", "sync"), 0, "", "", 0.01)
+
+
+class TerminationFailureRunner:
+    def init_or_sync(self, _root, _cancellation):
+        raise CodeGraphTerminationError("unable to terminate CodeGraph process tree (pid=123)")
+
+
+class CaptureFailure:
+    def capture(self, *_args):
+        raise CodeGraphCaptureError("reparse point in source path")
 
 
 def _setup(tmp_path):
@@ -93,6 +107,52 @@ def test_worker_rejects_source_change_without_publishing(tmp_path):
     assert store.get_current_snapshot("repo") is None
 
 
+def test_worker_maps_codegraph_termination_failure(tmp_path):
+    _repo, store, _run, attempt = _setup(tmp_path)
+    worker = RepositoryAttemptWorker(
+        store,
+        FileSystemArtifactStore(tmp_path / "data"),
+        command_runner=TerminationFailureRunner(),
+    )
+
+    worker(attempt)
+
+    failed = store.get_attempt(attempt.id)
+    assert failed.status == AttemptStatus.FAILED
+    assert failed.error_code == "codegraph_termination_failed"
+
+
+def test_worker_maps_unsafe_capture_failure(tmp_path):
+    _repo, store, _run, attempt = _setup(tmp_path)
+    worker = RepositoryAttemptWorker(
+        store,
+        FileSystemArtifactStore(tmp_path / "data"),
+        command_runner=SuccessfulRunner(),
+        graph_capture=CaptureFailure(),
+    )
+
+    worker(attempt)
+
+    failed = store.get_attempt(attempt.id)
+    assert failed.status == AttemptStatus.FAILED
+    assert failed.error_code == "unsafe_or_unreadable"
+
+
+def test_worker_rejects_analysis_data_inside_repository(tmp_path):
+    repo, store, _run, attempt = _setup(tmp_path)
+    worker = RepositoryAttemptWorker(
+        store,
+        FileSystemArtifactStore(repo / "analysis-data"),
+        command_runner=SuccessfulRunner(),
+    )
+
+    worker(attempt)
+
+    failed = store.get_attempt(attempt.id)
+    assert failed.status == AttemptStatus.FAILED
+    assert failed.error_code == "unsupported_storage_layout"
+
+
 def test_worker_reuses_evidence_and_publishes_communication_separately(tmp_path):
     _repo, store, _run, attempt = _setup(tmp_path)
     artifacts = FileSystemArtifactStore(tmp_path / "data")
@@ -116,7 +176,7 @@ def test_worker_reuses_evidence_and_publishes_communication_separately(tmp_path)
     assert (artifacts.open(communication_key) / "communication.json").is_file()
     assert not (artifacts.open(evidence.artifact_key) / "communication.json").exists()
 
-    second_run = store.create_run(["repo"])
+    store.create_run(["repo"])
     second_attempt = store.claim_next_attempt("worker-2")
     worker(second_attempt)
 

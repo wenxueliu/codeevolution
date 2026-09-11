@@ -241,9 +241,13 @@ def test_isolated_worktree_preserves_source_checkout(tmp_path, monkeypatch):
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    codegraph = bin_dir / "codegraph"
-    codegraph.write_text("#!/bin/sh\nexit 0\n")
-    codegraph.chmod(codegraph.stat().st_mode | stat.S_IXUSR)
+    if os.name == "nt":
+        codegraph = bin_dir / "codegraph.cmd"
+        codegraph.write_text("@echo off\r\nexit /b 0\r\n")
+    else:
+        codegraph = bin_dir / "codegraph"
+        codegraph.write_text("#!/bin/sh\nexit 0\n")
+        codegraph.chmod(codegraph.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
 
     engine = EvolutionEngine.__new__(EvolutionEngine)

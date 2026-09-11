@@ -20,6 +20,12 @@ from typing import Any, Literal
 from uuid import UUID, uuid5
 
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
+from codeevolution.platform import (
+    atomic_replace,
+    fsync_directory,
+    fsync_file,
+    set_private_permissions,
+)
 
 MIGRATION_NAME = "legacy-json-registry-v1"
 _ID_NAMESPACE = UUID("84a130e5-e7cb-4c8b-94b4-e71f11933f00")
@@ -246,7 +252,7 @@ def _required_text(value: dict[str, Any], key: str, location: str) -> str:
 def _backup_registry(raw: bytes, source_digest: str, data_dir: Path) -> Path:
     directory = data_dir / "migration-backups"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(directory, 0o700)
+    set_private_permissions(directory, directory=True)
     # Digest naming makes retries before marker commit converge on one backup,
     # while retaining the design's registry-* naming convention.
     backup = directory / f"registry-{source_digest}.json"
@@ -261,12 +267,13 @@ def _backup_registry(raw: bytes, source_digest: str, data_dir: Path) -> Path:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)
             stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
+            fsync_file(stream)
+        set_private_permissions(temporary)
         # Another process may have won this race with identical source bytes;
         # replacing it is harmless because the filename is content-addressed.
-        os.replace(temporary, backup)
-        os.chmod(backup, 0o600)
+        atomic_replace(temporary, backup)
+        set_private_permissions(backup)
+        fsync_directory(directory)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise

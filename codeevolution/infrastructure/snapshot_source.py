@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
-import unicodedata
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from ..platform import normalize_manifest_path
 
 
 class SnapshotSourceError(RuntimeError):
@@ -122,10 +123,7 @@ SnapshotSourceProvider = SnapshotSourceInventory
 
 
 def _safe_relative_path(path: str) -> str:
-    if not path or "\x00" in path:
-        raise SnapshotSourceError("invalid source path")
-    normalized = unicodedata.normalize("NFC", path.replace("\\", "/"))
-    pure = PurePosixPath(normalized)
-    if pure.is_absolute() or ".." in pure.parts or pure.as_posix() in {"", "."}:
+    try:
+        return normalize_manifest_path(path)
+    except ValueError:
         raise SnapshotSourceError("unsafe source path")
-    return pure.as_posix()

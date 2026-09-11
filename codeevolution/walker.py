@@ -75,7 +75,7 @@ class HistoryWalker:
         if range_spec:
             args.append(range_spec)
 
-        result = subprocess.run(args, capture_output=True, text=True)
+        result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise RuntimeError(f"git log failed: {result.stderr}")
 
@@ -120,7 +120,7 @@ class HistoryWalker:
         args = ["git", "-C", self.repo_path, "rev-list", "--count", "HEAD"]
         if self.first_parent:
             args.insert(4, "--first-parent")  # git rev-list --first-parent --count HEAD
-        result = subprocess.run(args, capture_output=True, text=True)
+        result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return int(result.stdout.strip())
 
     def get_files_at(self, commit_hash: str) -> list[str]:
@@ -128,7 +128,7 @@ class HistoryWalker:
         result = subprocess.run(
             ["git", "-C", self.repo_path, "ls-tree", "-r", "--name-only", commit_hash],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             return []
@@ -148,7 +148,7 @@ class HistoryWalker:
                 commit_hash,
             ],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             return []
@@ -163,7 +163,7 @@ class HistoryWalker:
         result = subprocess.run(
             ["git", "-C", self.repo_path, "show", f"{commit_hash}:{filepath}"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             return None

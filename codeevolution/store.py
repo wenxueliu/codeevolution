@@ -3,7 +3,10 @@
 import json
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
+
+from .platform import ensure_supported_storage_path, set_private_permissions
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS commits (
@@ -90,7 +93,12 @@ class EvolutionStore:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        path = Path(db_path)
+        ensure_supported_storage_path(path.parent)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        set_private_permissions(path.parent, directory=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        set_private_permissions(path)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)

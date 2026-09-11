@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ..domain.knowledge import CallTarget, EntryPointDef, FunctionDef
+from ..platform import ensure_supported_storage_path, sqlite_readonly_uri
 
 HTTP_DECORATORS = {
     # Python
@@ -84,7 +85,8 @@ class _SQLiteCodeGraphQueries:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self.conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        ensure_supported_storage_path(Path(db_path).parent)
+        self.conn = sqlite3.connect(sqlite_readonly_uri(db_path), uri=True)
         self.conn.row_factory = sqlite3.Row
 
     def close(self):

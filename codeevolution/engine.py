@@ -9,7 +9,6 @@ only reads results from CodeGraph's SQLite.
 """
 
 import logging
-import os
 import shutil
 import subprocess
 import tempfile
@@ -20,7 +19,9 @@ from typing import Callable
 from .analyzer import EvolutionAnalyzer, EvolutionEvent, SnapshotData
 from .codegraph_reader import CodeGraphReader
 from .config import Config
+from .infrastructure.codegraph_command import CodeGraphCommandRunner, CodeGraphPreflightError
 from .matcher import FeatureMatcher
+from .platform import remove_tree, resolve_executable
 from .store import EvolutionStore
 from .walker import CommitInfo, HistoryWalker
 
@@ -56,6 +57,7 @@ class EvolutionEngine:
         self._reader: CodeGraphReader | None = None
         self._commit_count: int = 0
         self._analysis_repo_path = config.repo_path
+        self._codegraph_runner = CodeGraphCommandRunner(timeout_seconds=120)
 
         # Verify prerequisites
         self._check_codegraph()
@@ -67,7 +69,7 @@ class EvolutionEngine:
 
     @property
     def _codegraph_cmd(self) -> str:
-        return "codegraph.cmd" if os.name == "nt" else "codegraph"
+        return resolve_executable("codegraph")
 
     def _check_codegraph(self):
         """Verify CodeGraph is initialized on the target repo."""
@@ -78,7 +80,9 @@ class EvolutionEngine:
                 f"CodeGraph not initialized in {self.config.repo_path}. "
                 f"Run: cd {self.config.repo_path} && codegraph init"
             )
-        if not self._which(self._codegraph_cmd) and not self._which("codegraph"):
+        try:
+            self._codegraph_cmd
+        except FileNotFoundError:
             raise RuntimeError(
                 "codegraph CLI not found in PATH. Install: npm i -g @colbymchenry/codegraph"
             )
@@ -109,6 +113,8 @@ class EvolutionEngine:
             ["git", "-C", self.config.repo_path, "status", "--porcelain"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         return result.stdout
@@ -135,19 +141,18 @@ class EvolutionEngine:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=True,
             )
             added = True
             self._analysis_repo_path = worktree_path
 
-            result = subprocess.run(
-                [self._codegraph_cmd, "init"],
-                cwd=worktree_path,
-                capture_output=True,
-                text=True,
-                timeout=120,
+            runner = getattr(self, "_codegraph_runner", CodeGraphCommandRunner(timeout_seconds=120))
+            result = runner.run(
+                (self._codegraph_cmd, "init"), worktree_path
             )
-            if result.returncode != 0:
+            if not result.succeeded:
                 raise RuntimeError(f"codegraph init failed: {result.stderr[:300]}")
             yield
         finally:
@@ -168,25 +173,27 @@ class EvolutionEngine:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 if cleanup.returncode != 0:
                     logger.warning(
                         "Failed to unregister temporary worktree: %s",
                         cleanup.stderr[:300],
                     )
-            shutil.rmtree(worktree_path, ignore_errors=True)
+            try:
+                remove_tree(worktree_path)
+            except OSError:
+                logger.warning("Failed to remove temporary worktree: %s", worktree_path)
 
     def _sync_codegraph(self) -> bool:
         """Run `codegraph sync` to update the index. Returns True on success."""
         try:
-            result = subprocess.run(
-                [self._codegraph_cmd, "sync"],
-                cwd=self._analysis_repo_path,
-                capture_output=True,
-                text=True,
-                timeout=120,
+            runner = getattr(self, "_codegraph_runner", CodeGraphCommandRunner(timeout_seconds=120))
+            result = runner.run(
+                (self._codegraph_cmd, "sync"), self._analysis_repo_path
             )
-            if result.returncode != 0:
+            if not result.succeeded:
                 logger.warning(f"codegraph sync failed: {result.stderr[:200]}")
                 return False
             return True
@@ -195,6 +202,9 @@ class EvolutionEngine:
             return False
         except FileNotFoundError:
             logger.error("codegraph not found in PATH")
+            return False
+        except CodeGraphPreflightError as error:
+            logger.error("codegraph preflight failed: %s", error)
             return False
 
     def _checkout(self, commit_hash: str):
@@ -218,8 +228,8 @@ class EvolutionEngine:
         """
         if self.store.get_latest_commit_id() is not None:
             raise RuntimeError(
-                "Evolution database is not empty; use 'codeevolution update' for "
-                "incremental analysis or choose a new --db path for backfill"
+                "Evolution database is not empty; use a new --db path for a "
+                "fresh legacy-engine analysis"
             )
 
         total = self.walker.count_commits()

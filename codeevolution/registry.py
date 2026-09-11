@@ -8,6 +8,7 @@ At registration time, each repo is scanned via CodeGraph SQLite to detect:
   - CodeGraph status (initialized, index freshness, symbol/edge counts)
 """
 
+import logging
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -17,10 +18,12 @@ from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 from .infrastructure.registry_json import RegistryRepository
 from .infrastructure.topology_cache_json import TopologyCache
 from .paths import shared_data_file
+from .platform import PlatformCapabilityError, ensure_supported_storage_path, is_reparse_point
 
 REGISTRY_FILE = shared_data_file("registry.json")
 REGISTRY_DIR = REGISTRY_FILE.parent
 TOPOLOGY_CACHE_FILE = shared_data_file("topology_cache.json")
+logger = logging.getLogger(__name__)
 
 
 # ── Service role inference ─────────────────────────────────────────────
@@ -115,10 +118,20 @@ def register_repo(name: str, path: str | list[str]) -> dict:
     compatibility. Grouped services additionally contain ``repositories``.
     """
     raw_paths = [path] if isinstance(path, str) else path
-    abs_paths = list(dict.fromkeys(str(Path(item).resolve()) for item in raw_paths))
+    abs_paths = []
+    for item in raw_paths:
+        candidate = Path(item).expanduser()
+        if os.name == "nt" and is_reparse_point(candidate):
+            raise ValueError(f"repository path is a Windows reparse point: {candidate}")
+        abs_paths.append(str(candidate.resolve()))
+    abs_paths = list(dict.fromkeys(abs_paths))
     if not abs_paths:
         raise ValueError("At least one repository path is required")
     for abs_path in abs_paths:
+        try:
+            ensure_supported_storage_path(abs_path)
+        except PlatformCapabilityError as error:
+            raise ValueError(str(error)) from error
         if not Path(abs_path, ".git").exists():
             raise ValueError(f"Not a git repository: {abs_path}")
 
@@ -394,8 +407,15 @@ def _detect_from_filesystem(meta: ServiceMeta, repo_path: str):
         ".codeevolution",
     }
     try:
-        for root, dirs, files in os.walk(repo_path):
-            dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
+        for root, dirs, files in os.walk(repo_path, followlinks=False):
+            current = Path(root)
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in ignore_dirs
+                and not d.startswith(".")
+                and not (os.name == "nt" and is_reparse_point(current / d))
+            ]
             for f in files:
                 ext = Path(f).suffix.lower()
                 if ext in ext_map:
@@ -438,6 +458,8 @@ def _get_git_remotes(repo_path: str) -> list[str]:
             ["git", "-C", repo_path, "remote", "-v"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         remotes = set()
@@ -464,47 +486,59 @@ def discover_repos(root_dir: str, max_depth: int = 2) -> list[dict]:
     Returns:
         List of {name, path, language, role, suggestion} for each found repo.
     """
-    root = Path(root_dir).resolve()
+    candidate_root = Path(root_dir).expanduser()
+    if os.name == "nt" and is_reparse_point(candidate_root):
+        raise ValueError(f"repository discovery root is a reparse point: {candidate_root}")
+    root = candidate_root.resolve()
     results: list[dict] = []
 
-    # Use find to locate .git directories
-    import subprocess
+    ensure_supported_storage_path(root)
 
+    if not root.is_dir():
+        raise ValueError(f"repository discovery root is not readable: {root}")
     try:
-        result = subprocess.run(
-            [
-                "find",
-                str(root),
-                "-maxdepth",
-                str(max_depth + 1),
-                "-name",
-                ".git",
-                "-type",
-                "d",
-                "-not",
-                "-path",
-                "*/node_modules/*",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return results
+        next(root.iterdir(), None)
+    except OSError as error:
+        raise ValueError(f"repository discovery root is not readable: {root}") from error
 
-    for line in result.stdout.strip().split("\n"):
-        if not line:
+    existing = {
+        _repo_identity(member["path"])
+        for entry in list_repos()
+        for member in repository_members(entry)
+    }
+    def on_walk_error(error: OSError) -> None:
+        logger.warning("Skipping unreadable repository discovery directory %s: %s", error.filename, error)
+
+    for directory, names, _files in os.walk(
+        root, topdown=True, followlinks=False, onerror=on_walk_error
+    ):
+        current = Path(directory)
+        try:
+            depth = len(current.relative_to(root).parts)
+        except ValueError:
             continue
-        git_dir = Path(line)
+        if depth > max_depth:
+            names[:] = []
+            continue
+        names[:] = [
+            name
+            for name in sorted(names)
+            if name not in {"node_modules", ".codegraph", ".codeevolution"}
+            and not is_reparse_point(current / name)
+        ]
+        if ".git" not in names:
+            continue
+        names[:] = [name for name in names if name != ".git"]
+        git_dir = current / ".git"
         repo_path = str(git_dir.parent)
 
         # Skip if already registered
-        existing = list_repos()
-        if any(member["path"] == repo_path for e in existing for member in repository_members(e)):
+        if _repo_identity(repo_path) in existing:
             continue
+        existing.add(_repo_identity(repo_path))
 
         # Quick scan
-        meta = ServiceMeta(name=repo_path.split("/")[-1], path=repo_path)
+        meta = ServiceMeta(name=git_dir.parent.name, path=repo_path)
         cg_db = git_dir.parent / ".codegraph" / "codegraph.db"
         if cg_db.exists():
             _detect_from_codegraph(meta, str(cg_db))
@@ -531,6 +565,10 @@ def discover_repos(root_dir: str, max_depth: int = 2) -> list[dict]:
         )
 
     return results
+
+
+def _repo_identity(path: str | Path) -> str:
+    return os.path.normcase(os.path.normpath(os.path.realpath(os.fspath(path))))
 
 
 # ── Health check ───────────────────────────────────────────────────────

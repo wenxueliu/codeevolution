@@ -7,7 +7,6 @@ scheduler worker never shares a SQLite connection with another worker.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -36,6 +35,7 @@ from codeevolution.domain.analysis_snapshot import (
     aggregate_run_status,
 )
 from codeevolution.domain.topology import canonical_aliases, canonical_digest
+from codeevolution.platform import ensure_supported_storage_path, set_private_permissions
 
 SCHEMA_VERSION = 5
 DEFAULT_TOPOLOGY_RULES_DIGEST = canonical_digest({"schema": "topology-rules/v1", "rules": []})
@@ -391,11 +391,13 @@ class AnalysisSnapshotSQLiteStore:
     """Persistence adapter for catalog and analysis execution state."""
 
     def __init__(self, db_path: str | Path):
+        ensure_supported_storage_path(Path(db_path).parent)
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.db_path.parent, 0o700)
+        set_private_permissions(self.db_path.parent, directory=True)
         self.migrate()
-        os.chmod(self.db_path, 0o600)
+        if self.db_path.exists():
+            set_private_permissions(self.db_path)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, timeout=5.0)

@@ -1,4 +1,5 @@
 import pytest
+
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
 
 

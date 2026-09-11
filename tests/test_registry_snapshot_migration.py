@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -48,7 +49,8 @@ def test_migrates_legacy_and_grouped_registries_and_is_strictly_idempotent(tmp_p
     assert first.status == "migrated"
     assert (first.scope_count, first.member_count) == (2, 3)
     assert first.backup_path.read_bytes() == source.read_bytes()
-    assert first.backup_path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert first.backup_path.stat().st_mode & 0o777 == 0o600
     assert {scope.name for scope in scopes} == {"orders-service", "mall"}
     assert {member.display_name for member in members} == {
         "orders-service",

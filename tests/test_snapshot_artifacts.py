@@ -1,7 +1,10 @@
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -22,6 +25,7 @@ from codeevolution.infrastructure.workspace_input_scanner import (
     ScanPolicy,
     WorkspaceInputScanner,
 )
+from codeevolution.platform import process_exists
 
 
 def _write_graph(path: Path, reverse: bool = False) -> None:
@@ -65,7 +69,8 @@ def test_artifact_store_publishes_atomically_and_reuses_matching_content(tmp_pat
     assert key == f"sha256:{digest}"
     assert not staging.exists()
     assert (store.open(key) / "manifest.json").read_text() == "{}"
-    assert store.open(key).stat().st_mode & 0o777 == 0o700
+    if os.name != "nt":
+        assert store.open(key).stat().st_mode & 0o777 == 0o700
 
     retry = store.create_staging("attempt-2")
     (retry / "manifest.json").write_text("{}")
@@ -111,7 +116,10 @@ def test_workspace_scanner_rejects_escape_symlink(tmp_path):
     repo.mkdir()
     outside = tmp_path / "outside.py"
     outside.write_text("secret")
-    (repo / "escape.py").symlink_to(outside)
+    try:
+        (repo / "escape.py").symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable on this runner: {error}")
 
     observed = WorkspaceInputScanner(repo).scan(ScanPolicy(declared_globs=()))
 
@@ -167,17 +175,75 @@ def test_codegraph_capture_uses_sqlite_backup_and_stable_logical_digest(tmp_path
 def test_codegraph_command_uses_argv_and_selects_init_or_sync(tmp_path):
     repo = tmp_path / "repo with spaces"
     repo.mkdir()
-    runner = CodeGraphCommandRunner(executable="/bin/echo", timeout_seconds=2)
+    if sys.platform == "win32":
+        prefix = (sys.executable, "-c", "print(__import__('sys').argv[1])")
+        runner = CodeGraphCommandRunner(executable=prefix, timeout_seconds=2)
+    else:
+        prefix = ("/bin/echo",)
+        runner = CodeGraphCommandRunner(executable=prefix, timeout_seconds=2)
 
     initialized = runner.init_or_sync(repo)
     assert initialized.succeeded
-    assert initialized.argv == ("/bin/echo", "init")
+    assert initialized.argv == (*prefix, "init")
     assert initialized.stdout.strip() == "init"
 
     (repo / ".codegraph").mkdir()
     (repo / ".codegraph" / "codegraph.db").touch()
     synced = runner.init_or_sync(repo)
-    assert synced.argv == ("/bin/echo", "sync")
+    assert synced.argv == (*prefix, "sync")
+
+
+@pytest.mark.parametrize("mode", ["cancel", "timeout"])
+def test_codegraph_command_termination_preserves_result_flags(tmp_path, mode):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    prefix = (sys.executable, "-c", "import time; time.sleep(30)")
+    runner = CodeGraphCommandRunner(
+        executable=prefix,
+        timeout_seconds=0.05 if mode == "timeout" else 2,
+        terminate_grace_seconds=0.05,
+    )
+
+    result = runner.run(prefix, repo, (lambda: True) if mode == "cancel" else None)
+
+    assert result.cancelled is (mode == "cancel")
+    assert result.timed_out is (mode == "timeout")
+
+
+def test_codegraph_command_replaces_invalid_utf8_output(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    prefix = (
+        sys.executable,
+        "-c",
+        "import sys; sys.stderr.buffer.write(b'bad\\xff\\n')",
+    )
+    result = CodeGraphCommandRunner(timeout_seconds=2).run(prefix, repo)
+
+    assert result.succeeded
+    assert "\ufffd" in result.stderr
+
+
+def test_codegraph_command_terminates_descendant_processes(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    child_pid_file = tmp_path / "child.pid"
+    script = (
+        "import subprocess,sys,time; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+        "open(sys.argv[1],'w').write(str(child.pid)); time.sleep(30)"
+    )
+    prefix = (sys.executable, "-c", script, str(child_pid_file))
+    result = CodeGraphCommandRunner(timeout_seconds=1, terminate_grace_seconds=0.1).run(
+        prefix, repo
+    )
+
+    assert result.timed_out
+    child_pid = int(child_pid_file.read_text(encoding="ascii"))
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and process_exists(child_pid):
+        time.sleep(0.05)
+    assert not process_exists(child_pid)
 
 
 def test_freeze_sources_revalidates_observed_bytes(tmp_path):

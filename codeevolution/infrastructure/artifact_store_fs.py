@@ -11,10 +11,19 @@ import errno
 import hashlib
 import os
 import re
-import shutil
 import time
 import uuid
 from pathlib import Path
+
+from ..platform import (
+    atomic_rename,
+    ensure_supported_storage_path,
+    fsync_directory,
+    fsync_file,
+    is_reparse_point,
+    remove_tree,
+    set_private_permissions,
+)
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _DIGEST_RE = re.compile(r"^(?:sha256:)?([0-9a-f]{64})$")
@@ -28,13 +37,14 @@ class FileSystemArtifactStore:
     """A same-filesystem CAS with private permissions and atomic publication."""
 
     def __init__(self, data_dir: str | Path):
+        ensure_supported_storage_path(data_dir)
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.artifacts_dir = self.data_dir / "artifacts" / "sha256"
         self.staging_dir = self.data_dir / "staging"
         self.trash_dir = self.data_dir / "trash"
         for directory in (self.data_dir, self.artifacts_dir, self.staging_dir, self.trash_dir):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            directory.chmod(0o700)
+            set_private_permissions(directory, directory=True)
 
     def create_staging(self, attempt_id: str) -> Path:
         """Create an empty private staging directory for one attempt."""
@@ -53,7 +63,10 @@ class FileSystemArtifactStore:
         digest matches.  This makes retries idempotent without trusting names.
         """
         hex_digest = self._parse_digest(digest)
-        source = Path(staging).resolve()
+        source_input = Path(staging)
+        if is_reparse_point(source_input):
+            raise ArtifactStoreError("publish source cannot be a reparse point")
+        source = source_input.resolve()
         if not self._is_child(source, self.staging_dir) or not source.is_dir():
             raise ArtifactStoreError("publish source is not a staging directory")
         actual = directory_digest(source)
@@ -64,16 +77,16 @@ class FileSystemArtifactStore:
         self._fsync_tree(source)
         prefix = self.artifacts_dir / hex_digest[:2]
         prefix.mkdir(mode=0o700, exist_ok=True)
-        prefix.chmod(0o700)
+        set_private_permissions(prefix, directory=True)
         target = prefix / hex_digest
         try:
-            os.rename(source, target)
+            atomic_rename(source, target)
         except OSError as exc:
-            if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+            if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY} and getattr(exc, "winerror", None) not in {80, 183}:
                 raise
-            if target.is_symlink() or not target.is_dir() or directory_digest(target) != hex_digest:
+            if is_reparse_point(target) or not target.is_dir() or directory_digest(target) != hex_digest:
                 raise ArtifactStoreError(f"conflicting artifact target: sha256:{hex_digest}")
-            shutil.rmtree(source)
+            remove_tree(source)
         self._fsync_dir(prefix)
         return f"sha256:{hex_digest}"
 
@@ -81,7 +94,7 @@ class FileSystemArtifactStore:
         """Resolve a key to an existing artifact directory."""
         digest = self._parse_digest(artifact_key)
         path = self.artifacts_dir / digest[:2] / digest
-        if not path.is_dir() or path.is_symlink():
+        if not path.is_dir() or is_reparse_point(path):
             raise ArtifactStoreError(f"artifact unavailable: sha256:{digest}")
         return path
 
@@ -92,9 +105,9 @@ class FileSystemArtifactStore:
         self._validate_component(token, "deletion id")
         bucket = self.trash_dir / token
         bucket.mkdir(mode=0o700, exist_ok=True)
-        bucket.chmod(0o700)
+        set_private_permissions(bucket, directory=True)
         target = bucket / source.name
-        os.rename(source, target)
+        atomic_rename(source, target)
         self._fsync_dir(source.parent)
         self._fsync_dir(bucket)
         return target
@@ -103,9 +116,9 @@ class FileSystemArtifactStore:
         """Permanently remove one previously isolated trash bucket."""
         self._validate_component(deletion_id, "deletion id")
         bucket = (self.trash_dir / deletion_id).resolve()
-        if not self._is_child(bucket, self.trash_dir) or not bucket.is_dir() or bucket.is_symlink():
+        if not self._is_child(bucket, self.trash_dir) or not bucket.is_dir() or is_reparse_point(bucket):
             raise ArtifactStoreError("trash bucket unavailable")
-        shutil.rmtree(bucket)
+        remove_tree(bucket)
         self._fsync_dir(self.trash_dir)
 
     def scavenge_staging(
@@ -120,14 +133,14 @@ class FileSystemArtifactStore:
         now = time.time()
         removed: list[str] = []
         for path in self.staging_dir.iterdir():
-            if not path.is_dir() or path.is_symlink():
+            if not path.is_dir() or is_reparse_point(path):
                 continue
             if path.name in protected_names:
                 continue
             try:
                 age = now - path.stat().st_mtime
                 if age >= max_age_seconds:
-                    shutil.rmtree(path)
+                    remove_tree(path)
                     removed.append(path.name)
             except FileNotFoundError:
                 continue
@@ -140,11 +153,11 @@ class FileSystemArtifactStore:
         now = time.time()
         removed: list[str] = []
         for path in self.trash_dir.iterdir():
-            if not path.is_dir() or path.is_symlink():
+            if not path.is_dir() or is_reparse_point(path):
                 continue
             try:
                 if now - path.stat().st_mtime >= max_age_seconds:
-                    shutil.rmtree(path)
+                    remove_tree(path)
                     removed.append(path.name)
             except FileNotFoundError:
                 continue
@@ -174,43 +187,36 @@ class FileSystemArtifactStore:
 
     @staticmethod
     def _fsync_dir(path: Path) -> None:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        fsync_directory(path)
 
     @classmethod
     def _fsync_tree(cls, root: Path) -> None:
-        for path in sorted(root.rglob("*")):
-            if path.is_file() and not path.is_symlink():
+        directories, files = _tree_entries(root)
+        for path in files:
+            if path.is_file():
                 fd = os.open(path, os.O_RDONLY)
                 try:
-                    os.fsync(fd)
+                    fsync_file(fd)
                 finally:
                     os.close(fd)
-        for path in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
+        for path in reversed(directories):
             cls._fsync_dir(path)
         cls._fsync_dir(root)
 
     @staticmethod
     def _make_tree_private(root: Path) -> None:
-        root.chmod(0o700)
-        for path in root.rglob("*"):
-            if path.is_symlink():
-                raise ArtifactStoreError("artifact staging must not contain symlinks")
-            path.chmod(0o700 if path.is_dir() else 0o600)
+        set_private_permissions(root, directory=True)
+        directories, files = _tree_entries(root)
+        for path in (*directories, *files):
+            set_private_permissions(path, directory=path.is_dir())
 
 
 def directory_digest(root: str | Path) -> str:
     """Hash a directory using relative POSIX paths and raw file bytes."""
     base = Path(root)
     digest = hashlib.sha256()
-    for path in sorted(base.rglob("*"), key=lambda item: item.relative_to(base).as_posix()):
-        if path.is_symlink():
-            raise ArtifactStoreError("artifact trees cannot contain symlinks")
-        if not path.is_file():
-            continue
+    _directories, files = _tree_entries(base)
+    for path in sorted(files, key=lambda item: item.relative_to(base).as_posix()):
         relative = path.relative_to(base).as_posix().encode("utf-8")
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
@@ -220,3 +226,28 @@ def directory_digest(root: str | Path) -> str:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
     return digest.hexdigest()
+
+
+def _tree_entries(root: Path) -> tuple[list[Path], list[Path]]:
+    directories: list[Path] = []
+    files: list[Path] = []
+    for directory, names, filenames in os.walk(root, topdown=True, followlinks=False):
+        base = Path(directory)
+        names.sort()
+        filenames.sort()
+        kept: list[str] = []
+        for name in names:
+            path = base / name
+            if is_reparse_point(path):
+                raise ArtifactStoreError("artifact trees cannot contain reparse points")
+            kept.append(name)
+            directories.append(path)
+        names[:] = kept
+        for name in filenames:
+            path = base / name
+            if is_reparse_point(path):
+                raise ArtifactStoreError("artifact trees cannot contain reparse points")
+            files.append(path)
+    directories.sort(key=lambda item: item.as_posix())
+    files.sort(key=lambda item: item.as_posix())
+    return directories, files

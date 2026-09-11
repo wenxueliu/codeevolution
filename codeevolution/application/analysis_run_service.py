@@ -17,6 +17,11 @@ from codeevolution.infrastructure.analysis_snapshot_sqlite import (
     AnalysisSnapshotSQLiteStore,
     SnapshotStoreError,
 )
+from codeevolution.platform import (
+    PlatformCapabilityError,
+    ensure_supported_storage_path,
+    is_reparse_point,
+)
 
 RETRYABLE_STATUSES = frozenset(
     {AttemptStatus.FAILED, AttemptStatus.CANCELLED, AttemptStatus.INTERRUPTED}
@@ -57,7 +62,14 @@ class RepositoryCatalogService:
     ) -> RepositoryMember:
         if self.store.get_scope(scope_id) is None:
             raise KeyError(scope_id)
-        path = Path(registered_path).expanduser().resolve()
+        candidate = Path(registered_path).expanduser()
+        if os.name == "nt" and is_reparse_point(candidate):
+            raise ValueError("repository path is a Windows reparse point")
+        path = candidate.resolve()
+        try:
+            ensure_supported_storage_path(path)
+        except PlatformCapabilityError as error:
+            raise ValueError(str(error)) from error
         if not path.is_dir() or not (path / ".git").exists():
             raise SnapshotStoreError(f"not a Git repository: {path}")
         try:
@@ -79,7 +91,14 @@ class RepositoryCatalogService:
     ) -> RepositoryMember:
         if registered_path is None:
             return self.store.update_member(member_id, display_name=display_name)
-        path = Path(registered_path).expanduser().resolve()
+        candidate = Path(registered_path).expanduser()
+        if os.name == "nt" and is_reparse_point(candidate):
+            raise ValueError("repository path is a Windows reparse point")
+        path = candidate.resolve()
+        try:
+            ensure_supported_storage_path(path)
+        except PlatformCapabilityError as error:
+            raise ValueError(str(error)) from error
         if not path.is_dir() or not (path / ".git").exists():
             raise SnapshotStoreError(f"not a Git repository: {path}")
         return self.store.update_member(

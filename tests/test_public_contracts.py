@@ -80,23 +80,20 @@ def test_cli_help_lists_all_public_commands():
         text=True,
     )
     commands = {
-        "backfill",
-        "update",
         "serve",
         "web",
         "register",
         "repos",
-        "status",
         "knowledge",
         "topology",
         "impact",
         "discover",
         "check",
-        "init-all",
         "flow",
     }
     words = result.stdout.replace("{", " ").replace("}", " ").replace(",", " ").split()
     assert commands <= set(words)
+    assert not {"backfill", "update", "status", "init-all"}.intersection(set(words))
     assert result.stderr == ""
 
 
@@ -142,8 +139,6 @@ def test_openapi_path_snapshot():
         "/api/repos",
         "/api/repos/register",
         "/api/repos/{name}",
-        "/api/repos/{name}/init",
-        "/api/repos/{name}/init/status",
         "/api/repos/{name}/members",
         "/api/repository-members/{member_id}",
         "/api/repository-members/{member_id}/snapshots",

@@ -5,26 +5,149 @@ on:
   pull_request:
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  backend:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12", "3.14"]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.13"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: python -m pip install -e '.[dev]'
-      - run: ruff check codeevolution tests scripts
-      - run: python scripts/check_coverage.py
-      - run: python scripts/benchmark_large_repo.py --features 2000 --max-seconds 5 --max-mib 64
-      - run: python -m build
-      - run: npm ci
+      - name: Install package and test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: python -m ruff check codeevolution tests scripts
+      - name: Unit and contract tests
+        run: python -m pytest -q
+      - name: Coverage gate
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: python scripts/check_coverage.py
+      - name: Large repository benchmark
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: python scripts/benchmark_large_repo.py --features 2000 --max-seconds 5 --max-mib 64
+      - name: Build frontend assets for wheel
+        run: npm ci
         working-directory: web
-      - run: npm test
+      - name: Compile frontend assets for wheel
+        run: npm run build
         working-directory: web
-      - run: npm run build
+      - name: Windows real CodeGraph capture smoke
+        if: matrix.os == 'windows-latest' && matrix.python == '3.12'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm install --global '@colbymchenry/codegraph@0.9.x'
+          codegraph --version
+          $repo = Join-Path $env:RUNNER_TEMP 'codeevolution repo % # & 中文'
+          $out = Join-Path $env:RUNNER_TEMP 'codeevolution-codegraph-capture'
+          New-Item -ItemType Directory -Force $repo, $out | Out-Null
+          @"
+          def answer():
+              return 42
+          "@ | Set-Content -LiteralPath (Join-Path $repo 'app.py') -Encoding utf8
+          git -C $repo init | Out-Null
+          git -C $repo config user.name '张三'
+          git -C $repo config user.email 'zhangsan@example.test'
+          git -C $repo add app.py
+          git -C $repo commit -m '功能: 中文提交' | Out-Null
+          git -C $repo switch -c '特性/中文' | Out-Null
+          Push-Location $repo
+          codegraph init
+          Pop-Location
+          $env:CODEEVOLUTION_SMOKE_REPO = $repo
+          $env:CODEEVOLUTION_SMOKE_OUT = $out
+          python -c 'import os; from pathlib import Path; from codeevolution.infrastructure.workspace_input_scanner import WorkspaceInputScanner; from codeevolution.infrastructure.codegraph_capture import CodeGraphCapture, freeze_sources; repo=Path(os.environ["CODEEVOLUTION_SMOKE_REPO"]); out=Path(os.environ["CODEEVOLUTION_SMOKE_OUT"]); observation=WorkspaceInputScanner(repo).scan(); assert observation.entries; frozen=freeze_sources(repo, observation.entries, out / "sources"); assert frozen == observation.entries; captured=CodeGraphCapture().capture(repo / ".codegraph" / "codegraph.db", out / "codegraph.db", repo); assert captured.integrity_check == "ok"; print(captured.blob_sha256)'
+          $dataDir = Join-Path $env:RUNNER_TEMP 'codeevolution-windows-snapshot-data'
+          $env:CODEEVOLUTION_DATA_DIR = $dataDir
+          $port = 18766
+          try {
+            python scripts/service.py start --host 127.0.0.1 --port $port --no-build
+            $headers = @{ "Content-Type" = "application/json" }
+            $scope = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/api/scopes" `
+              -Headers $headers -Body (@{ name = "windows-smoke" } | ConvertTo-Json -Compress)
+            $member = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/api/scopes/$($scope.scope.id)/members" `
+              -Headers $headers -Body (@{ display_name = "windows-smoke"; registered_path = $repo } | ConvertTo-Json -Compress)
+            $run = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/api/analysis-runs" `
+              -Headers $headers -Body (@{ member_ids = @($member.member.id) } | ConvertTo-Json -Compress)
+            for ($attempt = 0; $attempt -lt 90; $attempt++) {
+              Start-Sleep -Seconds 2
+              $run = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:$port/api/analysis-runs/$($run.run.id)"
+              if ($run.run.status -notin @("pending", "running")) { break }
+            }
+            if ($run.run.status -ne "completed") { throw "snapshot analysis failed: $($run.run.status)" }
+            $snapshots = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:$port/api/repository-members/$($member.member.id)/snapshots"
+            if ($snapshots.items.Count -lt 1) { throw "snapshot was not published" }
+            Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:$port/api/repository-snapshots/$($snapshots.items[0].id)?include=facts" | Out-Null
+          } finally {
+            python scripts/service.py stop --host 127.0.0.1 --port $port
+          }
+      - name: Windows service lifecycle smoke
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $port = 18765
+          try {
+            1..20 | ForEach-Object {
+              python scripts/service.py start --host 127.0.0.1 --port $port --no-build
+              python scripts/service.py status
+              if ($_ -eq 1) {
+                python scripts/service.py restart --host 127.0.0.1 --port $port --no-build
+                python scripts/service.py status
+              }
+              python scripts/service.py stop
+            }
+          } finally {
+            python scripts/service.py stop --host 127.0.0.1 --port $port
+          }
+      - name: Windows PowerShell CLI contract smoke
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dataDir = Join-Path $env:RUNNER_TEMP 'codeevolution-cli-smoke-data'
+          $repo = Join-Path $env:RUNNER_TEMP 'codeevolution-cli-smoke-repo'
+          New-Item -ItemType Directory -Force $dataDir, $repo | Out-Null
+          git -C $repo init | Out-Null
+          $env:CODEEVOLUTION_DATA_DIR = $dataDir
+          python -m codeevolution.cli discover --dir $env:RUNNER_TEMP
+          python -m codeevolution.cli register --name docs-smoke --repo $repo
+          python -m codeevolution.cli repos
+          python -m codeevolution.cli check
+      - name: Build wheel
+        run: python -m build
+      - name: Install wheel and smoke-test packaged Web
+        run: python scripts/wheel_smoke.py dist
+
+  frontend:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ["20.19", "22.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: web
+      - name: Frontend tests
+        run: npm test
+        working-directory: web
+      - name: Production build
+        run: npm run build
         working-directory: web

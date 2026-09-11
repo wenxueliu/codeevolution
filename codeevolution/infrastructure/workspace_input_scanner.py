@@ -12,6 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
+from ..platform import (
+    ensure_supported_storage_path,
+    is_reparse_point,
+    manifest_collision_key,
+    normalize_manifest_path,
+    open_beneath,
+)
+
 INDEXABLE_EXTENSIONS = frozenset(
     {
         ".c", ".cc", ".cpp", ".cs", ".css", ".ex", ".exs", ".go", ".h", ".hpp",
@@ -69,7 +77,11 @@ class WorkspaceScanError(RuntimeError):
 
 class WorkspaceInputScanner:
     def __init__(self, repo_root: str | Path):
-        self.root = Path(repo_root).expanduser().resolve()
+        ensure_supported_storage_path(repo_root)
+        candidate = Path(repo_root).expanduser()
+        if os.name == "nt" and is_reparse_point(candidate):
+            raise WorkspaceScanError("repository root is a Windows reparse point")
+        self.root = candidate.resolve()
 
     def scan(self, policy: ScanPolicy | None = None) -> InputObservation:
         policy = policy or ScanPolicy()
@@ -82,7 +94,13 @@ class WorkspaceInputScanner:
         paths = sorted(candidates)
         entries: list[InputEntry] = []
         exclusions: list[InputExclusion] = []
+        collision_keys: set[str] = set()
         for relative in paths:
+            collision = manifest_collision_key(relative) if os.name == "nt" else relative
+            if collision in collision_keys:
+                exclusions.append(InputExclusion(relative, "canonical_path_collision"))
+                continue
+            collision_keys.add(collision)
             exclusion = self._exclusion(relative, policy)
             if exclusion:
                 exclusions.append(InputExclusion(relative, exclusion))
@@ -123,7 +141,10 @@ class WorkspaceInputScanner:
             "git", "-C", str(self.root), "ls-files", "-z", "--cached", "--others",
             "--exclude-standard",
         ]
-        result = subprocess.run(command, capture_output=True, check=False)
+        try:
+            result = subprocess.run(command, capture_output=True, check=False)
+        except OSError as error:
+            raise WorkspaceScanError("git input enumeration failed") from error
         if result.returncode != 0:
             raise WorkspaceScanError("git input enumeration failed")
         return {self._normalize_path(os.fsdecode(raw)) for raw in result.stdout.split(b"\0") if raw}
@@ -131,8 +152,16 @@ class WorkspaceInputScanner:
     def _walk_candidates(self) -> set[str]:
         result: set[str] = set()
         for directory, names, files in os.walk(self.root, followlinks=False):
-            names[:] = sorted(name for name in names if name not in {".git", ".codegraph", ".codeevolution"})
             base = Path(directory)
+            kept: list[str] = []
+            for name in sorted(names):
+                candidate = base / name
+                if name in {".git", ".codegraph", ".codeevolution", "node_modules"}:
+                    continue
+                if is_reparse_point(candidate):
+                    continue
+                kept.append(name)
+            names[:] = kept
             for name in files:
                 result.add(self._normalize_path((base / name).relative_to(self.root).as_posix()))
         return result
@@ -153,13 +182,11 @@ class WorkspaceInputScanner:
 
     @staticmethod
     def _normalize_path(path: str) -> str:
-        if "\x00" in path:
-            raise WorkspaceScanError("NUL in repository path")
-        normalized = unicodedata.normalize("NFC", path.replace("\\", "/"))
-        pure = PurePosixPath(normalized)
-        if pure.is_absolute() or ".." in pure.parts or normalized in {"", "."}:
+        try:
+            normalized = normalize_manifest_path(unicodedata.normalize("NFC", path))
+        except ValueError:
             raise WorkspaceScanError("unsafe repository path")
-        return pure.as_posix()
+        return normalized
 
     def _exclusion(self, relative: str, policy: ScanPolicy) -> str | None:
         pure = PurePosixPath(relative)
@@ -177,6 +204,8 @@ class WorkspaceInputScanner:
             except (OSError, ValueError):
                 return "unsafe_symlink"
             return "symlink"
+        if _has_reparse_component(candidate, self.root):
+            return "unsafe_reparse_point"
         try:
             stat_result = candidate.stat()
         except OSError:
@@ -189,9 +218,10 @@ class WorkspaceInputScanner:
 
     def _read_stable_regular_file(self, relative: str, limit: int) -> tuple[bytes, int]:
         path = self.root / relative
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        if os.name == "nt" and _has_reparse_component(path, self.root):
+            raise WorkspaceScanError("unsafe_or_unreadable")
         try:
-            fd = os.open(path, flags)
+            fd = open_beneath(self.root, PurePosixPath(relative))
         except OSError as exc:
             raise WorkspaceScanError("unsafe_or_unreadable") from exc
         try:
@@ -228,9 +258,22 @@ class WorkspaceInputScanner:
 
         def output(*args: str) -> str | None:
             result = subprocess.run(
-                ["git", "-C", str(self.root), *args], capture_output=True, text=True, check=False
+                [
+                    "git",
+                    "-c",
+                    "i18n.logOutputEncoding=UTF-8",
+                    "-C",
+                    str(self.root),
+                    *args,
+                ],
+                capture_output=True,
+                check=False,
             )
-            return result.stdout.strip() if result.returncode == 0 else None
+            return (
+                result.stdout.decode("utf-8", errors="replace").strip()
+                if result.returncode == 0
+                else None
+            )
 
         head = output("rev-parse", "HEAD")
         branch = output("symbolic-ref", "--short", "-q", "HEAD")
@@ -247,3 +290,16 @@ def _entries_digest(entries: Iterable[InputEntry]) -> str:
     ]
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _has_reparse_component(path: Path, root: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return True
+    current = root
+    for part in relative.parts:
+        current /= part
+        if is_reparse_point(current):
+            return True
+    return False

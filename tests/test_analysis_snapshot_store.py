@@ -1,3 +1,4 @@
+import os
 import sqlite3
 
 import pytest
@@ -36,7 +37,8 @@ def test_schema_migration_is_idempotent_and_configured(tmp_path):
     connection = sqlite3.connect(path)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
     indexes = {row[1] for row in connection.execute("PRAGMA index_list(repository_attempts)")}
     assert "uq_active_attempt_per_member" in indexes
 

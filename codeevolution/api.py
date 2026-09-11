@@ -3,9 +3,7 @@
 import hashlib
 import json
 import os
-import subprocess
 import threading
-import time
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict
@@ -67,8 +65,6 @@ _node_rule_store: NodeRuleStore | None = None
 _explanation_snapshot_store: ExplanationSnapshotStore | None = None
 _snapshot_runtime: SnapshotRuntime | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies", default={})
-_init_tasks: dict[str, dict] = {}
-_init_lock = threading.Lock()
 _explanation_generation_lock = threading.Lock()
 
 
@@ -1213,128 +1209,6 @@ def api_remove_member(name: str, path: str = Query(..., min_length=1)):
         raise HTTPException(400, str(exc))
 
 
-@app.post("/api/repos/{name}/init")
-def api_init_repo(name: str):
-    """Start one-click init: codegraph init + backfill for all member repos."""
-    raise HTTPException(410, "legacy init removed; create an analysis run for repository members")
-    entry = get_repo(name)
-    if not entry:
-        raise HTTPException(404, f"Repo '{name}' not found")
-
-    with _init_lock:
-        task = _init_tasks.get(name)
-        if task and task.get("status") in ("pending", "running"):
-            raise HTTPException(409, f"服务 '{name}' 正在初始化中，请等待完成")
-        _init_tasks[name] = {
-            "status": "pending",
-            "progress": [],
-            "started_at": time.time(),
-            "service": name,
-        }
-
-    def _run_init():
-        try:
-            from .application.evolution_command_service import EvolutionCommandService
-            from .config import Config
-
-            members = repository_members(entry)
-            if not members:
-                _init_tasks[name]["status"] = "failed"
-                _init_tasks[name]["error"] = "该服务下没有代码仓成员"
-                return
-
-            with _init_lock:
-                _init_tasks[name]["status"] = "running"
-                _init_tasks[name]["total"] = len(members)
-
-            for i, member in enumerate(members):
-                member_name = member.get("name") or Path(member["path"]).name
-                member_path = str(member["path"])
-
-                # Step 1: codegraph init
-                step1 = {"member": member_name, "step": "codegraph_init", "status": "running"}
-                with _init_lock:
-                    _init_tasks[name]["progress"].append(step1)
-
-                cg_db = Path(member_path) / ".codegraph" / "codegraph.db"
-                if not cg_db.exists():
-                    try:
-                        result = subprocess.run(
-                            ["codegraph.cmd" if os.name == "nt" else "codegraph", "init", member_path],
-                            capture_output=True, text=True, timeout=300,
-                        )
-                        if result.returncode != 0:
-                            with _init_lock:
-                                step1["status"] = "failed"
-                                step1["error"] = (result.stderr or result.stdout)[:500]
-                            continue
-                    except subprocess.TimeoutExpired:
-                        with _init_lock:
-                            step1["status"] = "failed"
-                            step1["error"] = "codegraph init 超时"
-                        continue
-                    except FileNotFoundError:
-                        with _init_lock:
-                            _init_tasks[name]["status"] = "failed"
-                            _init_tasks[name]["error"] = "未安装 codegraph CLI (npm i -g @colbymchenry/codegraph)"
-                        return
-
-                with _init_lock:
-                    step1["status"] = "completed"
-
-                # Step 2: backfill
-                step2 = {"member": member_name, "step": "backfill", "status": "running"}
-                with _init_lock:
-                    _init_tasks[name]["progress"].append(step2)
-
-                try:
-                    config = Config(repo_path=str(member_path))
-                    service = EvolutionCommandService.from_config(config)
-                    try:
-                        db_path = repo_data_file(member_path, "evolution.db")
-                        if db_path.exists():
-                            stats = service.update()
-                        else:
-                            stats = service.backfill()
-                    finally:
-                        service.close()
-                    with _init_lock:
-                        step2["status"] = "completed"
-                        step2["stats"] = stats
-                except Exception as exc:
-                    with _init_lock:
-                        step2["status"] = "failed"
-                        step2["error"] = str(exc)[:500]
-
-            # Determine overall status
-            with _init_lock:
-                any_failed = any(
-                    s.get("status") == "failed"
-                    for s in _init_tasks[name].get("progress", [])
-                )
-                _init_tasks[name]["status"] = "completed" if not any_failed else "partial"
-                _init_tasks[name]["finished_at"] = time.time()
-
-        except Exception as exc:
-            with _init_lock:
-                _init_tasks[name]["status"] = "failed"
-                _init_tasks[name]["error"] = str(exc)[:500]
-
-    threading.Thread(target=_run_init, daemon=True).start()
-    return {"ok": True, "task": _init_tasks[name]}
-
-
-@app.get("/api/repos/{name}/init/status")
-def api_init_repo_status(name: str):
-    """Poll the status of an init task."""
-    raise HTTPException(410, "legacy init removed; query /api/analysis-runs/{run_id}")
-    with _init_lock:
-        task = _init_tasks.get(name)
-    if not task:
-        raise HTTPException(404, f"没有找到服务 '{name}' 的初始化任务")
-    return task
-
-
 # --- Scoped API routes ---
 
 
@@ -2206,7 +2080,9 @@ def serve(host: str = "0.0.0.0", port: int = 8765):
     """Start the web API server. Uses registry for multi-repo support."""
     import uvicorn
 
-    web_dir = Path(__file__).parent.parent / "web" / "dist"
+    source_web_dir = Path(__file__).parent.parent / "web" / "dist"
+    packaged_web_dir = Path(__file__).parent / "web_dist"
+    web_dir = source_web_dir if source_web_dir.exists() else packaged_web_dir
     if web_dir.exists():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
     else:

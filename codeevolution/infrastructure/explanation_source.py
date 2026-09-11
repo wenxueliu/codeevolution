@@ -148,6 +148,8 @@ class RepositoryExplanationSource:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             ).stdout.strip()
             dirty = subprocess.run(
                 ["git", "status", "--porcelain"],
@@ -155,6 +157,8 @@ class RepositoryExplanationSource:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             ).stdout
             return f"{commit}:dirty" if dirty else commit
         except (OSError, subprocess.CalledProcessError):

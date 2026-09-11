@@ -18,17 +18,15 @@ npm run build
 cd ..
 
 # 安装 CodeGraph（代码解析引擎）
-npm i -g @colbymchenry/codegraph
+npm i -g @colbymchenry/codegraph@0.9.x
 
 # 初始化代码图谱
 (cd /path/to/your/repo && codegraph init)
 
-# 提取知识（13 维，秒级）
-.venv/bin/codeevolution knowledge -r /path/to/your/repo
-
 # 多仓微服务拓扑
 .venv/bin/codeevolution register -n my-svc -r /path/to/repo
-.venv/bin/codeevolution topology
+# 创建 Graph View 后再查询拓扑：
+# .venv/bin/codeevolution topology --view-id <view-id>
 
 # 将多个仓库注册为一个逻辑服务（例如前端 + 后端）
 .venv/bin/codeevolution register -n mall -r /path/to/mall -r /path/to/mall-admin-web
@@ -38,7 +36,7 @@ npm i -g @colbymchenry/codegraph
 # 浏览器访问 http://localhost:8765
 ```
 
-`codeevolution web` 会从 `web/dist/` 加载前端静态资源。如果修改了 `web/src/`，需要重新运行 `cd web && npm run build` 后再启动服务。前端开发时可分别启动后端 `.venv/bin/codeevolution web --port 8765` 和前端 `cd web && npm run dev`，然后访问 `http://localhost:5173`。
+`codeevolution web` 会从 `web/dist/` 加载前端静态资源。如果修改了 `web/src/`，需要重新运行 `cd web && npm run build` 后再启动服务。前端依赖要求 Node.js 20.19+（20.x 或 22.x）。前端开发时可分别启动后端 `.venv/bin/codeevolution web --port 8765` 和前端 `cd web && npm run dev`，然后访问 `http://localhost:5173`。
 
 Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#windows-powershell)，其中包含虚拟环境路径、前端构建和 CodeGraph 初始化命令。
 
@@ -61,9 +59,9 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 | 能力 | 命令 |
 |------|------|
 | 统一服务拓扑 | `topology` |
-| 跨服务变更影响 | `impact -s <svc>` |
-| 全通道流程追踪 | `flow -s <svc>` |
-| 跨服务实体对齐 | `entities [--llm]` |
+| 跨服务变更影响 | `impact --view-id <id> --service <member-id>` |
+| 全通道流程追踪 | `flow --view-id <id> --service <member-id> --entry-id <entry-id>` |
+| 跨服务实体对齐 | Web/API Graph View |
 | 服务发现+健康检查 | `discover` / `check` |
 
 ### 3. Evolution Engine — 代码演进追踪
@@ -74,50 +72,41 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 
 | # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
 |---|------|:---:|:---:|:---:|:---:|:---:|------|
-| 1 | API 契约 | x | x | x | x | | `knowledge -s api` |
-| 2 | 模块拓扑 | | x | x | | | `knowledge -s modules` |
-| 3 | 核心实体 | | x | x | | | `knowledge -s entities` |
-| 4 | 测试缺口 | | | | x | | `knowledge -s tests` |
-| 5 | 分层违规 | | x | | | | `knowledge -s layers` |
-| 6 | 配置消费图 | | | | | x | `knowledge -s config` |
-| 7 | 外部依赖清单 | | x | | | x | `knowledge -s deps` |
-| 8 | 权限模型 | | x | | | x | `knowledge -s auth` |
-| 9 | 热力图 | | x | x | | | `knowledge -s heatmap` |
-| 10 | 业务描述 | x | | x | | | `knowledge -s business --llm` |
-| 11 | 业务规则 | x | | | x | | `knowledge -s rules --llm` |
-| 12 | 错误目录 | | | | x | x | `knowledge -s errors --llm` |
-| 13 | 状态机 | x | | | x | | `knowledge -s states --llm` |
+| 1 | API 契约 | x | x | x | x | | `knowledge --snapshot-id <id> -s api` |
+| 2 | 模块拓扑 | | x | x | | | `knowledge --snapshot-id <id> -s modules` |
+| 3 | 核心实体 | | x | x | | | `knowledge --snapshot-id <id> -s entities` |
+| 4 | 测试缺口 | | | | x | | `knowledge --snapshot-id <id> -s tests` |
+| 5 | 分层违规 | | x | | | | `knowledge --snapshot-id <id> -s layers` |
+| 6 | 配置消费图 | | | | | x | `knowledge --snapshot-id <id> -s config` |
+| 7 | 外部依赖清单 | | x | | | x | `knowledge --snapshot-id <id> -s deps` |
+| 8 | 权限模型 | | x | | | x | `knowledge --snapshot-id <id> -s auth` |
+| 9 | 热力图 | | x | x | | | `knowledge --snapshot-id <id> -s heatmap` |
+| 10 | 业务描述 | x | | x | | | `knowledge --snapshot-id <id> -s business --llm` |
+| 11 | 业务规则 | x | | | x | | `knowledge --snapshot-id <id> -s rules --llm` |
+| 12 | 错误目录 | | | | x | x | `knowledge --snapshot-id <id> -s errors --llm` |
+| 13 | 状态机 | x | | | x | | `knowledge --snapshot-id <id> -s states --llm` |
 | 14 | 统一服务拓扑 | | x | x | | x | `topology` |
-| 15 | 跨仓变更影响 | | x | x | x | | `impact -s <svc>` |
-| 16 | 全通道流程追踪 | | x | x | x | x | `flow -s <svc>` |
-| 17 | 跨服务实体对齐 | | x | x | | | `entities [--llm]` |
+| 15 | 跨仓变更影响 | | x | x | x | | `impact --view-id <id> --service <member-id>` |
+| 16 | 全通道流程追踪 | | x | x | x | x | `flow --view-id <id> --service <member-id> --entry-id <entry-id>` |
+| 17 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
 | 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
 
 ## CLI 命令总览
 
 ```bash
-# 单仓知识提取
-codeevolution knowledge -r <repo> [-s api|modules|entities|tests|layers|config|deps|auth|heatmap] [--llm]
-codeevolution knowledge -r <repo> -s business|rules|errors|states --llm
+# 单仓知识提取（针对已发布快照）
+codeevolution knowledge --snapshot-id <snapshot-id> [-s <section>] [--llm]
 
 # 多仓微服务
 codeevolution register -n <name> -r <path> [-r <path> ...]  # 注册单仓或多仓逻辑服务
 codeevolution discover -d <dir>               # 扫描目录发现 git 仓库
-codeevolution init-all                        # 一键初始化所有服务的 CodeGraph
 codeevolution check                           # 所有服务健康检查
-codeevolution topology                        # 统一服务拓扑（缓存加速）
-codeevolution impact -s <svc>                 # 跨服务变更影响（秒级缓存）
-codeevolution trace -s <svc>                  # HTTP 调用链追踪
-codeevolution flow -s <svc>                   # 全通道流程追踪
-codeevolution entities [--llm]                # 跨服务实体对齐
-
-# 演进引擎
-codeevolution backfill -r <repo>              # 全量回溯分析
-codeevolution update -r <repo>                # 增量更新
-codeevolution status -r <repo>                # 查看演进状态
+codeevolution topology --view-id <view-id>    # 统一服务拓扑
+codeevolution impact --view-id <view-id> --service <member-id>
+codeevolution flow --view-id <view-id> --service <member-id> --entry-id <entry-id>
 
 # 其他
-codeevolution serve -r <repo>                 # 启动 MCP Server
+codeevolution serve --transport stdio         # 启动快照 MCP Server
 codeevolution web                             # 启动 Web 控制台 (:8765)
 ```
 
@@ -172,7 +161,7 @@ make restart  # 重新构建并重启
 make stop     # 停止服务
 ```
 
-Windows PowerShell 使用 `py scripts\service.py start|stop|restart|status`。运行文件保存在 `.run/`，日志为 `.run/codeevolution.log`。
+Windows PowerShell 使用 `\.venv\Scripts\python.exe scripts\service.py start|stop|restart|status`。运行文件保存在 `.run/`，日志为 `.run/codeevolution.log`；`start`/`stop`/`restart` 通过受保护的 PID 元数据和进程树终止，不依赖 detached 进程的 `CTRL_BREAK_EVENT`。
 
 ### 代码仓问答与审计
 

@@ -11,6 +11,16 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..platform import (
+    ensure_supported_storage_path,
+    fsync_file,
+    is_reparse_point,
+    manifest_collision_key,
+    normalize_manifest_path,
+    open_beneath,
+    set_private_permissions,
+    sqlite_readonly_uri,
+)
 from .workspace_input_scanner import InputEntry
 
 
@@ -38,26 +48,35 @@ class CodeGraphCapture:
         destination_db: str | Path,
         repository_root: str | Path | None = None,
     ) -> CodeGraphCaptureResult:
-        source = Path(source_db).expanduser().resolve()
-        destination = Path(destination_db).expanduser().resolve()
+        source_input = Path(source_db).expanduser()
+        destination_input = Path(destination_db).expanduser()
+        ensure_supported_storage_path(source_input)
+        ensure_supported_storage_path(destination_input.parent)
+        if os.name == "nt" and is_reparse_point(source_input):
+            raise CodeGraphCaptureError("CodeGraph database is a Windows reparse point")
+        source = source_input.resolve()
+        destination = destination_input.resolve()
         graph_root = (
             Path(repository_root).expanduser().resolve()
             if repository_root is not None
             else (source.parent.parent if source.parent.name == ".codegraph" else source.parent)
         )
-        if not source.is_file() or source.is_symlink():
+        if not source.is_file() or is_reparse_point(source):
             raise CodeGraphCaptureError("CodeGraph database is unavailable or unsafe")
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        set_private_permissions(destination.parent, directory=True)
         if destination.exists():
             raise CodeGraphCaptureError("capture destination already exists")
 
-        source_uri = f"file:{source.as_posix()}?mode=ro"
+        source_uri = sqlite_readonly_uri(source)
         try:
             with sqlite3.connect(source_uri, uri=True) as input_db:
                 with sqlite3.connect(destination) as output_db:
                     input_db.backup(output_db)
-            destination.chmod(0o600)
-            with sqlite3.connect(f"file:{destination.as_posix()}?mode=ro", uri=True) as db:
+            with destination.open("rb") as captured_file:
+                fsync_file(captured_file)
+            set_private_permissions(destination, sensitive=False)
+            with sqlite3.connect(sqlite_readonly_uri(destination), uri=True) as db:
                 db.row_factory = sqlite3.Row
                 integrity_rows = [row[0] for row in db.execute("PRAGMA integrity_check")]
                 if integrity_rows != ["ok"]:
@@ -101,25 +120,36 @@ def freeze_sources(
     This is the E/F boundary used by the attempt worker: if any file differs
     from its observation, no partial frozen set is returned.
     """
-    source_root = Path(repo_root).expanduser().resolve()
-    target_root = Path(destination_root).expanduser().resolve()
+    source_input = Path(repo_root).expanduser()
+    if os.name == "nt" and is_reparse_point(source_input):
+        raise CodeGraphCaptureError("repository root is a Windows reparse point")
+    target_input = Path(destination_root).expanduser()
+    ensure_supported_storage_path(source_input)
+    ensure_supported_storage_path(target_input)
+    source_root = source_input.resolve()
+    target_root = target_input.resolve()
     target_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    set_private_permissions(target_root, directory=True)
     frozen: list[InputEntry] = []
     seen: set[str] = set()
     try:
         for entry in sorted(entries, key=lambda item: item.path):
-            relative = PurePosixPath(entry.path.replace("\\", "/"))
-            normalized = relative.as_posix()
+            try:
+                normalized = normalize_manifest_path(entry.path)
+            except ValueError as exc:
+                raise CodeGraphCaptureError("unsafe or duplicate source capture path") from exc
+            relative = PurePosixPath(normalized)
+            collision = manifest_collision_key(normalized) if os.name == "nt" else normalized
             if (
-                relative.is_absolute()
-                or ".." in relative.parts
-                or normalized in {"", "."}
-                or normalized in seen
+                normalized in seen
+                or (os.name == "nt" and collision in seen)
             ):
                 raise CodeGraphCaptureError("unsafe or duplicate source capture path")
             seen.add(normalized)
+            if os.name == "nt":
+                seen.add(collision)
             try:
-                source_fd = _open_beneath(source_root, relative)
+                source_fd = open_beneath(source_root, relative)
             except OSError as exc:
                 raise CodeGraphCaptureError(f"source unavailable during freeze: {entry.path}") from exc
             try:
@@ -140,7 +170,7 @@ def freeze_sources(
                             view = view[written:]
                         digest.update(chunk)
                         copied += len(chunk)
-                    os.fsync(output_fd)
+                    fsync_file(output_fd)
                 finally:
                     os.close(output_fd)
                 after = os.fstat(source_fd)
@@ -159,25 +189,10 @@ def freeze_sources(
         # The attempt owns its staging tree and will ultimately reclaim it; remove
         # only files created by this helper so callers cannot consume a partial set.
         for path in sorted(target_root.rglob("*"), reverse=True):
-            if path.is_file() and not path.is_symlink():
+            if path.is_file() and not is_reparse_point(path):
                 path.unlink(missing_ok=True)
         raise
     return tuple(frozen)
-
-
-def _open_beneath(root: Path, relative: PurePosixPath) -> int:
-    """Open a file without following a symlink in any path component."""
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow
-    current_fd = os.open(root, directory_flags)
-    try:
-        for component in relative.parts[:-1]:
-            next_fd = os.open(component, directory_flags, dir_fd=current_fd)
-            os.close(current_fd)
-            current_fd = next_fd
-        return os.open(relative.parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
-    finally:
-        os.close(current_fd)
 
 
 def _file_sha256(path: Path) -> str:
@@ -284,9 +299,12 @@ def _graph_path(value: Any, repository_root: Path) -> Any:
         return value
     normalized = unicodedata.normalize("NFC", value.replace("\\", "/"))
     pure = Path(normalized)
-    if pure.is_absolute():
+    if pure.is_absolute() or (len(normalized) >= 2 and normalized[1] == ":") or normalized.startswith("//"):
         try:
             return pure.resolve(strict=False).relative_to(repository_root).as_posix()
         except ValueError:
             raise CodeGraphCaptureError("CodeGraph contains a path outside the repository") from None
-    return PurePosixPath(normalized).as_posix()
+    try:
+        return normalize_manifest_path(normalized.removeprefix("./"))
+    except ValueError as exc:
+        raise CodeGraphCaptureError("CodeGraph contains an unsafe relative path") from exc

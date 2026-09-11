@@ -28,47 +28,45 @@ CodeEvolution 三大子系统：
 
 ```bash
 # 前置：为目标仓库建立代码图谱
-npm i -g @colbymchenry/codegraph && cd <repo> && codegraph init
+npm i -g @colbymchenry/codegraph@0.9.x && cd <repo> && codegraph init
 
-# 演进引擎
-codeevolution backfill -r <repo>    # 全量回溯分析
-codeevolution update -r <repo>      # 增量更新
-codeevolution status -r <repo>      # 查看演进状态
-
-# 单仓知识提取（各维能力与命令见下方能力矩阵）
-codeevolution knowledge -r <repo> [--llm]
+# 快照分析：先通过 Web API 创建 analysis run，再对已发布快照查询知识
+codeevolution knowledge --snapshot-id <snapshot-id> [-s api]
 
 # 多仓分析（先 register 注册服务）
 codeevolution register -n <name> -r <repo>
-codeevolution topology / impact -s <svc> / flow -s <svc> / entities
+codeevolution topology --view-id <view-id>
+codeevolution impact --view-id <view-id> --service <member-id>
+codeevolution flow --view-id <view-id> --service <member-id> --entry-id <entry-id>
 
 # Web 控制台
 codeevolution web                    # http://0.0.0.0:8765
 ```
 
-完整命令（16 个子命令）以 `codeevolution --help` 与 `codeevolution/cli.py` 为准。
+完整命令以 `codeevolution --help` 与 `codeevolution/cli.py` 为准；旧的
+`backfill`、`update`、演进 `status` 和 `init-all` 已移除。
 
 ## 能力矩阵（18 维 × 5 角色，兼作命令速查）
 
 | # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
 |---|------|:---:|:---:|:---:|:---:|:---:|------|
-| 1 | API 契约 | x | x | x | x | | `knowledge -s api` |
-| 2 | 模块拓扑 | | x | x | | | `knowledge -s modules` |
-| 3 | 核心实体 (PageRank) | | x | x | | | `knowledge -s entities` |
-| 4 | 测试缺口 | | | | x | | `knowledge -s tests` |
-| 5 | 分层违规 | | x | | | | `knowledge -s layers` |
-| 6 | 配置消费图 | | | | | x | `knowledge -s config` |
-| 7 | 外部依赖清单 | | x | | | x | `knowledge -s deps` |
-| 8 | 权限模型 | | x | | | x | `knowledge -s auth` |
-| 9 | 热力图 | | x | x | | | `knowledge -s heatmap` |
-| 10 | 业务描述 | x | | x | | | `knowledge -s business --llm` |
-| 11 | 业务规则 | x | | | x | | `knowledge -s rules --llm` |
-| 12 | 错误目录 | | | | x | x | `knowledge -s errors --llm` |
-| 13 | 状态机 | x | | | x | | `knowledge -s states --llm` |
-| 14 | 统一服务拓扑 | | x | x | | x | `topology` |
-| 15 | 跨仓变更影响 | | x | x | x | | `impact -s <svc>` |
-| 16 | 全通道流程追踪 | | x | x | x | x | `flow -s <svc>` |
-| 17 | 跨服务实体对齐 | | x | x | | | `entities [--llm]` |
+| 1 | API 契约 | x | x | x | x | | `knowledge --snapshot-id <id> -s api` |
+| 2 | 模块拓扑 | | x | x | | | `knowledge --snapshot-id <id> -s modules` |
+| 3 | 核心实体 (PageRank) | | x | x | | | `knowledge --snapshot-id <id> -s entities` |
+| 4 | 测试缺口 | | | | x | | `knowledge --snapshot-id <id> -s tests` |
+| 5 | 分层违规 | | x | | | | `knowledge --snapshot-id <id> -s layers` |
+| 6 | 配置消费图 | | | | | x | `knowledge --snapshot-id <id> -s config` |
+| 7 | 外部依赖清单 | | x | | | x | `knowledge --snapshot-id <id> -s deps` |
+| 8 | 权限模型 | | x | | | x | `knowledge --snapshot-id <id> -s auth` |
+| 9 | 热力图 | | x | x | | | `knowledge --snapshot-id <id> -s heatmap` |
+| 10 | 业务描述 | x | | x | | | `knowledge --snapshot-id <id> -s business --llm` |
+| 11 | 业务规则 | x | | | x | | `knowledge --snapshot-id <id> -s rules --llm` |
+| 12 | 错误目录 | | | | x | x | `knowledge --snapshot-id <id> -s errors --llm` |
+| 13 | 状态机 | x | | | x | | `knowledge --snapshot-id <id> -s states --llm` |
+| 14 | 统一服务拓扑 | | x | x | | x | `topology --view-id <id>` |
+| 15 | 跨仓变更影响 | | x | x | x | | `impact --view-id <id> --service <id>` |
+| 16 | 全通道流程追踪 | | x | x | x | x | `flow --view-id <id> --service <id>` |
+| 17 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
 | 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
 
 ## 自动打包与重启
@@ -96,7 +94,7 @@ cd services/codehistory
 ```
 
 `build` 做了两件事：
-1. `npm ci`（如果 `web/node_modules` 不存在）
+1. 每次执行 `npm ci`（避免跨操作系统复用原生 Rollup/esbuild 依赖）
 2. `npm run build`（Vite 构建到 `web/dist/`）
 
 后端是 Python 源码直读 (`python -m codeevolution.cli web`)，无需额外打包步骤。

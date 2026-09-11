@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
+import os
 import shutil
 import sqlite3
 from collections.abc import Callable
@@ -38,14 +40,30 @@ from codeevolution.infrastructure.artifact_store_fs import (
     FileSystemArtifactStore,
     directory_digest,
 )
-from codeevolution.infrastructure.codegraph_capture import CodeGraphCapture, freeze_sources
-from codeevolution.infrastructure.codegraph_command import CodeGraphCommandRunner
+from codeevolution.infrastructure.codegraph_capture import (
+    CodeGraphCapture,
+    CodeGraphCaptureError,
+    freeze_sources,
+)
+from codeevolution.infrastructure.codegraph_command import (
+    CodeGraphCommandRunner,
+    CodeGraphPreflightError,
+    CodeGraphTerminationError,
+)
 from codeevolution.infrastructure.snapshot_source import SnapshotSourceInventory
 from codeevolution.infrastructure.workspace_input_scanner import (
     InputEntry,
     InputObservation,
     ScanPolicy,
     WorkspaceInputScanner,
+    WorkspaceScanError,
+)
+from codeevolution.platform import (
+    PlatformCapabilityError,
+    manifest_collision_key,
+    normalize_manifest_path,
+    remove_tree,
+    sqlite_readonly_uri,
 )
 
 
@@ -103,15 +121,43 @@ class RepositoryAttemptWorker:
         except AttemptCancelledError:
             self._finish_cancelled(attempt.id)
             if staging is not None:
-                shutil.rmtree(staging, ignore_errors=True)
+                _reclaim_staging(staging)
         except SnapshotStoreError as error:
             self._finish_failed(attempt.id, "insufficient_storage", str(error))
             if staging is not None:
-                shutil.rmtree(staging, ignore_errors=True)
+                _reclaim_staging(staging)
+        except PlatformCapabilityError as error:
+            self._finish_failed(attempt.id, "unsupported_storage", str(error))
+            if staging is not None:
+                _reclaim_staging(staging)
+        except CodeGraphCaptureError as error:
+            message = str(error)
+            lowered = message.lower()
+            if "source changed" in lowered:
+                code = "source_changed_during_capture"
+            elif "unsafe" in lowered or "reparse" in lowered or "unreadable" in lowered:
+                code = "unsafe_or_unreadable"
+            else:
+                code = "capture_failed"
+            self._finish_failed(attempt.id, code, message)
+            if staging is not None:
+                _reclaim_staging(staging)
+        except WorkspaceScanError as error:
+            message = str(error)
+            lowered = message.lower()
+            if "unsafe" in lowered or "unreadable" in lowered:
+                code = "unsafe_or_unreadable"
+            elif "git" in lowered:
+                code = "git_error"
+            else:
+                code = "scan_failed"
+            self._finish_failed(attempt.id, code, message)
+            if staging is not None:
+                _reclaim_staging(staging)
         except AttemptExecutionError as error:
             self._finish_failed(attempt.id, error.code, str(error))
             if staging is not None:
-                shutil.rmtree(staging, ignore_errors=True)
+                _reclaim_staging(staging)
         finally:
             # publish_snapshot or any terminal failure releases the reservation.
             self.store.release_storage(attempt.id)
@@ -125,8 +171,20 @@ class RepositoryAttemptWorker:
             raise AttemptExecutionError("path_missing", "repository path does not exist")
         if not (root / ".git").exists():
             raise AttemptExecutionError("not_git_repository", "repository path is not a Git repository")
-        if str(root) != member.path_identity and str(root).casefold() != member.path_identity.casefold():
+        identity_matches = str(root) == member.path_identity or (
+            os.name == "nt" and str(root).casefold() == member.path_identity.casefold()
+        )
+        if not identity_matches:
             raise AttemptExecutionError("path_identity_changed", "repository path identity changed")
+        try:
+            self.artifacts.data_dir.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            raise AttemptExecutionError(
+                "unsupported_storage_layout",
+                "analysis data directory must be outside the repository being analyzed",
+            )
 
         scanner = WorkspaceInputScanner(root)
         self._stage(attempt.id, AttemptStage.DIGEST_BEFORE, 5)
@@ -140,7 +198,16 @@ class RepositoryAttemptWorker:
         graph_db = root / ".codegraph" / "codegraph.db"
         command_stage = AttemptStage.CODEGRAPH_SYNC if graph_db.is_file() else AttemptStage.CODEGRAPH_INIT
         self._stage(attempt.id, command_stage, 15)
-        result = self.command_runner.init_or_sync(root, lambda: self._cancel_requested(attempt.id))
+        try:
+            result = self.command_runner.init_or_sync(
+                root, lambda: self._cancel_requested(attempt.id)
+            )
+        except CodeGraphPreflightError as error:
+            raise AttemptExecutionError("codegraph_not_found", str(error)) from error
+        except CodeGraphTerminationError as error:
+            raise AttemptExecutionError("codegraph_termination_failed", str(error)) from error
+        except FileNotFoundError as error:
+            raise AttemptExecutionError("codegraph_not_found", str(error)) from error
         if result.cancelled:
             raise AttemptCancelledError()
         if result.timed_out:
@@ -260,7 +327,7 @@ class RepositoryAttemptWorker:
                 pass
         # The two published CAS objects were renamed out of this attempt's
         # staging directory; do not leave an empty per-attempt container behind.
-        shutil.rmtree(staging, ignore_errors=True)
+        _reclaim_staging(staging)
 
     def _communication_artifact(
         self,
@@ -357,22 +424,39 @@ class RepositoryAttemptWorker:
 def _capture_entries(
     observation: InputObservation, graph_db: Path, repository_root: Path
 ) -> tuple[InputEntry, ...]:
-    with sqlite3.connect(f"file:{graph_db.as_posix()}?mode=ro", uri=True) as connection:
+    with sqlite3.connect(sqlite_readonly_uri(graph_db), uri=True) as connection:
         graph_paths = {str(row[0]).replace("\\", "/") for row in connection.execute("SELECT path FROM files")}
     normalized: set[str] = set()
+    collision_keys: set[str] = set()
     for value in graph_paths:
         path = Path(value)
-        if path.is_absolute():
+        if path.is_absolute() or ntpath.isabs(value) or ntpath.splitdrive(value)[0]:
             try:
                 value = path.resolve().relative_to(repository_root).as_posix()
             except ValueError:
                 continue
-        normalized.add(value.removeprefix("./"))
+        try:
+            value = normalize_manifest_path(value.removeprefix("./"))
+            collision = manifest_collision_key(value) if os.name == "nt" else value
+        except ValueError:
+            continue
+        if collision in collision_keys:
+            continue
+        collision_keys.add(collision)
+        normalized.add(value)
     return tuple(
         item
         for item in observation.entries
         if item.path in normalized or "declared" in item.categories
     )
+
+
+def _reclaim_staging(path: Path) -> None:
+    """Best-effort cleanup; Windows scanners may require later scavenging."""
+    try:
+        remove_tree(path)
+    except OSError:
+        pass
 
 
 def _manifest(policy, observation, entries, graph) -> dict[str, Any]:

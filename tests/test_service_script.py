@@ -1,6 +1,7 @@
 """Regression tests for the Web lifecycle helper."""
 
 import importlib.util
+import json
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
@@ -81,3 +82,37 @@ def test_legacy_pid_file_is_read_and_cleared(monkeypatch, tmp_path):
     assert service.read_pid() == 123
     service.clear_pid_files()
     assert not legacy.exists()
+
+
+def test_start_refuses_to_manage_an_unknown_live_pid(monkeypatch, tmp_path):
+    pid_file = tmp_path / "codeevolution.pid"
+    pid_file.write_text('{"pid": 321}', encoding="utf-8")
+    monkeypatch.setattr(service, "PID_FILE", pid_file)
+    monkeypatch.setattr(service, "LEGACY_PID_FILE", tmp_path / "legacy.pid")
+    monkeypatch.setattr(service, "inspect_process", lambda _pid: "running")
+    monkeypatch.setattr(service, "process_exists", lambda _pid: True)
+
+    try:
+        service.start("127.0.0.1", 8765, should_build=False)
+    except RuntimeError as error:
+        assert "identity is unknown" in str(error)
+    else:
+        raise AssertionError("unknown live PID must not be managed")
+
+
+def test_managed_process_requires_instance_nonce(monkeypatch, tmp_path):
+    pid_file = tmp_path / "codeevolution.pid"
+    command = service.server_command("127.0.0.1", 8765, "nonce-123")
+    pid_file.write_text(
+        json.dumps({"pid": 321, "started": 99, "nonce": "nonce-123", "command": command}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "PID_FILE", pid_file)
+    monkeypatch.setattr(service, "process_exists", lambda _pid: True)
+    monkeypatch.setattr(service, "process_start_time", lambda _pid: 99)
+    monkeypatch.setattr(service, "process_image_path", lambda _pid: command[0])
+    monkeypatch.setattr(service, "process_command_line", lambda _pid: "python -m codeevolution.cli web nonce-123")
+    assert service._managed_process_matches(321)
+
+    monkeypatch.setattr(service, "process_command_line", lambda _pid: "python -m codeevolution.cli web nonce-other")
+    assert not service._managed_process_matches(321)

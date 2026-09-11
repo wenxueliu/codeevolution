@@ -7,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 
+from ..platform import ensure_supported_storage_path, set_private_permissions
+
 SCHEMA = """CREATE TABLE IF NOT EXISTS api_business_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     repo_name TEXT NOT NULL,
@@ -26,8 +28,11 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS api_business_rules (
 class BusinessRuleStore:
     def __init__(self, db_path: str):
         path = Path(db_path)
+        ensure_supported_storage_path(path.parent)
         path.parent.mkdir(parents=True, exist_ok=True)
+        set_private_permissions(path.parent, directory=True)
         self.connection = sqlite3.connect(path, check_same_thread=False)
+        set_private_permissions(path)
         self._lock = threading.Lock()
         self.connection.row_factory = sqlite3.Row
         self.connection.execute(SCHEMA)

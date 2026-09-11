@@ -38,32 +38,10 @@
         </div>
         <div class="repo-actions">
           <button data-testid="add-member" class="add-member-button" type="button" title="添加代码仓" @click.stop="toggleAddMember(r)">+ 代码仓</button>
-          <button
-            class="init-button"
-            type="button"
-            :disabled="initState(r).busy"
-            :title="initState(r).title"
-            @click="initRepo(r)"
-          >
-            <span v-if="initState(r).busy" class="spinner"></span>
-            {{ initState(r).label }}
+          <button class="init-button" type="button" title="在 Snapshots 页面创建分析 Run" @click="openSnapshots">
+            运行分析
           </button>
           <button class="remove-button" type="button" title="移除注册" @click="removeRepo(r)">删除</button>
-        </div>
-        <div class="init-progress" v-if="initState(r).detail">
-          <div class="progress-bar-wrap" v-if="initState(r).total > 0">
-            <div class="progress-bar-fill" :style="{ width: initState(r).pct + '%' }" :class="'bar-' + initState(r).taskStatus"></div>
-            <span class="progress-bar-text">{{ initState(r).done }}/{{ initState(r).total }} ({{ initState(r).pct }}%)</span>
-          </div>
-          <div class="progress-steps">
-            <span
-              v-for="(step, si) in initState(r).steps"
-              :key="si"
-              :class="'step-' + step.status"
-            >{{ step.member }}: {{ step.step === 'codegraph_init' ? '索引' : '回溯' }}
-              {{ step.status === 'completed' ? '✓' : step.status === 'running' ? '...' : '✗' }}</span>
-          </div>
-          <div class="progress-error" v-if="initState(r).error">{{ initState(r).error }}</div>
         </div>
       </article>
     </div>
@@ -77,8 +55,6 @@
 <script>
 import UiState from '../components/UiState.vue'
 
-const INIT_POLL_MS = 2000
-
 export default {
   components: { UiState },
   data() {
@@ -87,18 +63,13 @@ export default {
       showRegister: false,
       registering: false,
       newRepo: { name: '', path: '' },
-      initTasks: {},
       addMemberForm: {},
       addMemberPath: {},
       addingMember: {},
-      _pollTimer: null,
     }
   },
   async created() {
     await this.loadRepos()
-  },
-  beforeUnmount() {
-    if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null }
   },
   methods: {
     async loadRepos() {
@@ -201,48 +172,9 @@ export default {
       }
     },
 
-    // ── one-click init ──
-
-    async initRepo(repo) {
+    openSnapshots() {
       this.$router.push({ name: 'snapshots' })
     },
-
-    initState(repo) {
-      const task = this.initTasks[repo.name]
-      if (!task) return { busy: false, label: '查看 Snapshots', title: '在 Snapshot 管理页创建分析 Run', detail: false, steps: [], error: '', total: 0, done: 0, pct: 0, taskStatus: '' }
-
-      const isBusy = task.status === 'pending' || task.status === 'running'
-      const steps = task.progress || []
-      const total = task.total || 1
-      // Count completed *repos* (a repo is done when all its steps are completed)
-      const memberSteps = {}
-      for (const s of steps) {
-        if (!memberSteps[s.member]) memberSteps[s.member] = []
-        memberSteps[s.member].push(s)
-      }
-      const doneRepos = Object.values(memberSteps).filter(ss => ss.every(s => s.status === 'completed')).length
-      const done = doneRepos
-      const pct = Math.round((done / Math.max(total, 1)) * 100)
-
-      let label = '一键初始化'
-      let title = '初始化索引并回溯全量历史'
-      if (isBusy) {
-        label = `初始化中 ${done}/${total}`
-        title = '正在初始化...'
-      } else if (task.status === 'completed') {
-        label = '初始化完成 ✓'
-        title = '所有成员初始化成功'
-      } else if (task.status === 'partial') {
-        label = '部分完成 ⚠'
-        title = '部分成员初始化失败'
-      } else if (task.status === 'failed') {
-        label = '初始化失败 ✗'
-        title = task.error || '初始化失败'
-      }
-
-      return { busy: isBusy, label, title, detail: !!task.status, steps, error: task.error || '', total, done, pct, taskStatus: task.status || '' }
-    },
-
   },
 }
 </script>
@@ -268,27 +200,10 @@ export default {
 .repo-card h2 { font-size: 18px; color: #e94560; margin-bottom: 4px; }
 .repo-actions { display: flex; gap: 6px; position: absolute; right: 16px; top: 16px; }
 .init-button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #a6c8e4; background: #fff; color: #2a6496; border-radius: 5px; padding: 4px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
-.init-button:hover:not(:disabled) { color: #fff; background: #2a6496; border-color: #2a6496; }
-.init-button:disabled { opacity: 0.7; cursor: not-allowed; }
+.init-button:hover { color: #fff; background: #2a6496; border-color: #2a6496; }
 .remove-button { border: 1px solid #e4b8bf; background: #fff; color: #b8324a; border-radius: 5px; padding: 4px 9px; font-size: 11px; cursor: pointer; }
 .repo-header > span { margin-right: 120px; color: #a6acb6; }
 .remove-button:hover { color: #fff; background: #c8324d; border-color: #c8324d; }
-.spinner { width: 10px; height: 10px; border: 2px solid #cfd3da; border-top-color: #2a6496; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.init-progress { padding: 0 20px 14px; }
-.progress-bar-wrap { position: relative; height: 22px; background: #ececf2; border-radius: 11px; overflow: hidden; margin-bottom: 10px; }
-.progress-bar-fill { height: 100%; border-radius: 11px; transition: width 0.5s ease; min-width: 2px; }
-.bar-running, .bar-pending { background: linear-gradient(90deg, #4a90d9, #6cb3f5); }
-.bar-completed { background: linear-gradient(90deg, #3cba7a, #5dd99a); }
-.bar-partial { background: linear-gradient(90deg, #f0a030, #f5c060); }
-.bar-failed { background: linear-gradient(90deg, #d94a4a, #e87070); }
-.progress-bar-text { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 10px; font-weight: 600; color: #333; white-space: nowrap; }
-.progress-steps { display: flex; flex-wrap: wrap; gap: 4px; }
-.progress-steps span { padding: 1px 6px; border-radius: 8px; font-size: 10px; }
-.progress-steps .step-running { background: #e3f0fc; color: #2a6496; }
-.progress-steps .step-completed { background: #eaf8f0; color: #23764a; }
-.progress-steps .step-failed { background: #ffeaea; color: #b8324a; }
-.progress-error { margin-top: 6px; font-size: 11px; color: #b8324a; }
 .repo-path { font-size: 12px; color: #999; font-family: monospace; margin-bottom: 12px; word-break: break-all; }
 .repo-members { display: flex; flex-direction: column; gap: 2px; margin: -4px 0 12px; }
 .repo-members span { display: flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 10px; background: #eaf8f0; color: #23764a; font-size: 10px; }
