@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from codeevolution.infrastructure import codegraph_capture as codegraph_capture_module
 from codeevolution.infrastructure.artifact_store_fs import (
     ArtifactStoreError,
     FileSystemArtifactStore,
@@ -170,6 +171,28 @@ def test_codegraph_capture_uses_sqlite_backup_and_stable_logical_digest(tmp_path
     assert one.logical_graph_digest == two.logical_graph_digest
     assert one.blob_sha256.startswith("sha256:")
     assert one.schema_fingerprint.startswith("sha256:")
+
+
+def test_codegraph_capture_closes_all_sqlite_connections(monkeypatch, tmp_path):
+    source = tmp_path / "source.db"
+    _write_graph(source)
+    original_connect = sqlite3.connect
+    closed: list[sqlite3.Connection] = []
+
+    class TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed.append(self)
+            return super().close()
+
+    def connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(codegraph_capture_module.sqlite3, "connect", connect)
+
+    CodeGraphCapture().capture(source, tmp_path / "captured" / "codegraph.db")
+
+    assert len(closed) == 3  # source, backup destination, and integrity check
 
 
 def test_codegraph_command_uses_argv_and_selects_init_or_sync(tmp_path):

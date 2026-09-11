@@ -9,6 +9,7 @@ import os
 import shutil
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -424,7 +425,7 @@ class RepositoryAttemptWorker:
 def _capture_entries(
     observation: InputObservation, graph_db: Path, repository_root: Path
 ) -> tuple[InputEntry, ...]:
-    with sqlite3.connect(sqlite_readonly_uri(graph_db), uri=True) as connection:
+    with closing(sqlite3.connect(sqlite_readonly_uri(graph_db), uri=True)) as connection:
         graph_paths = {str(row[0]).replace("\\", "/") for row in connection.execute("SELECT path FROM files")}
     normalized: set[str] = set()
     collision_keys: set[str] = set()

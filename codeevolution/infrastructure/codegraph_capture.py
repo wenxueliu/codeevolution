@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import unicodedata
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -70,13 +71,13 @@ class CodeGraphCapture:
 
         source_uri = sqlite_readonly_uri(source)
         try:
-            with sqlite3.connect(source_uri, uri=True) as input_db:
-                with sqlite3.connect(destination) as output_db:
+            with closing(sqlite3.connect(source_uri, uri=True)) as input_db:
+                with closing(sqlite3.connect(destination)) as output_db:
                     input_db.backup(output_db)
             with destination.open("rb") as captured_file:
                 fsync_file(captured_file)
             set_private_permissions(destination, sensitive=False)
-            with sqlite3.connect(sqlite_readonly_uri(destination), uri=True) as db:
+            with closing(sqlite3.connect(sqlite_readonly_uri(destination), uri=True)) as db:
                 db.row_factory = sqlite3.Row
                 integrity_rows = [row[0] for row in db.execute("PRAGMA integrity_check")]
                 if integrity_rows != ["ok"]:
