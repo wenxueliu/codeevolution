@@ -3,16 +3,17 @@
     <nav class="nav">
       <div class="nav-brand">
         <router-link to="/">CodeEvolution</router-link>
-        <span class="nav-subtitle">代码仓功能演进分析</span>
+        <span class="nav-subtitle">{{ t('代码仓功能演进分析') }}</span>
       </div>
       <div class="nav-links">
-        <router-link :to="knowledgeRoute">知识中心</router-link>
-        <router-link to="/snapshots">Snapshots</router-link>
-        <router-link :to="graphViewRoute">Graph View</router-link>
+        <router-link :to="knowledgeRoute">{{ t('知识中心') }}</router-link>
+        <router-link to="/snapshots">{{ t('Snapshots') }}</router-link>
+        <router-link :to="graphViewRoute">{{ t('Graph View') }}</router-link>
       </div>
       <div class="nav-right">
         <span v-if="repoName" class="nav-repo">{{ repoName }}</span>
-        <button class="llm-settings-button" type="button" @click="settingsOpen = true">LLM 设置</button>
+        <button class="llm-settings-button" type="button" @click="settingsOpen = true">{{ t('LLM 设置') }}</button>
+        <button class="locale-button" type="button" :aria-label="t(locale === 'zh' ? '切换到英文' : '切换到中文')" @click="toggleLanguage">{{ locale === 'zh' ? 'EN' : '中' }}</button>
       </div>
     </nav>
     <main class="main">
@@ -27,15 +28,18 @@
 import RepositoryAssistant from './components/RepositoryAssistant.vue'
 import LLMSettings from './components/LLMSettings.vue'
 import { NAVIGATION_CONTEXT_EVENT, readNavigationContext } from './navigationContext.js'
+import { LOCALE_EVENT, locale, setLocale, t } from './i18n.js'
 
 export default {
   components: { LLMSettings, RepositoryAssistant },
-  data: () => ({ settingsOpen: false, navigationContext: readNavigationContext() }),
+  data: () => ({ settingsOpen: false, navigationContext: readNavigationContext(), locale: locale.value }),
   created() {
     window.addEventListener(NAVIGATION_CONTEXT_EVENT, this.refreshNavigationContext)
+    window.addEventListener(LOCALE_EVENT, this.refreshLocale)
   },
   beforeUnmount() {
     window.removeEventListener(NAVIGATION_CONTEXT_EVENT, this.refreshNavigationContext)
+    window.removeEventListener(LOCALE_EVENT, this.refreshLocale)
   },
   computed: {
     repoName() {
@@ -52,6 +56,9 @@ export default {
     },
   },
   methods: {
+    t,
+    toggleLanguage() { setLocale(this.locale === 'zh' ? 'en' : 'zh') },
+    refreshLocale(event) { this.locale = event?.detail || locale.value },
     refreshNavigationContext(event) {
       this.navigationContext = event?.detail || readNavigationContext()
     },
@@ -75,6 +82,7 @@ export default {
 .nav-right { display: flex; align-items: center; }
 .nav-repo { color: #e94560; font-size: 13px; font-weight: 600; }
 .llm-settings-button { margin-left: 12px; border: 1px solid #4b4b61; background: transparent; color: #ddd; border-radius: 6px; padding: 6px 9px; cursor: pointer; white-space: nowrap; }
+.locale-button { margin-left: 6px; border: 1px solid #4b4b61; background: transparent; color: #ddd; border-radius: 6px; padding: 6px 9px; cursor: pointer; font-weight: 600; }
 .main { flex: 1; padding: 24px; max-width: 1400px; width: 100%; margin: 0 auto; }
 .request-error { margin-bottom: 16px; padding: 10px 14px; border-radius: 6px; background: #f8d7da; color: #721c24; }
 .request-loading { margin-bottom: 12px; color: #666; font-size: 13px; }

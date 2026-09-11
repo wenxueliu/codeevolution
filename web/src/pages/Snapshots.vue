@@ -1,48 +1,48 @@
 <template>
   <div class="snapshots-page">
     <div class="page-header">
-      <div><h1>Snapshots</h1><p>选择仓库成员后运行分析；分析会自动初始化并同步 CodeGraph。</p></div>
-      <div class="actions"><button class="secondary" :disabled="loading" @click="load">刷新</button><button class="secondary" :disabled="loading || runBusy || !selectedMemberIds.length" @click="createRun">运行分析</button><button class="primary" :disabled="loading || !selectedMemberIds.length" @click="createView">创建当前 View</button></div>
+      <div><h1>{{ t('Snapshots') }}</h1><p>{{ t('选择仓库成员后运行分析；分析会自动初始化并同步 CodeGraph。') }}</p></div>
+      <div class="actions"><button class="secondary" :disabled="loading" @click="load">{{ t('刷新') }}</button><button class="secondary" :disabled="loading || runBusy || !selectedMemberIds.length" @click="createRun">{{ t('运行分析') }}</button><button class="primary" :disabled="loading || !selectedMemberIds.length" @click="createView">{{ t('创建当前 View') }}</button></div>
     </div>
-    <UiState v-if="error" kind="error" title="Snapshot 加载失败" :message="error.message" action-label="重试" @action="load" />
-    <UiState v-else-if="loading" kind="loading" title="正在加载 Snapshots" />
+    <UiState v-if="error" kind="error" :title="t('快照加载失败')" :message="error.message" :action-label="t('重试')" @action="load" />
+    <UiState v-else-if="loading" kind="loading" :title="t('正在加载快照')" />
     <div v-else class="snapshot-scopes">
-      <div v-if="view" class="view-card"><b>当前 View</b> <code>{{ view.id }}</code> <small>{{ view.digest }}</small><router-link :to="{ name: 'graph-view', params: { viewId: view.id } }">查看跨仓图谱</router-link><a :href="`/api/graph-views/${view.id}/export`" target="_blank">导出</a></div>
+      <div v-if="view" class="view-card"><b>{{ t('当前 View') }}</b> <code>{{ view.id }}</code> <small>{{ view.digest }}</small><router-link :to="{ name: 'graph-view', params: { viewId: view.id } }">{{ t('查看跨仓图谱') }}</router-link><a :href="`/api/graph-views/${view.id}/export`" target="_blank">{{ t('导出') }}</a></div>
 
       <section v-if="activeRun" class="run-card" data-testid="analysis-run">
         <div class="run-header">
-          <div><b>分析 Run</b> <code>{{ activeRun.id }}</code><span class="run-status" :class="`status-${activeRun.status}`">{{ runStatusText(activeRun.status) }}</span></div>
+          <div><b>{{ t('分析 Run') }}</b> <code>{{ activeRun.id }}</code><span class="run-status" :class="`status-${activeRun.status}`">{{ runStatusText(activeRun.status) }}</span></div>
           <div class="run-actions">
-            <button v-if="isActiveRun" class="secondary sm" :disabled="runBusy" @click="cancelRun">取消 Run</button>
-            <button v-if="retryableMemberIds.length" class="secondary sm" :disabled="runBusy" @click="retryFailed">重试失败成员（{{ retryableMemberIds.length }}）</button>
+            <button v-if="isActiveRun" class="secondary sm" :disabled="runBusy" @click="cancelRun">{{ t('取消') }} Run</button>
+            <button v-if="retryableMemberIds.length" class="secondary sm" :disabled="runBusy" @click="retryFailed">{{ t('重试失败成员（{count}）', { count: retryableMemberIds.length }) }}</button>
           </div>
         </div>
-        <p v-if="isActiveRun" class="muted">正在轮询成员进度；离开后重新打开本页可继续查看此 Run。</p>
-        <p v-else-if="activeRun.status === 'partial'" class="muted">部分成员未完成；已发布的 Snapshot 保持可用。</p>
-        <table class="run-members"><thead><tr><th>成员</th><th>状态</th><th>阶段</th><th>进度/错误</th><th></th></tr></thead>
+        <p v-if="isActiveRun" class="muted">{{ t('正在轮询成员进度；离开后重新打开本页可继续查看此 Run。') }}</p>
+        <p v-else-if="activeRun.status === 'partial'" class="muted">{{ t('部分成员未完成；已发布的 Snapshot 保持可用。') }}</p>
+        <table class="run-members"><thead><tr><th>{{ t('成员') }}</th><th>{{ t('状态') }}</th><th>{{ t('阶段') }}</th><th>{{ t('进度/错误') }}</th><th></th></tr></thead>
           <tbody><tr v-for="member in activeRun.members || []" :key="member.member_id">
             <td>{{ memberName(member.member_id) }}</td>
             <td><span :class="`status-${member.attempt?.status || member.disposition}`">{{ attemptStatusText(member.attempt?.status || member.disposition) }}</span></td>
             <td>{{ stageText(member.attempt?.stage) }}</td>
             <td class="attempt-detail">{{ attemptDetail(member.attempt) }}</td>
-            <td><button v-if="canCancelMember(member)" class="secondary sm" :disabled="runBusy" @click="cancelMember(member.member_id)">取消</button></td>
+            <td><button v-if="canCancelMember(member)" class="secondary sm" :disabled="runBusy" @click="cancelMember(member.member_id)">{{ t('取消') }}</button></td>
           </tr></tbody>
         </table>
       </section>
 
       <section v-for="scope in scopes" :key="scope.id" class="snapshot-scope">
         <h2>{{ scope.name }}</h2>
-        <table><thead><tr><th><input :aria-label="`选择 ${scope.name} 全部成员`" type="checkbox" :checked="scopeSelected(scope)" :indeterminate.prop="scopeIndeterminate(scope)" @change="toggleScope(scope, $event.target.checked)"></th><th>成员</th><th>当前 Snapshot</th><th>状态</th><th></th></tr></thead>
+        <table><thead><tr><th><input :aria-label="t('选择 {name} 全部成员', { name: scope.name })" type="checkbox" :checked="scopeSelected(scope)" :indeterminate.prop="scopeIndeterminate(scope)" @change="toggleScope(scope, $event.target.checked)"></th><th>{{ t('成员') }}</th><th>{{ t('当前 Snapshot') }}</th><th>{{ t('状态') }}</th><th></th></tr></thead>
           <tbody><tr v-for="member in scope.members" :key="member.id">
-            <td><input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="`选择 ${member.display_name}`" @change="rememberMemberSnapshot(member)"></td>
+            <td><input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="t('选择 {name}', { name: member.display_name })" @change="rememberMemberSnapshot(member)"></td>
             <td>{{ member.display_name }}</td>
             <td><code>{{ member.current_snapshot_id || '—' }}</code></td>
-            <td>{{ member.current_snapshot_id ? '已发布' : '未解析' }}<span v-if="member.check" data-testid="change-status" :class="`status-${member.check.status}`"> · {{ changeStatusText(member.check.status) }}</span></td>
-            <td class="member-actions"><router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">查看知识</router-link><button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? '检查中...' : '检查改动' }}</button></td>
+            <td>{{ member.current_snapshot_id ? t('已发布') : t('未解析') }}<span v-if="member.check" data-testid="change-status" :class="`status-${member.check.status}`"> · {{ changeStatusText(member.check.status) }}</span></td>
+            <td class="member-actions"><router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">{{ t('查看知识') }}</router-link><button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? t('检查中...') : t('检查改动') }}</button></td>
           </tr></tbody>
         </table>
       </section>
-      <p v-if="!scopes.length" class="muted">暂无分析 Scope。</p>
+      <p v-if="!scopes.length" class="muted">{{ t('暂无分析 Scope。') }}</p>
     </div>
   </div>
 </template>
@@ -50,6 +50,7 @@
 <script>
 import UiState from '../components/UiState.vue'
 import { readNavigationContext, rememberNavigationContext } from '../navigationContext.js'
+import { t } from '../i18n.js'
 
 const ACTIVE_RUN_STATUSES = ['pending', 'running']
 const RETRYABLE_ATTEMPT_STATUSES = ['failed', 'cancelled', 'interrupted']
@@ -72,6 +73,7 @@ export default {
   },
   beforeUnmount() { this.stopPolling() },
   methods: {
+    t,
     async load() {
       this.loading = true; this.error = null
       try {
@@ -101,7 +103,7 @@ export default {
     rememberMemberSnapshot(member) {
       if (member?.current_snapshot_id) rememberNavigationContext({ snapshotId: member.current_snapshot_id, snapshotMember: member.display_name })
     },
-    changeStatusText(status) { return ({ unchanged: '未变化', source_changed: '现场已变化', analyzer_outdated: '分析器已更新', unparsed: '未解析', check_failed: '检查失败' })[status] || status || '未知' },
+    changeStatusText(status) { return this.t(({ unchanged: '未变化', source_changed: '现场已变化', analyzer_outdated: '分析器已更新', unparsed: '未解析', check_failed: '检查失败' })[status] || status || '未知') },
     async checkMember(member) {
       this.checkingIds[member.id] = true
       try {
@@ -109,9 +111,9 @@ export default {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ member_ids: [member.id] }),
         })
-        member.check = response.items?.[0] || { status: 'check_failed', error_message: '检查未返回结果' }
+        member.check = response.items?.[0] || { status: 'check_failed', error_message: this.t('检查未返回结果') }
       } catch (error) {
-        member.check = { status: 'check_failed', error_message: error.message || '检查失败' }
+        member.check = { status: 'check_failed', error_message: error.message || this.t('检查失败') }
       } finally {
         delete this.checkingIds[member.id]
       }
@@ -124,9 +126,9 @@ export default {
       this.selectedIds = checked ? [...new Set([...this.selectedIds, ...ids])] : this.selectedIds.filter(id => !ids.includes(id))
       if (checked) this.rememberMemberSnapshot(scope.members.find(member => member.current_snapshot_id))
     },
-    runStatusText(status) { return ({ pending: '等待中', running: '运行中', completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' })[status] || status || '—' },
-    attemptStatusText(status) { return ({ pending: '等待中', running: '运行中', completed: '已完成', unchanged: '无变更', failed: '失败', cancelled: '已取消', interrupted: '已中断', queued: '已排队', already_running: '已有任务运行中' })[status] || status || '—' },
-    stageText(stage) { return ({ queued: '排队', validating: '校验', digest_before: '检查源码', codegraph_init: '初始化 CodeGraph', codegraph_sync: '同步 CodeGraph', digest_after: '复核源码', freezing_graph: '冻结图谱', freezing_sources: '冻结源码', digest_final: '最终校验', analyzing: '分析', publishing: '发布', finished: '完成' })[stage] || stage || '—' },
+    runStatusText(status) { return this.t(({ pending: '等待中', running: '运行中', completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' })[status] || status || '—') },
+    attemptStatusText(status) { return this.t(({ pending: '等待中', running: '运行中', completed: '已完成', unchanged: '无变更', failed: '失败', cancelled: '已取消', interrupted: '已中断', queued: '已排队', already_running: '已有任务运行中' })[status] || status || '—') },
+    stageText(stage) { return this.t(({ queued: '排队', validating: '校验', digest_before: '检查源码', codegraph_init: '初始化 CodeGraph', codegraph_sync: '同步 CodeGraph', digest_after: '复核源码', freezing_graph: '冻结图谱', freezing_sources: '冻结源码', digest_final: '最终校验', analyzing: '分析', publishing: '发布', finished: '完成' })[stage] || stage || '—') },
     attemptDetail(attempt) {
       if (!attempt) return '—'
       if (attempt.error_message) return attempt.error_message

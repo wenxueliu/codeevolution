@@ -2,45 +2,45 @@
   <div class="knowledge">
     <template v-if="!snapshotId">
       <div class="page-header">
-        <div><h1>知识中心</h1><p>选择一个已发布的项目 Snapshot，查看该项目的结构知识。</p></div>
-        <router-link class="secondary" :to="{ name: 'snapshots' }">管理 Snapshots</router-link>
+        <div><h1>{{ t('知识中心') }}</h1><p>{{ t('选择一个已发布的项目 Snapshot，查看该项目的结构知识。') }}</p></div>
+        <router-link class="secondary" :to="{ name: 'snapshots' }">{{ t('管理 Snapshots') }}</router-link>
       </div>
-      <UiState v-if="catalogError" kind="error" title="项目知识目录加载失败" :message="catalogError.message" action-label="重试" @action="loadCatalog" />
-      <UiState v-else-if="catalogLoading" kind="loading" title="正在加载项目知识目录" />
+      <UiState v-if="catalogError" kind="error" :title="t('项目知识目录加载失败')" :message="catalogError.message" :action-label="t('重试')" @action="loadCatalog" />
+      <UiState v-else-if="catalogLoading" kind="loading" :title="t('正在加载项目知识目录')" />
       <section v-else-if="projectCatalog.length" class="project-list" data-testid="knowledge-projects">
         <article v-for="project in projectCatalog" :key="project.member_id" class="project-card" data-testid="knowledge-project">
           <div>
             <h2>{{ project.display_name }}</h2>
-            <p>{{ project.scope_name }} · 已发布 Snapshot</p>
+            <p>{{ project.scope_name }} · {{ t('已发布 Snapshot') }}</p>
             <code>{{ project.snapshot_id }}</code>
           </div>
-          <router-link class="primary" :to="knowledgeLink(project)">查看知识</router-link>
+          <router-link class="primary" :to="knowledgeLink(project)">{{ t('查看知识') }}</router-link>
         </article>
       </section>
-      <UiState v-else kind="empty" title="还没有已发布的项目知识" message="请先在 Snapshots 中运行分析并发布 Snapshot。">
-        <router-link class="primary" :to="{ name: 'snapshots' }">前往 Snapshots</router-link>
+      <UiState v-else kind="empty" :title="t('还没有已发布的项目知识')" :message="t('请先在 Snapshots 中运行分析并发布 Snapshot。')">
+        <router-link class="primary" :to="{ name: 'snapshots' }">{{ t('前往 Snapshots') }}</router-link>
       </UiState>
     </template>
 
     <template v-else>
-    <UiState v-if="error" kind="error" title="知识提取失败" :message="error.message" action-label="重试" dismiss-label="关闭" @action="load(false)" @dismiss="error = null" />
-    <UiState v-if="loading" kind="loading" title="正在从 CodeGraph 提取结构知识" message="大型仓库可能需要等待片刻，完成前可以继续浏览当前结果。" />
+    <UiState v-if="error" kind="error" :title="t('知识提取失败')" :message="error.message" :action-label="t('重试')" :dismiss-label="t('关闭')" @action="load(false)" @dismiss="error = null" />
+    <UiState v-if="loading" kind="loading" :title="t('正在从 CodeGraph 提取结构知识')" :message="t('大型仓库可能需要等待片刻，完成前可以继续浏览当前结果。')" />
 
     <div v-if="snapshotId" class="page-header">
       <div>
-        <h1>知识中心</h1>
-        <p>基于不可变 Repository Snapshot 推导。<code v-if="snapshotId">{{ snapshotId }}</code><span v-if="loadedAt"> · 最近读取：{{ loadedAt }} · {{ loadDuration }} ms</span></p>
+        <h1>{{ t('知识中心') }}</h1>
+        <p>{{ t('基于不可变 Repository Snapshot 推导。') }} <code v-if="snapshotId">{{ snapshotId }}</code><span v-if="loadedAt"> · {{ loadedAt }} · {{ loadDuration }} ms</span></p>
       </div>
       <div class="actions">
-        <button class="secondary" :disabled="loading" @click="load(false)">刷新结构知识</button>
+        <button class="secondary" :disabled="loading" @click="load(false)">{{ t('刷新结构知识') }}</button>
         <button class="primary" :disabled="loading" @click="loadLlm">
-          {{ llmLoaded ? '重新抽取 LLM 知识' : '抽取 LLM 知识' }}
+          {{ llmLoaded ? t('重新抽取 LLM 知识') : t('抽取 LLM 知识') }}
         </button>
       </div>
     </div>
 
     <div class="notice" v-if="snapshotId && !llmLoaded">
-      业务描述、业务规则、错误目录和状态机需要 LLM，可通过页面顶部“LLM 设置”配置，仅在点击抽取时调用。
+      {{ t('业务描述、业务规则、错误目录和状态机需要 LLM，可通过页面顶部“LLM 设置”配置，仅在点击抽取时调用。') }}
     </div>
 
     <div class="summary-grid" v-if="snapshotId && report">
@@ -75,29 +75,29 @@
         </div>
 
         <template v-if="activeSection === 'api_contract'">
-          <div class="metric">{{ activeData.endpoint_count || 0 }} <small>个端点</small></div>
+          <div class="metric">{{ activeData.endpoint_count || 0 }} <small>{{ t('个端点') }}</small></div>
           <div class="table-tools">
-            <label>筛选端点<input v-model.trim="endpointSearch" type="search" placeholder="路径、处理函数或仓库" @input="endpointPage = 1" /></label>
-            <label>HTTP 方法<select v-model="endpointMethod" @change="endpointPage = 1"><option value="">全部方法</option><option v-for="method in endpointMethods" :key="method">{{ method }}</option></select></label>
-            <label>服务<select v-model="endpointService" data-testid="endpoint-service-filter" @change="endpointPage = 1"><option value="">全部服务</option><option v-for="service in endpointServices" :key="service">{{ service }}</option></select></label>
-            <span>共 {{ filteredEndpoints.length }} 条</span>
+            <label>{{ t('筛选端点') }}<input v-model.trim="endpointSearch" type="search" :placeholder="t('路径、处理函数或仓库')" @input="endpointPage = 1" /></label>
+            <label>{{ t('HTTP 方法') }}<select v-model="endpointMethod" @change="endpointPage = 1"><option value="">{{ t('全部方法') }}</option><option v-for="method in endpointMethods" :key="method">{{ method }}</option></select></label>
+            <label>{{ t('服务') }}<select v-model="endpointService" data-testid="endpoint-service-filter" @change="endpointPage = 1"><option value="">{{ t('全部服务') }}</option><option v-for="service in endpointServices" :key="service">{{ service }}</option></select></label>
+            <span>{{ t('共 {count} 条', { count: filteredEndpoints.length }) }}</span>
           </div>
-          <div class="table-wrap"><table><thead><tr><th>方法</th><th>路径</th><th>处理函数</th><th>请求/应答</th><th>前端调用</th></tr></thead><tbody>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('方法') }}</th><th>{{ t('路径') }}</th><th>{{ t('处理函数') }}</th><th>{{ t('请求/应答') }}</th><th>{{ t('前端调用') }}</th></tr></thead><tbody>
             <template v-for="(item, index) in visibleEndpoints" :key="`${item.repository || ''}-${item.method}-${item.path}-${index}`">
               <tr class="clickable" :class="{ expanded: expandedKeys.has(endpointKey(item, index)) }" tabindex="0" @click="toggleEndpoint(item, index)" @keydown.enter="toggleEndpoint(item, index)">
                 <td><span class="method">{{ item.method }}</span></td><td><code>{{ item.path }}</code></td><td>{{ item.handler || '-' }}</td>
-                <td>{{ item.request_body?.type || '无请求体' }} → {{ item.response_body?.type || item.return_type || '未知' }}</td>
-                <td>{{ item.frontend_callers?.length || 0 }} 处</td>
+                <td>{{ item.request_body?.type || t('无请求体') }} → {{ item.response_body?.type || item.return_type || t('未知') }}</td>
+                <td>{{ item.frontend_callers?.length || 0 }} {{ t('处') }}</td>
               </tr>
               <tr v-if="expandedKeys.has(endpointKey(item, index))" class="expand-detail">
                 <td colspan="5">
                   <div class="contract-grid">
-                    <div><h4>请求头</h4><pre>{{ formatJson(item.request_headers || []) }}</pre></div>
-                    <div><h4>路径/查询参数</h4><pre>{{ formatJson({ path: item.path_params || [], query: item.query_params || [] }) }}</pre></div>
-                    <div><h4>请求体</h4><pre>{{ formatJson(item.request_body) }}</pre></div>
-                    <div><h4>应答体</h4><pre>{{ formatJson(item.response_body) }}</pre></div>
+                    <div><h4>{{ t('请求头') }}</h4><pre>{{ formatJson(item.request_headers || []) }}</pre></div>
+                    <div><h4>{{ t('路径/查询参数') }}</h4><pre>{{ formatJson({ path: item.path_params || [], query: item.query_params || [] }) }}</pre></div>
+                    <div><h4>{{ t('请求体') }}</h4><pre>{{ formatJson(item.request_body) }}</pre></div>
+                    <div><h4>{{ t('应答体') }}</h4><pre>{{ formatJson(item.response_body) }}</pre></div>
                   </div>
-                  <h4>后端调用链</h4>
+                  <h4>{{ t('后端调用链') }}</h4>
                   <CallChainTree
                     v-if="item.handler && item.file && item.line"
                     :repo="repoName"
@@ -113,121 +113,121 @@
                     @generate-api="generateEndpointExplanation(item)"
                     @manage-api-explanations="toggleExplanationSnapshots(item)"
                   />
-                  <p class="muted" v-else>未解析到处理函数（file/line 缺失），无法展示调用链树。</p>
+                  <p class="muted" v-else>{{ t('未解析到处理函数（file/line 缺失），无法展示调用链树。') }}</p>
                   <details v-if="item.call_chain_mermaid" class="seq-details" @toggle="seqToggle($event, item)">
-                    <summary>展开时序图</summary>
+                    <summary>{{ t('展开时序图') }}</summary>
                     <div class="seq-actions">
-                      <button class="secondary sm" type="button" data-testid="sequence-expand" @click.stop="openSequenceZoom(item)">放大查看</button>
+                      <button class="secondary sm" type="button" data-testid="sequence-expand" @click.stop="openSequenceZoom(item)">{{ t('放大查看') }}</button>
                     </div>
                     <div class="mermaid-wrap"><pre class="mermaid">{{ item.call_chain_mermaid }}</pre></div>
                   </details>
                   <div v-if="!item.call_chain_mermaid && item.call_chain?.length" class="call-chain"><span v-for="(node, idx) in item.call_chain || []" :key="node.id || node.name">{{ node.name }}<b v-if="idx < item.call_chain.length - 1">→</b></span></div>
-                  <h4>前端调用位置</h4>
+                  <h4>{{ t('前端调用位置') }}</h4>
                   <div class="frontend-call" v-for="call in item.frontend_callers || []" :key="call.definition_file + call.function">
                     <b>{{ call.function }}</b> · <code>{{ call.definition_file }}:{{ call.definition_line }}</code>
                     <div v-for="site in call.call_sites" :key="site.file + site.line"><code>{{ site.file }}:{{ site.line }}</code></div>
                   </div>
-                  <p class="muted" v-if="!item.frontend_callers?.length">未匹配到前端调用。</p>
+                  <p class="muted" v-if="!item.frontend_callers?.length">{{ t('未匹配到前端调用。') }}</p>
                   <section class="api-explanation-section" data-testid="api-explanation">
                     <div class="api-explanation-heading">
                       <div>
-                        <h4>API 功能解释
+                        <h4>{{ t('API 功能解释') }}
                           <span v-if="explanationState(item).status" class="explanation-status" :class="'explanation-' + explanationState(item).status">{{ explanationStatusText(explanationState(item).status) }}</span>
                         </h4>
-                        <p class="muted">解释由调用链叶子节点向入口聚合，仅在手动触发时调用模型。</p>
+                        <p class="muted">{{ t('解释由调用链叶子节点向入口聚合，仅在手动触发时调用模型。') }}</p>
                       </div>
                       <div class="api-explanation-actions">
-                        <button class="primary sm" type="button" data-testid="explanation-generate" :disabled="explanationState(item).running || !item.handler || !item.file || !item.line" @click.stop="generateEndpointExplanation(item)">{{ explanationState(item).current ? '手动刷新解释' : '生成 API 功能解释' }}</button>
-                        <button class="secondary sm" type="button" @click.stop="toggleExplanationSnapshots(item)">{{ explanationState(item).showSnapshots ? '收起快照' : '管理快照' }}</button>
+                        <button class="primary sm" type="button" data-testid="explanation-generate" :disabled="explanationState(item).running || !item.handler || !item.file || !item.line" @click.stop="generateEndpointExplanation(item)">{{ explanationState(item).current ? t('手动刷新解释') : t('生成 API 功能解释') }}</button>
+                        <button class="secondary sm" type="button" @click.stop="toggleExplanationSnapshots(item)">{{ explanationState(item).showSnapshots ? t('收起快照') : t('管理快照') }}</button>
                       </div>
                     </div>
-                    <p v-if="explanationState(item).loading" class="muted">正在读取解释快照…</p>
+                    <p v-if="explanationState(item).loading" class="muted">{{ t('正在读取解释快照…') }}</p>
                     <p v-else-if="explanationState(item).error" class="explanation-error">{{ explanationState(item).error }}</p>
-                    <p v-if="explanationState(item).running" class="explanation-progress">正在生成候选快照，当前解释仍可正常查看…</p>
+                    <p v-if="explanationState(item).running" class="explanation-progress">{{ t('正在生成候选快照，当前解释仍可正常查看…') }}</p>
                     <div v-if="explanationState(item).current" class="explanation-current">
                       <div class="explanation-meta">
-                        <span>快照 {{ explanationState(item).current.id }}</span>
-                        <span v-if="explanationState(item).current.source_revision">源码 {{ shortRevision(explanationState(item).current.source_revision) }}</span>
-                        <span v-if="explanationState(item).current.model_id || explanationState(item).current.model">模型 {{ explanationState(item).current.model_id || explanationState(item).current.model }}</span>
+                        <span>{{ t('快照') }} {{ explanationState(item).current.id }}</span>
+                        <span v-if="explanationState(item).current.source_revision">{{ t('源码') }} {{ shortRevision(explanationState(item).current.source_revision) }}</span>
+                        <span v-if="explanationState(item).current.model_id || explanationState(item).current.model">{{ t('模型') }} {{ explanationState(item).current.model_id || explanationState(item).current.model }}</span>
                       </div>
                       <div v-if="snapshotExplanation(explanationState(item).current)" class="explanation-body">
                         <p class="explanation-summary">{{ snapshotExplanation(explanationState(item).current).summary || snapshotExplanation(explanationState(item).current).business_purpose_zh || snapshotExplanation(explanationState(item).current).business_purpose_en }}</p>
-                        <details v-if="explanationSteps(explanationState(item).current).length"><summary>业务流程（{{ explanationSteps(explanationState(item).current).length }}）</summary><ol><li v-for="(step, stepIndex) in explanationSteps(explanationState(item).current)" :key="stepIndex">{{ explanationStepText(step) }}</li></ol></details>
+                        <details v-if="explanationSteps(explanationState(item).current).length"><summary>{{ t('业务流程（{count}）', { count: explanationSteps(explanationState(item).current).length }) }}</summary><ol><li v-for="(step, stepIndex) in explanationSteps(explanationState(item).current)" :key="stepIndex">{{ explanationStepText(step) }}</li></ol></details>
                       </div>
                       <div class="coverage-grid" v-if="snapshotCoverage(explanationState(item).current)">
-                        <span>节点 {{ coverageValue(explanationState(item).current, 'completed_nodes', 'translated_nodes') }}/{{ coverageValue(explanationState(item).current, 'total_nodes', 'nodes_total') }}</span>
-                        <span>完整 {{ coveragePercent(explanationState(item).current) }}</span>
-                        <span v-if="coverageValue(explanationState(item).current, 'partial_nodes')">部分 {{ coverageValue(explanationState(item).current, 'partial_nodes') }}</span>
-                        <span v-if="coverageValue(explanationState(item).current, 'failed_nodes')">失败 {{ coverageValue(explanationState(item).current, 'failed_nodes') }}</span>
+                        <span>{{ t('节点') }} {{ coverageValue(explanationState(item).current, 'completed_nodes', 'translated_nodes') }}/{{ coverageValue(explanationState(item).current, 'total_nodes', 'nodes_total') }}</span>
+                        <span>{{ t('完整') }} {{ coveragePercent(explanationState(item).current) }}</span>
+                        <span v-if="coverageValue(explanationState(item).current, 'partial_nodes')">{{ t('部分') }} {{ coverageValue(explanationState(item).current, 'partial_nodes') }}</span>
+                        <span v-if="coverageValue(explanationState(item).current, 'failed_nodes')">{{ t('失败') }} {{ coverageValue(explanationState(item).current, 'failed_nodes') }}</span>
                       </div>
                       <details v-if="snapshotNodes(explanationState(item).current).length" class="node-explanations">
-                        <summary>节点解释状态（{{ snapshotNodes(explanationState(item).current).length }}）</summary>
+                        <summary>{{ t('节点解释状态（{count}）', { count: snapshotNodes(explanationState(item).current).length }) }}</summary>
                         <article v-for="node in snapshotNodes(explanationState(item).current)" :key="node.node_key" class="node-explanation">
                           <header><code>{{ node.node_key }}</code><span class="explanation-status" :class="'explanation-' + node.status">{{ explanationStatusText(node.status) }}</span></header>
                           <p v-if="nodeSummary(node)">{{ nodeSummary(node) }}</p><small v-if="node.file">{{ node.file }}{{ node.line_start ? ':' + node.line_start : '' }}</small>
                         </article>
                       </details>
                     </div>
-                    <p v-else-if="!explanationState(item).loading" class="muted">尚未生成该端点的解释快照。</p>
+                    <p v-else-if="!explanationState(item).loading" class="muted">{{ t('尚未生成该端点的解释快照。') }}</p>
                     <div v-if="explanationState(item).showSnapshots" class="snapshot-list" data-testid="explanation-snapshots">
-                      <h5>解释快照</h5><p v-if="!explanationState(item).snapshots.length" class="muted">暂无快照。</p>
+                      <h5>{{ t('解释快照') }}</h5><p v-if="!explanationState(item).snapshots.length" class="muted">{{ t('暂无快照。') }}</p>
                       <article v-for="snapshot in explanationState(item).snapshots" :key="snapshot.id" class="snapshot-item">
                         <div><b>{{ snapshot.id }}</b><span class="explanation-status" :class="'explanation-' + snapshot.status">{{ explanationStatusText(snapshot.status) }}</span><small>{{ formatSnapshotTime(snapshot.created_at) }}<template v-if="snapshot.model_id || snapshot.model"> · {{ snapshot.model_id || snapshot.model }}</template></small></div>
-                        <button v-if="!['running', 'pending'].includes(snapshot.status)" class="secondary sm" type="button" :disabled="explanationState(item).deleting === snapshot.id" @click.stop="deleteExplanationSnapshot(item, snapshot)">删除</button>
+                        <button v-if="!['running', 'pending'].includes(snapshot.status)" class="secondary sm" type="button" :disabled="explanationState(item).deleting === snapshot.id" @click.stop="deleteExplanationSnapshot(item, snapshot)">{{ t('删除') }}</button>
                       </article>
                     </div>
                   </section>
                   <div class="business-rule-section">
-                    <h4>业务规则 <span v-if="brState(item).status" class="br-status" :class="'br-' + brState(item).status">{{ brState(item).statusText }}</span></h4>
+                    <h4>{{ t('业务规则') }} <span v-if="brState(item).status" class="br-status" :class="'br-' + brState(item).status">{{ brState(item).statusText }}</span></h4>
                     <div v-if="brState(item).editing" class="br-prompt-edit">
                       <textarea v-model="brState(item).editPrompt" rows="5" class="br-textarea"></textarea>
                       <div class="br-prompt-actions">
-                        <button class="primary sm" :disabled="brState(item).loading" @click.stop="brGenerate(item)">{{ brState(item).loading ? '生成中...' : '生成' }}</button>
-                        <button class="secondary sm" @click.stop="brCancelEdit(item)">取消</button>
+                        <button class="primary sm" :disabled="brState(item).loading" @click.stop="brGenerate(item)">{{ brState(item).loading ? t('生成中...') : t('生成') }}</button>
+                        <button class="secondary sm" @click.stop="brCancelEdit(item)">{{ t('取消') }}</button>
                       </div>
                     </div>
                     <div v-else-if="brState(item).result" class="br-result">
                       <div v-if="brParsed(item)" class="br-parsed">
                         <p class="br-purpose">{{ brParsed(item).business_purpose_zh || brParsed(item).business_purpose_en }}</p>
                         <details v-if="brParsed(item).business_flow_zh?.length || brParsed(item).business_flow_en?.length" class="br-detail">
-                          <summary>业务步骤</summary>
+                          <summary>{{ t('业务步骤') }}</summary>
                           <ol><li v-for="(s, si) in (brParsed(item).business_flow_zh || brParsed(item).business_flow_en || [])" :key="si">{{ s }}</li></ol>
                         </details>
                         <details v-if="brParsed(item).business_rules?.length" class="br-detail">
-                          <summary>业务规则 ({{ brParsed(item).business_rules.length }})</summary>
+                          <summary>{{ t('业务规则') }} ({{ brParsed(item).business_rules.length }})</summary>
                           <ul><li v-for="(r, ri) in brParsed(item).business_rules" :key="ri">{{ r }}</li></ul>
                         </details>
                         <details v-if="brParsed(item).side_effects?.length" class="br-detail">
-                          <summary>副作用</summary>
+                          <summary>{{ t('副作用') }}</summary>
                           <ul><li v-for="(e, ei) in brParsed(item).side_effects" :key="ei">{{ e }}</li></ul>
                         </details>
                       </div>
                       <pre v-else class="br-raw">{{ brState(item).result }}</pre>
                       <div class="br-actions">
-                        <button class="secondary sm" @click.stop="brStartEdit(item)">编辑提示词</button>
-                        <button class="secondary sm" :disabled="brState(item).loading" @click.stop="brRetry(item)">{{ brState(item).loading ? '重试中...' : '重试' }}</button>
+                        <button class="secondary sm" @click.stop="brStartEdit(item)">{{ t('编辑提示词') }}</button>
+                        <button class="secondary sm" :disabled="brState(item).loading" @click.stop="brRetry(item)">{{ brState(item).loading ? t('重试中...') : t('重试') }}</button>
                       </div>
                     </div>
-                    <button v-else class="secondary sm" :disabled="brState(item).loading" @click.stop="brStartEdit(item)">{{ brState(item).loading ? '生成中...' : '生成业务规则' }}</button>
+                    <button v-else class="secondary sm" :disabled="brState(item).loading" @click.stop="brStartEdit(item)">{{ brState(item).loading ? t('生成中...') : t('生成业务规则') }}</button>
                   </div>
                 </td>
               </tr>
             </template>
           </tbody></table></div>
           <div class="pagination" v-if="endpointPages > 1">
-            <button :disabled="endpointPage === 1" @click="endpointPage--">上一页</button>
-            <span>第 {{ endpointPage }} / {{ endpointPages }} 页</span>
-            <button :disabled="endpointPage === endpointPages" @click="endpointPage++">下一页</button>
+            <button :disabled="endpointPage === 1" @click="endpointPage--">{{ t('上一页') }}</button>
+            <span>{{ t('第 {page} / {pages} 页', { page: endpointPage, pages: endpointPages }) }}</span>
+            <button :disabled="endpointPage === endpointPages" @click="endpointPage++">{{ t('下一页') }}</button>
           </div>
         </template>
 
         <template v-else-if="activeSection === 'module_topology'">
-          <div class="metrics"><div class="metric">{{ activeData.module_count || 0 }} <small>个模块</small></div><div class="metric">{{ activeData.coupling_score ?? '-' }} <small>耦合度</small></div></div>
-          <div class="card-grid"><div class="detail-card" v-for="item in activeData.modules || []" :key="item.id"><h3>{{ item.name }}</h3><p>{{ item.file_count }} 个文件 · {{ item.primary_language || '未知语言' }}</p><code>{{ item.id }}</code></div></div>
+          <div class="metrics"><div class="metric">{{ activeData.module_count || 0 }} <small>{{ t('个模块') }}</small></div><div class="metric">{{ activeData.coupling_score ?? '-' }} <small>{{ t('耦合度') }}</small></div></div>
+          <div class="card-grid"><div class="detail-card" v-for="item in activeData.modules || []" :key="item.id"><h3>{{ item.name }}</h3><p>{{ item.file_count }} {{ t('个文件') }} · {{ item.primary_language || t('未知语言') }}</p><code>{{ item.id }}</code></div></div>
         </template>
 
         <template v-else-if="activeSection === 'core_entities'">
-          <div class="table-wrap"><table><thead><tr><th>领域对象</th><th>类型</th><th>字段</th><th>关系</th><th>领域分</th><th>仓库/文件</th></tr></thead><tbody>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('领域对象') }}</th><th>{{ t('类型') }}</th><th>{{ t('字段') }}</th><th>{{ t('关系') }}</th><th>{{ t('领域分') }}</th><th>{{ t('仓库/文件') }}</th></tr></thead><tbody>
             <template v-for="item in activeData || []" :key="item.qualified_name">
               <tr class="clickable" :class="{ expanded: expandedEntityKeys.has(item.node_id || item.qualified_name) }" tabindex="0" @click="toggleEntity(item)" @keydown.enter="toggleEntity(item)">
                 <td><b>{{ item.name }}</b></td><td>{{ item.kind }}</td><td>{{ item.field_count }}</td><td>{{ item.relationship_count }}</td><td>{{ Number(item.score || 0).toFixed(2) }}</td><td><span class="repo-badge">{{ item.repository }}</span><code>{{ item.file_path }}</code></td>
@@ -235,13 +235,13 @@
               <tr v-if="expandedEntityKeys.has(item.node_id || item.qualified_name)" class="expand-detail">
                 <td colspan="6">
                   <div class="entity-detail">
-                    <div><strong>限定名:</strong> <code>{{ item.qualified_name }}</code></div>
-                    <div><strong>类型:</strong> {{ item.kind }} &middot; <strong>分层:</strong> {{ item.layer || '未分类' }} &middot; <strong>领域分:</strong> {{ Number(item.score || 0).toFixed(2) }}</div>
-                    <div><strong>文件位置:</strong> <code>{{ item.file_path }}{{ item.start_line ? ':' + item.start_line : '' }}</code></div>
-                    <div v-if="item.annotations?.length"><strong>标注:</strong> {{ item.annotations.join(', ') }}</div>
+                    <div><strong>{{ t('限定名') }}:</strong> <code>{{ item.qualified_name }}</code></div>
+                    <div><strong>{{ t('类型') }}:</strong> {{ item.kind }} &middot; <strong>{{ t('分层') }}:</strong> {{ item.layer || t('未分类') }} &middot; <strong>{{ t('领域分') }}:</strong> {{ Number(item.score || 0).toFixed(2) }}</div>
+                    <div><strong>{{ t('文件位置') }}:</strong> <code>{{ item.file_path }}{{ item.start_line ? ':' + item.start_line : '' }}</code></div>
+                    <div v-if="item.annotations?.length"><strong>{{ t('标注') }}:</strong> {{ item.annotations.join(', ') }}</div>
                     <div v-if="item.fields?.length" class="field-list">
-                      <strong>字段 ({{ item.fields.length }}):</strong>
-                      <table class="field-table"><thead><tr><th>名称</th><th>类型</th><th>行</th></tr></thead><tbody>
+                      <strong>{{ t('字段') }} ({{ item.fields.length }}):</strong>
+                      <table class="field-table"><thead><tr><th>{{ t('名称') }}</th><th>{{ t('类型') }}</th><th>{{ t('行') }}</th></tr></thead><tbody>
                         <tr v-for="f in item.fields" :key="f.name"><td><code>{{ f.name }}</code></td><td>{{ f.signature || f.kind || '-' }}</td><td>{{ f.start_line || '-' }}</td></tr>
                       </tbody></table>
                     </div>
@@ -253,25 +253,25 @@
         </template>
 
         <template v-else-if="activeSection === 'test_coverage'">
-          <div class="metrics"><div class="metric">{{ activeData.coverage_pct ?? 0 }}% <small>覆盖率</small></div><div class="metric">{{ activeData.gap_count || 0 }} <small>个测试缺口</small></div></div>
-          <div class="table-wrap"><table><thead><tr><th>未覆盖符号</th><th>类型</th><th>位置</th></tr></thead><tbody><tr v-for="item in activeData.top_gaps || []" :key="item.qualified_name"><td>{{ item.qualified_name }}</td><td>{{ item.kind }}</td><td><code>{{ item.file_path }}:{{ item.line }}</code></td></tr></tbody></table></div>
+          <div class="metrics"><div class="metric">{{ activeData.coverage_pct ?? 0 }}% <small>{{ t('覆盖率') }}</small></div><div class="metric">{{ activeData.gap_count || 0 }} <small>{{ t('个测试缺口') }}</small></div></div>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('未覆盖符号') }}</th><th>{{ t('类型') }}</th><th>{{ t('位置') }}</th></tr></thead><tbody><tr v-for="item in activeData.top_gaps || []" :key="item.qualified_name"><td>{{ item.qualified_name }}</td><td>{{ item.kind }}</td><td><code>{{ item.file_path }}:{{ item.line }}</code></td></tr></tbody></table></div>
         </template>
 
         <template v-else-if="activeSection === 'layer_violations'">
-          <div class="metric danger">{{ activeData.violation_count || 0 }} <small>个分层违规</small></div>
-          <div class="table-wrap"><table><thead><tr><th>来源</th><th>依赖</th><th>目标</th></tr></thead><tbody><tr v-for="(item, index) in activeData.violations || []" :key="index"><td><b>{{ item.source_layer }}</b><br><code>{{ item.source_file }}</code></td><td>→</td><td><b>{{ item.target_layer }}</b><br><code>{{ item.target_file }}</code></td></tr></tbody></table></div>
+          <div class="metric danger">{{ activeData.violation_count || 0 }} <small>{{ t('个分层违规') }}</small></div>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('来源') }}</th><th>{{ t('依赖') }}</th><th>{{ t('目标') }}</th></tr></thead><tbody><tr v-for="(item, index) in activeData.violations || []" :key="index"><td><b>{{ item.source_layer }}</b><br><code>{{ item.source_file }}</code></td><td>→</td><td><b>{{ item.target_layer }}</b><br><code>{{ item.target_file }}</code></td></tr></tbody></table></div>
         </template>
 
         <template v-else>
           <div v-if="isDisabled(activeData)" class="empty-semantic">
-            <p>{{ activeData.note }}</p><button class="primary" @click="loadLlm">现在抽取</button>
+            <p>{{ activeData.note }}</p><button class="primary" @click="loadLlm">{{ t('现在抽取') }}</button>
           </div>
           <pre v-else class="json-view">{{ formatJson(activeData) }}</pre>
         </template>
       </section>
     </div>
 
-    <div v-else-if="snapshotId && !loading && !error" class="empty-state">暂无知识数据</div>
+    <div v-else-if="snapshotId && !loading && !error" class="empty-state">{{ t('暂无知识数据') }}</div>
 
     <div v-if="sequenceZoom" class="sequence-zoom-backdrop" @click.self="closeSequenceZoom">
       <section
@@ -286,17 +286,17 @@
       >
         <header class="sequence-zoom-header">
           <div>
-            <h2 id="sequence-zoom-title">API 时序图</h2>
+            <h2 id="sequence-zoom-title">{{ t('API 时序图') }}</h2>
             <p><span class="method">{{ sequenceZoom.method }}</span> <code>{{ sequenceZoom.path }}</code></p>
           </div>
-          <button class="sequence-zoom-close" type="button" aria-label="关闭放大时序图" @click="closeSequenceZoom">×</button>
+          <button class="sequence-zoom-close" type="button" :aria-label="t('关闭放大时序图')" @click="closeSequenceZoom">×</button>
         </header>
         <div class="sequence-zoom-canvas">
-          <div class="sequence-zoom-controls" aria-label="时序图缩放控制">
-            <button type="button" aria-label="缩小时序图" :disabled="sequenceZoomScale <= 0.5" @click="changeSequenceZoom(-0.25)">−</button>
+          <div class="sequence-zoom-controls" :aria-label="t('时序图缩放控制')">
+            <button type="button" :aria-label="t('缩小时序图')" :disabled="sequenceZoomScale <= 0.5" @click="changeSequenceZoom(-0.25)">−</button>
             <span aria-live="polite">{{ Math.round(sequenceZoomScale * 100) }}%</span>
-            <button type="button" aria-label="放大时序图" :disabled="sequenceZoomScale >= 3" @click="changeSequenceZoom(0.25)">+</button>
-            <button type="button" @click="resetSequenceZoom">恢复原始大小</button>
+            <button type="button" :aria-label="t('放大时序图')" :disabled="sequenceZoomScale >= 3" @click="changeSequenceZoom(0.25)">+</button>
+            <button type="button" @click="resetSequenceZoom">{{ t('恢复原始大小') }}</button>
           </div>
           <div class="sequence-zoom-stage" :style="{ width: `${sequenceZoomScale * 100}%` }">
             <pre ref="sequenceZoomMermaid" class="mermaid">{{ sequenceZoom.mermaid }}</pre>
@@ -311,6 +311,7 @@
 <script>
 import UiState from '../components/UiState.vue'
 import CallChainTree from '../components/CallChainTree.vue'
+import { t } from '../i18n.js'
 
 function snapshotIdFromRoute(route) {
   return route?.query?.snapshot_id
@@ -319,19 +320,19 @@ function snapshotIdFromRoute(route) {
 }
 
 const SECTIONS = [
-  ['api_contract', 'API 契约', 'Phase 1', '路由、方法、处理函数与参数'],
-  ['module_topology', '模块拓扑', 'Phase 1', '模块聚类、依赖关系与耦合度'],
-  ['core_entities', '核心实体', 'Phase 1', '按字段、类型关系与领域语义识别核心领域对象'],
-  ['test_coverage', '测试缺口', 'Phase 1', '生产函数覆盖率与未覆盖列表'],
-  ['layer_violations', '分层违规', 'Phase 1', '跨层依赖和架构边界违规'],
-  ['config_consumption', '配置消费', 'Phase 2', '配置键与代码消费者的对应关系'],
-  ['external_dependencies', '外部依赖', 'Phase 2', '外部服务、库与中间件分类'],
-  ['authorization_model', '权限模型', 'Phase 2', '受保护端点、角色和权限'],
-  ['heat_map', '代码热力图', 'Phase 2', '按调用关系识别热点和冷点函数'],
-  ['business_descriptions', '业务描述', 'Phase 3 · LLM', '核心函数的业务语义摘要', true],
-  ['business_rules', '业务规则', 'Phase 3 · LLM', '验证、转换、授权与工作流规则', true],
-  ['error_catalog', '错误目录', 'Phase 3 · LLM', '错误类型、触发条件与处理策略', true],
-  ['state_machines', '状态机', 'Phase 3 · LLM', '状态、转换和触发器', true],
+  ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
+  ['module_topology', '模块拓扑', '阶段1', '模块聚类、依赖关系与耦合度'],
+  ['core_entities', '核心实体', '阶段1', '按字段、类型关系与领域语义识别核心领域对象'],
+  ['test_coverage', '测试缺口', '阶段1', '生产函数覆盖率与未覆盖列表'],
+  ['layer_violations', '分层违规', '阶段1', '跨层依赖和架构边界违规'],
+  ['config_consumption', '配置消费', '阶段2', '配置键与代码消费者的对应关系'],
+  ['external_dependencies', '外部依赖', '阶段2', '外部服务、库与中间件分类'],
+  ['authorization_model', '权限模型', '阶段2', '受保护端点、角色和权限'],
+  ['heat_map', '代码热力图', '阶段2', '按调用关系识别热点和冷点函数'],
+  ['business_descriptions', '业务描述', '阶段3', '核心函数的业务语义摘要', true],
+  ['business_rules', '业务规则', '阶段3', '验证、转换、授权与工作流规则', true],
+  ['error_catalog', '错误目录', '阶段3', '错误类型、触发条件与处理策略', true],
+  ['state_machines', '状态机', '阶段3', '状态、转换和触发器', true],
 ].map(([key, label, phase, description, llm = false]) => ({ key, label, phase, description, llm }))
 
 let mermaidPromise
@@ -362,7 +363,7 @@ export default {
     const snapshotId = snapshotIdFromRoute(this.$route)
     return {
       snapshotId,
-      report: null, activeSection: 'api_contract', llmLoaded: false, sections: SECTIONS,
+      report: null, activeSection: 'api_contract', llmLoaded: false,
       projectCatalog: [], catalogLoading: false, catalogError: null,
       expandedKeys: new Set(), expandedEntityKeys: new Set(),
       endpointSearch: '', endpointMethod: '', endpointService: '', endpointPage: 1, endpointPageSize: 25,
@@ -375,15 +376,18 @@ export default {
     }
   },
   computed: {
+    sections() {
+      return SECTIONS.map(item => ({ ...item, label: this.t(item.label), phase: this.t(item.phase), description: this.t(item.description) }))
+    },
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.report?.[this.activeSection] ?? {} },
     summaryCards() {
       return [
-        { key: 'api_contract', label: 'API 端点', value: this.report.api_contract?.endpoint_count ?? 0 },
-        { key: 'module_topology', label: '模块', value: this.report.module_topology?.module_count ?? 0 },
-        { key: 'core_entities', label: '核心实体', value: this.report.core_entities?.length ?? 0 },
-        { key: 'test_coverage', label: '测试覆盖率', value: `${this.report.test_coverage?.coverage_pct ?? 0}%` },
-        { key: 'layer_violations', label: '分层违规', value: this.report.layer_violations?.violation_count ?? 0 },
+        { key: 'api_contract', label: this.t('API 端点'), value: this.report.api_contract?.endpoint_count ?? 0 },
+        { key: 'module_topology', label: this.t('模块'), value: this.report.module_topology?.module_count ?? 0 },
+        { key: 'core_entities', label: this.t('核心实体'), value: this.report.core_entities?.length ?? 0 },
+        { key: 'test_coverage', label: this.t('测试覆盖率'), value: `${this.report.test_coverage?.coverage_pct ?? 0}%` },
+        { key: 'layer_violations', label: this.t('分层违规'), value: this.report.layer_violations?.violation_count ?? 0 },
       ]
     },
     filteredEndpoints() {
@@ -433,6 +437,7 @@ export default {
     for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
   },
   methods: {
+    t,
     async loadCatalog() {
       this.catalogLoading = true
       this.catalogError = null
@@ -490,7 +495,7 @@ export default {
       })
     },
     async loadLlm() {
-      if (!window.confirm('LLM 知识抽取可能需要较长时间并产生 API 调用费用，是否继续？')) return
+      if (!window.confirm(this.t('LLM 知识抽取可能需要较长时间并产生 API 调用费用，是否继续？'))) return
       await this.load(true)
     },
     isDisabled(value) { return Boolean(value && !Array.isArray(value) && value.note) },
@@ -549,7 +554,7 @@ export default {
         this.setExplanationState(item, { current, snapshots, running, status: running ? 'running' : (current?.freshness === 'outdated' ? 'stale' : (current?.status || (current ? 'completed' : 'missing'))), loading: false, error: '' })
         if (running) this.scheduleExplanationPoll(item)
       } catch (err) {
-        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || '读取解释失败'
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('读取解释失败')
         this.setExplanationState(item, { loading: false, error: detail })
         if (quiet && this.explanationState(item).running) this.scheduleExplanationPoll(item)
       }
@@ -568,7 +573,7 @@ export default {
         if (['completed', 'partial', 'failed'].includes(snapshot?.status)) await this.loadEndpointExplanation(item, { quiet: true })
         else this.scheduleExplanationPoll(item)
       } catch (err) {
-        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || '生成解释失败'
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('生成解释失败')
         this.setExplanationState(item, { running: false, status: 'failed', error: detail })
       }
     },
@@ -589,7 +594,7 @@ export default {
     },
     async deleteExplanationSnapshot(item, snapshot) {
       const isCurrent = this.explanationState(item).current?.id === snapshot.id
-      const warning = isCurrent ? '这是当前解释快照，删除后该 API 将进入无快照状态。是否删除？' : '是否删除该解释快照？'
+      const warning = isCurrent ? this.t('这是当前解释快照，删除后该 API 将进入无快照状态。是否删除？') : this.t('是否删除该解释快照？')
       if (!window.confirm(warning)) return
       this.setExplanationState(item, { deleting: snapshot.id, error: '' })
       try {
@@ -597,7 +602,7 @@ export default {
         await this.$api.delete(`/api/api-explanations/snapshots/${encodeURIComponent(snapshot.id)}${suffix}`)
         await this.loadEndpointExplanation(item, { quiet: true })
       } catch (err) {
-        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || '删除快照失败'
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('删除快照失败')
         this.setExplanationState(item, { error: detail })
       } finally { this.setExplanationState(item, { deleting: '' }) }
     },
@@ -636,7 +641,7 @@ export default {
       if (typeof value === 'object') return value.summary || value.business_purpose_zh || value.business_purpose_en || ''
       try { const parsed = JSON.parse(value); return parsed.summary || parsed.business_purpose_zh || parsed.business_purpose_en || '' } catch { return value }
     },
-    explanationStatusText(status) { return ({ pending: '等待中', running: '生成中', completed: '已完成', partial: '部分完成', failed: '失败', stale: '已过期', missing: '未生成' })[status] || status || '' },
+    explanationStatusText(status) { return this.t(({ pending: '等待中', running: '生成中', completed: '已完成', partial: '部分完成', failed: '失败', stale: '已过期', missing: '未生成' })[status] || status || '') },
     shortRevision(revision) { return String(revision || '').slice(0, 10) },
     formatSnapshotTime(value) {
       if (!value) return ''
@@ -691,9 +696,9 @@ export default {
       const loading = this.brLoading.has(key)
       const edit = this.brEditing[key]
       let status = ''; let statusText = ''
-      if (loading) { status = 'loading'; statusText = '生成中...' }
-      else if (rule?.status === 'completed') { status = 'completed'; statusText = '已生成' }
-      else if (rule?.status === 'failed') { status = 'failed'; statusText = '失败' }
+      if (loading) { status = 'loading'; statusText = this.t('生成中...') }
+      else if (rule?.status === 'completed') { status = 'completed'; statusText = this.t('已生成') }
+      else if (rule?.status === 'failed') { status = 'failed'; statusText = this.t('失败') }
       return {
         rule, loading, status, statusText,
         result: rule?.result || '',
@@ -786,7 +791,7 @@ JSON:`
           repo_name: this.repoName, handler: item.handler, method: item.method, path: item.path,
           custom_prompt: prompt,
         }
-        alert('生成失败: ' + detail)
+        alert(this.t('生成失败: ') + detail)
         delete this.brEditing[key]
       } finally {
         this.brLoading = new Set([...this.brLoading].filter(k => k !== key))

@@ -4,6 +4,7 @@ import 'element-plus/theme-chalk/base.css'
 import App from './App.vue'
 import { apiClient } from './api/apiClient.js'
 import { runAsync } from './composables/useAsync.js'
+import { t } from './i18n.js'
 
 const Home = () => import('./pages/Home.vue')
 const Knowledge = () => import('./pages/Knowledge.vue')
@@ -25,6 +26,7 @@ const router = createRouter({
 
 const app = createApp(App)
 app.config.globalProperties.$api = apiClient
+app.config.globalProperties.$t = t
 app.mixin({
   data: () => ({ loading: false, error: null }),
   methods: {

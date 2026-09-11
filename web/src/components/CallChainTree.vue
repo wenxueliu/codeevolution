@@ -10,7 +10,7 @@
           :class="{ 'ct-root-selected': selected?.kind === 'root' }"
           role="button"
           tabindex="0"
-          title="选中端点根，在右侧查看/生成其整体业务规则"
+          :title="t('选中端点根，在右侧查看/生成其整体业务规则')"
           @click="selectRoot"
           @keydown.enter="selectRoot"
         >
@@ -36,7 +36,7 @@
               <template v-if="data.type === 'func'">
                 <span class="ct-fn-dot"></span>
                 <code class="ct-name" :title="data.qualified_name || data.name">{{ data.name }}</code>
-                <span v-if="data.cycle" class="ct-cycle">↺ 回环</span>
+                <span v-if="data.cycle" class="ct-cycle">↺ {{ t('回环') }}</span>
                 <span class="ct-dim" v-if="data.file">{{ data.file }}:{{ data.line }}</span>
               </template>
 
@@ -46,14 +46,14 @@
                 <span class="ct-arrow">→</span>
                 <b class="ct-svc">{{ data.target_service }}</b>
                 <span class="ct-dim">::{{ data.target_function || data.url_pattern }}</span>
-                <span v-if="data.cycle" class="ct-cycle">↺ 回环</span>
+                <span v-if="data.cycle" class="ct-cycle">↺ {{ t('回环') }}</span>
               </template>
 
               <template v-else-if="data.type === 'external'">
                 <span class="ct-badge ct-badge-ext">{{ data.http_method || 'HTTP' }}</span>
                 <code class="ct-name">{{ data.name }}</code>
                 <span class="ct-dim" v-if="data.url">{{ data.url }}</span>
-                <span class="ct-note">{{ data.note || '外部 / 未匹配' }}</span>
+                <span class="ct-note">{{ data.note || t('外部 / 未匹配') }}</span>
               </template>
 
               <span v-else-if="data.type === 'note'" class="ct-note">{{ data.name }}</span>
@@ -64,7 +64,7 @@
 
       <!-- 右侧：当前节点的业务规则解释 -->
       <aside class="ct-rail">
-        <div class="ct-rail-title">后端调用链 · 节点解释与聚合</div>
+        <div class="ct-rail-title">{{ t('后端调用链 · 节点解释与聚合') }}</div>
         <NodeRuleRail
           :repo="repo"
           :member="member"
@@ -87,6 +87,7 @@
 import { ref, computed } from 'vue'
 import { apiClient } from '../api/apiClient.js'
 import NodeRuleRail from './NodeRuleRail.vue'
+import { t } from '../i18n.js'
 
 const props = defineProps({
   repo: { type: String, default: '' },
@@ -119,8 +120,8 @@ const rootLabel = computed(() => ({
 }))
 
 const emptyText = computed(() => {
-  if (!rootLoaded.value) return '正在加载调用链…'
-  return rootEmpty.value ? '该处理函数未识别到直接子调用。' : ''
+  if (!rootLoaded.value) return t('正在加载调用链…')
+  return rootEmpty.value ? t('该处理函数未识别到直接子调用。') : ''
 })
 
 const selectedExplanation = computed(() => {
@@ -171,7 +172,7 @@ function buildNodes(payload, ancestors) {
     }
   })
   if (payload && payload.truncated) {
-    nodes.push({ __key: `n${++seq}`, type: 'note', name: '… 直接子调用较多，仅展示前 60 条', leaf: true })
+    nodes.push({ __key: `n${++seq}`, type: 'note', name: t('… 直接子调用较多，仅展示前 60 条'), leaf: true })
   }
   return nodes
 }
@@ -191,7 +192,7 @@ async function loadNode(node, resolve) {
       rootEmpty.value = !payload || !(payload.children || []).length
       resolve(buildNodes(payload, new Set()))
     } catch (err) {
-      rootError.value = err.message || '加载调用链失败'
+      rootError.value = err.message || t('加载调用链失败')
       rootLoaded.value = true
       resolve([])
     }
@@ -257,11 +258,11 @@ function onNodeClick(data) {
     selected.value = {
       kind: 'external',
       identity: identityOf(data),
-      title: data.name || data.url || '外部调用',
+      title: data.name || data.url || t('外部调用'),
       subtitle: data.url ? '' : '',
     }
   } else if (data.type === 'note') {
-    selected.value = { kind: 'note', identity: `note:${data.__key}`, title: data.name || '提示' }
+    selected.value = { kind: 'note', identity: `note:${data.__key}`, title: data.name || t('提示') }
   }
 }
 </script>

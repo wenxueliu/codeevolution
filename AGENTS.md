@@ -43,6 +43,17 @@ codeevolution flow --view-id <view-id> --service <member-id> --entry-id <entry-i
 codeevolution web                    # http://0.0.0.0:8765
 ```
 
+### 前端国际化约定
+
+- Web 控制台支持简体中文（`zh`）和英文（`en`），默认使用中文；语言选择保存在浏览器 `localStorage`，可通过顶部导航的语言按钮切换。
+- Snapshots、Graph View、知识中心及其调用链/解释侧栏的用户可见文案必须经过 `web/src/i18n.js` 的 `t()` 翻译，不得直接新增中英文混排的硬编码文案。
+- 新增页面文案时，同时补充 `zh` 与 `en` 词条；动态数量、名称和状态使用 `{count}`、`{name}` 等占位符，不能通过字符串拼接绕过翻译。
+- API 返回的仓库名、路径、符号名、模型名、错误详情和知识内容属于业务数据，原样展示，不进入界面词条；状态码/阶段码由前端统一映射为当前语言。
+- 语言切换必须保持路由、Snapshot/View 上下文和进行中的异步任务不变；切换后只重新渲染文案，不重复触发数据请求。
+- 国际化验收至少覆盖：默认中文、英文切换与持久化、Snapshots/Graph View/知识中心无混合 UI 文案、动态状态和无数据/错误状态双语显示。
+
+国际化实施方案：第一阶段采用轻量级本地词典和统一 `t(key, params)` 接口，覆盖当前 Web 控制台核心页面；第二阶段将词典按页面拆分并加入缺失 key 检查、英文伪本地化和视觉回归；第三阶段再评估引入成熟 ICU messageformat 能力，以支持复数、日期和更复杂的区域格式化。后端 API 保持语言无关，必要时由请求头或用户设置扩展服务端生成内容的语言偏好。
+
 完整命令以 `codeevolution --help` 与 `codeevolution/cli.py` 为准；旧的
 `backfill`、`update`、演进 `status` 和 `init-all` 已移除。
 

@@ -2,87 +2,87 @@
   <div class="graph-view-page">
     <template v-if="!viewId">
       <div class="page-header">
-        <div><h1>Graph View</h1><p>选择一个已创建的 View，查看固定快照集合的跨仓拓扑。</p></div>
-        <router-link class="secondary" :to="{ name: 'snapshots' }">管理 Snapshots</router-link>
+        <div><h1>{{ t('Graph View') }}</h1><p>{{ t('选择一个已创建的 View，查看固定快照集合的跨仓拓扑。') }}</p></div>
+        <router-link class="secondary" :to="{ name: 'snapshots' }">{{ t('管理 Snapshots') }}</router-link>
       </div>
-      <UiState v-if="catalogError" kind="error" title="Graph View 目录加载失败" :message="catalogError.message" action-label="重试" @action="loadCatalog" />
-      <UiState v-else-if="catalogLoading" kind="loading" title="正在加载 Graph View 目录" />
+      <UiState v-if="catalogError" kind="error" :title="t('Graph View 目录加载失败')" :message="catalogError.message" :action-label="t('重试')" @action="loadCatalog" />
+      <UiState v-else-if="catalogLoading" kind="loading" :title="t('正在加载 Graph View 目录')" />
       <section v-else-if="viewCatalog.length" class="view-list" data-testid="graph-views">
         <article v-for="view in viewCatalog" :key="view.id" class="view-card" data-testid="graph-view-card">
           <div>
-            <h2>{{ view.label || '未命名 View' }}</h2>
-            <p>{{ view.lifecycle === 'pinned' ? '已固定' : '临时 View' }} · {{ view.completeness === 'complete' ? '快照完整' : '包含不可用成员' }}</p>
-            <p>{{ view.members?.length || 0 }} 个成员：{{ memberNames(view) }}</p>
+            <h2>{{ view.label || t('未命名 View') }}</h2>
+            <p>{{ view.lifecycle === 'pinned' ? t('已固定') : t('临时 View') }} · {{ view.completeness === 'complete' ? t('快照完整') : t('包含不可用成员') }}</p>
+            <p>{{ t('{count} 个成员：{names}', { count: view.members?.length || 0, names: memberNames(view) }) }}</p>
             <code>{{ view.id }}</code>
           </div>
-          <router-link class="primary" :to="{ name: 'graph-view', params: { viewId: view.id } }">查看 View</router-link>
+          <router-link class="primary" :to="{ name: 'graph-view', params: { viewId: view.id } }">{{ t('查看 View') }}</router-link>
         </article>
       </section>
-      <UiState v-else kind="empty" title="还没有 Graph View" message="请先在 Snapshots 中选择成员并创建当前 View。">
-        <router-link class="primary" :to="{ name: 'snapshots' }">前往 Snapshots</router-link>
+      <UiState v-else kind="empty" :title="t('还没有 Graph View')" :message="t('请先在 Snapshots 中选择成员并创建当前 View。')">
+        <router-link class="primary" :to="{ name: 'snapshots' }">{{ t('前往 Snapshots') }}</router-link>
       </UiState>
     </template>
 
     <template v-else>
     <div class="page-header">
       <div>
-        <h1>Graph View</h1>
-        <p>以固定的快照集合浏览跨仓服务拓扑、变更影响和调用流程。</p>
+        <h1>{{ t('Graph View') }}</h1>
+        <p>{{ t('以固定的快照集合浏览跨仓服务拓扑、变更影响和调用流程。') }}</p>
       </div>
-      <router-link class="secondary" :to="{ name: 'snapshots' }">返回 Snapshots</router-link>
+      <router-link class="secondary" :to="{ name: 'snapshots' }">{{ t('返回 Snapshots') }}</router-link>
     </div>
 
-    <UiState v-if="error" kind="error" title="Graph View 加载失败" :message="error.message" action-label="重试" @action="load" />
-    <UiState v-else-if="loading" kind="loading" title="正在加载 Graph View" />
+    <UiState v-if="error" kind="error" :title="t('Graph View 加载失败')" :message="error.message" :action-label="t('重试')" @action="load" />
+    <UiState v-else-if="loading" kind="loading" :title="t('正在加载 Graph View')" />
     <template v-else>
       <section class="view-meta">
-        <div><small>View ID</small><code>{{ viewId }}</code></div>
-        <div><small>Artifact</small><span>{{ artifact ? '已生成' : '未生成' }}</span></div>
-        <div><small>服务</small><span>{{ services.length || '—' }}</span></div>
-        <div><small>调用边</small><span>{{ serviceEdges.length || '—' }}</span></div>
+        <div><small>{{ t('View ID') }}</small><code>{{ viewId }}</code></div>
+        <div><small>{{ t('Artifact') }}</small><span>{{ artifact ? t('已生成') : t('未生成') }}</span></div>
+        <div><small>{{ t('服务') }}</small><span>{{ services.length || '—' }}</span></div>
+        <div><small>{{ t('调用边') }}</small><span>{{ serviceEdges.length || '—' }}</span></div>
       </section>
 
       <section v-if="!artifact" class="panel artifact-empty">
-        <h2>尚未生成拓扑 Artifact</h2>
-        <p class="muted">Graph View 只固定 Scope 和 Snapshot；拓扑分析需要显式创建一次 Artifact Job。</p>
-        <button class="primary" :disabled="artifactLoading" @click="generate">{{ artifactLoading ? '正在创建…' : '生成拓扑' }}</button>
+        <h2>{{ t('尚未生成拓扑 Artifact') }}</h2>
+        <p class="muted">{{ t('Graph View 只固定 Scope 和 Snapshot；拓扑分析需要显式创建一次 Artifact Job。') }}</p>
+        <button class="primary" :disabled="artifactLoading" @click="generate">{{ artifactLoading ? t('正在创建…') : t('生成拓扑') }}</button>
         <p v-if="jobStatus" class="muted">Job {{ jobStatus.id }}：{{ jobStatus.status }}</p>
       </section>
-      <UiState v-else-if="!services.length" kind="empty" title="此 View 没有可浏览的服务" message="当前 Artifact 没有可分析的 Scope 成员。" />
+      <UiState v-else-if="!services.length" kind="empty" :title="t('此 View 没有可浏览的服务')" :message="t('当前 Artifact 没有可分析的 Scope 成员。')" />
       <template v-else>
         <section class="panel">
-          <h2>服务拓扑</h2>
-          <p class="muted">边仅来自此 View 固定快照中的通信事实；点击服务查看影响和流程。</p>
-          <div class="service-list" aria-label="服务列表">
+          <h2>{{ t('服务拓扑') }}</h2>
+          <p class="muted">{{ t('边仅来自此 View 固定快照中的通信事实；点击服务查看影响和流程。') }}</p>
+          <div class="service-list" :aria-label="t('服务列表')">
             <button v-for="service in services" :key="service.member_id" :class="{ active: selectedService === service.member_id }" @click="selectService(service.member_id)">
-              {{ service.display_name || service.member_id }} <small>{{ service.availability || `${service.entries?.length || 0} entries` }}</small>
+              {{ service.display_name || service.member_id }} <small>{{ service.availability || `${service.entries?.length || 0} ${t('entries')}` }}</small>
             </button>
           </div>
           <div v-if="serviceEdges.length" class="edge-list">
             <article v-for="(edge, index) in serviceEdges" :key="edgeKey(edge, index)" class="edge-card">
               <div class="edge-heading"><b>{{ edge.source_member_id }}</b><span>→</span><b>{{ targetName(edge) }}</b><span class="badge">{{ edge.kind }}</span><span v-if="edge.confidence" class="confidence">{{ edge.confidence }}</span></div>
               <p v-if="edge.source_entry_id || edge.target_entry_id"><code>{{ edge.source_entry_id || '—' }}</code> → <code>{{ edge.target_entry_id || '—' }}</code></p>
-              <details v-if="edge.evidence"><summary>调用证据</summary><pre>{{ formatJson(edge.evidence) }}</pre></details>
-              <details v-else-if="edge.dependency"><summary>依赖证据</summary><pre>{{ formatJson(edge.dependency) }}</pre></details>
+              <details v-if="edge.evidence"><summary>{{ t('调用证据') }}</summary><pre>{{ formatJson(edge.evidence) }}</pre></details>
+              <details v-else-if="edge.dependency"><summary>{{ t('依赖证据') }}</summary><pre>{{ formatJson(edge.dependency) }}</pre></details>
             </article>
           </div>
-          <p v-else class="muted">未在当前快照中发现跨服务调用边。</p>
-          <details v-if="artifact.coverage" open><summary>覆盖情况</summary><pre>{{ formatJson(artifact.coverage) }}</pre></details>
-          <details v-if="artifact.candidates?.length"><summary>候选/未解析边（{{ artifact.candidates.length }}）</summary><pre>{{ formatJson(artifact.candidates) }}</pre></details>
-          <details v-if="artifact.boundary_dependencies?.length"><summary>Scope 外边界（{{ artifact.boundary_dependencies.length }}）</summary><pre>{{ formatJson(artifact.boundary_dependencies) }}</pre></details>
-          <details v-if="artifact.resource_dependencies?.length"><summary>资源访问（{{ artifact.resource_dependencies.length }}）</summary><pre>{{ formatJson(artifact.resource_dependencies) }}</pre></details>
+          <p v-else class="muted">{{ t('未在当前快照中发现跨服务调用边。') }}</p>
+          <details v-if="artifact.coverage" open><summary>{{ t('覆盖情况') }}</summary><pre>{{ formatJson(artifact.coverage) }}</pre></details>
+          <details v-if="artifact.candidates?.length"><summary>{{ t('候选/未解析边（{count}）', { count: artifact.candidates.length }) }}</summary><pre>{{ formatJson(artifact.candidates) }}</pre></details>
+          <details v-if="artifact.boundary_dependencies?.length"><summary>{{ t('Scope 外边界（{count}）', { count: artifact.boundary_dependencies.length }) }}</summary><pre>{{ formatJson(artifact.boundary_dependencies) }}</pre></details>
+          <details v-if="artifact.resource_dependencies?.length"><summary>{{ t('资源访问（{count}）', { count: artifact.resource_dependencies.length }) }}</summary><pre>{{ formatJson(artifact.resource_dependencies) }}</pre></details>
         </section>
 
         <section class="panel analysis-panel">
-          <div class="analysis-heading"><div><h2>影响与流程</h2><p class="muted">选择服务后，以同一 <code>view_id</code> 查询。</p></div><label>起始 API（可选）<span class="entry-input"><input v-model="method" placeholder="GET" @change="loadAnalysis" /><input v-model="path" placeholder="/api/orders" @change="loadAnalysis" /></span></label></div>
-          <UiState v-if="analysisError" kind="error" title="分析加载失败" :message="analysisError.message" action-label="重试" @action="loadAnalysis" />
-          <div v-else-if="analysisLoading" class="muted">正在查询影响与流程…</div>
+          <div class="analysis-heading"><div><h2>{{ t('影响与流程') }}</h2><p class="muted">{{ t('选择服务后，以同一 view_id 查询。') }}</p></div><label>{{ t('起始 API（可选）') }}<span class="entry-input"><input v-model="method" placeholder="GET" @change="loadAnalysis" /><input v-model="path" placeholder="/api/orders" @change="loadAnalysis" /></span></label></div>
+          <UiState v-if="analysisError" kind="error" :title="t('分析加载失败')" :message="analysisError.message" :action-label="t('重试')" @action="loadAnalysis" />
+          <div v-else-if="analysisLoading" class="muted">{{ t('正在查询影响与流程…') }}</div>
           <template v-else>
             <div class="analysis-columns">
-              <div><h3>{{ selectedService }} 的下游依赖</h3><ul><li v-for="item in impact.downstream_dependencies || []" :key="item.member_id">{{ item.member_id }} <small>{{ item.path?.join(' → ') }}</small></li></ul><p v-if="!(impact.downstream_dependencies || []).length" class="muted">没有确认的下游服务。</p></div>
-              <div><h3>上游依赖方</h3><ul><li v-for="item in impact.upstream_dependents || []" :key="item.member_id">{{ item.member_id }} <small>{{ item.path?.join(' → ') }}</small></li></ul><p v-if="!(impact.upstream_dependents || []).length" class="muted">没有确认的上游服务。</p></div>
+              <div><h3>{{ selectedService }}{{ t('的下游依赖') }}</h3><ul><li v-for="item in impact.downstream_dependencies || []" :key="item.member_id">{{ item.member_id }} <small>{{ item.path?.join(' → ') }}</small></li></ul><p v-if="!(impact.downstream_dependencies || []).length" class="muted">{{ t('没有确认的下游服务。') }}</p></div>
+              <div><h3>{{ t('上游依赖方') }}</h3><ul><li v-for="item in impact.upstream_dependents || []" :key="item.member_id">{{ item.member_id }} <small>{{ item.path?.join(' → ') }}</small></li></ul><p v-if="!(impact.upstream_dependents || []).length" class="muted">{{ t('没有确认的上游服务。') }}</p></div>
             </div>
-            <details v-if="flow.nodes?.length" open><summary>静态流程（{{ flow.nodes.length }} 个节点）</summary><pre>{{ formatJson(flow) }}</pre></details>
+            <details v-if="flow.nodes?.length" open><summary>{{ t('静态流程（{count} 个节点）', { count: flow.nodes.length }) }}</summary><pre>{{ formatJson(flow) }}</pre></details>
           </template>
         </section>
       </template>
@@ -93,6 +93,7 @@
 
 <script>
 import UiState from '../components/UiState.vue'
+import { t } from '../i18n.js'
 
 export default {
   components: { UiState },
@@ -114,6 +115,7 @@ export default {
   },
   beforeUnmount() { this.stopPolling() },
   methods: {
+    t,
     async loadCatalog() {
       this.catalogLoading = true
       this.catalogError = null
@@ -127,7 +129,7 @@ export default {
       }
     },
     memberNames(view) {
-      return (view.members || []).map((member) => member.display_name || member.member_id).join('、') || '无成员'
+      return (view.members || []).map((member) => member.display_name || member.member_id).join('、') || this.t('无成员')
     },
     async load() {
       if (!this.viewId) {
@@ -186,7 +188,7 @@ export default {
           : {}
       } catch (error) { this.analysisError = error } finally { this.analysisLoading = false }
     },
-    targetName(edge) { return edge.target_member_id || (edge.target_candidates || []).join(', ') || '外部依赖' },
+    targetName(edge) { return edge.target_member_id || (edge.target_candidates || []).join(', ') || this.t('外部依赖') },
     edgeKey(edge, index) { return `${edge.source_member_id}-${edge.target_member_id || edge.target_path || index}-${index}` },
     formatJson(value) { return JSON.stringify(value, null, 2) },
   },

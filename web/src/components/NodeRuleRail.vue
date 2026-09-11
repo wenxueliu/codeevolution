@@ -1,12 +1,12 @@
 <template>
   <div class="nrr">
     <template v-if="!target">
-      <p class="nrr-hint">点击左侧的<em>端点根 / 函数 / 跨服务</em>节点，在右侧查看 API 节点自身翻译和聚合解释。external 外部调用无可解析源码。</p>
+      <p class="nrr-hint">{{ t('点击左侧的') }}<em>{{ t('端点根 / 函数 / 跨服务') }}</em>{{ t('节点，在右侧查看 API 节点自身翻译和聚合解释。external 外部调用无可解析源码。') }}</p>
     </template>
 
     <template v-else-if="target.kind === 'external' || target.kind === 'note'">
       <div class="nrr-head"><b class="nrr-title">{{ target.title }}</b></div>
-      <p class="nrr-note">外部 / 未匹配调用，无可解析源码，不支持生成业务规则。</p>
+      <p class="nrr-note">{{ t('外部 / 未匹配调用，无可解析源码，不支持生成业务规则。') }}</p>
     </template>
 
     <template v-else>
@@ -19,34 +19,34 @@
       <div v-if="explanationMode" class="nrr-api-mode">
         <div v-if="target.kind === 'root'" class="nrr-api-actions">
           <button class="primary sm" :disabled="explanationState.running" @click="emit('generate-api')">
-            {{ explanationState.running ? '生成中…' : (explanationSnapshot ? '手动刷新 API 解释' : '生成 API 功能解释') }}
+            {{ explanationState.running ? t('生成中…') : (explanationSnapshot ? t('手动刷新 API 解释') : t('生成 API 功能解释')) }}
           </button>
-          <button class="secondary sm" @click="emit('manage-api-explanations')">{{ explanationState.showSnapshots ? '收起快照' : '管理快照' }}</button>
+          <button class="secondary sm" @click="emit('manage-api-explanations')">{{ explanationState.showSnapshots ? t('收起快照') : t('管理快照') }}</button>
         </div>
-        <p v-if="explanationState.running" class="nrr-api-progress">正在按调用链从叶子节点翻译并向入口聚合，当前快照仍可查看。</p>
+        <p v-if="explanationState.running" class="nrr-api-progress">{{ t('正在按调用链从叶子节点翻译并向入口聚合，当前快照仍可查看。') }}</p>
         <template v-if="explanationNode">
           <div class="nrr-api-meta">
             <span class="br-status" :class="'br-' + (explanationNode.status || 'pending')">{{ apiStatusText(explanationNode.status) }}</span>
-            <span v-if="explanationSnapshot">快照 {{ explanationSnapshot.id }}</span>
+            <span v-if="explanationSnapshot">{{ t('快照') }} {{ explanationSnapshot.id }}</span>
           </div>
           <section class="nrr-api-card">
-            <h4>节点自身翻译</h4>
-            <p>{{ explanationSummary(explanationNode.local_explanation) || '暂无节点自身解释' }}</p>
+            <h4>{{ t('节点自身翻译') }}</h4>
+            <p>{{ explanationSummary(explanationNode.local_explanation) || t('暂无节点自身解释') }}</p>
           </section>
           <details class="nrr-api-card" open v-if="explanationNode.aggregate_explanation">
-            <summary>节点聚合结果</summary>
-            <p>{{ explanationSummary(explanationNode.aggregate_explanation) || '暂无聚合解释' }}</p>
+            <summary>{{ t('节点聚合结果') }}</summary>
+            <p>{{ explanationSummary(explanationNode.aggregate_explanation) || t('暂无聚合解释') }}</p>
             <ol v-if="explanationSteps(explanationNode.aggregate_explanation).length">
               <li v-for="(step, index) in explanationSteps(explanationNode.aggregate_explanation)" :key="index">{{ stepText(step) }}</li>
             </ol>
           </details>
         </template>
-        <p v-else-if="explanationState.loading" class="nrr-loading">正在读取 API 解释快照…</p>
-        <p v-else-if="explanationSnapshot" class="nrr-muted">当前快照未覆盖该节点，或该节点尚未完成翻译。</p>
-        <p v-else class="nrr-muted">尚未生成端点级 API 解释。选中端点根后，可在此处手动生成。</p>
+        <p v-else-if="explanationState.loading" class="nrr-loading">{{ t('正在读取 API 解释快照…') }}</p>
+        <p v-else-if="explanationSnapshot" class="nrr-muted">{{ t('当前快照未覆盖该节点，或该节点尚未完成翻译。') }}</p>
+        <p v-else class="nrr-muted">{{ t('尚未生成端点级 API 解释。选中端点根后，可在此处手动生成。') }}</p>
       </div>
 
-      <div v-else-if="loading" class="nrr-loading">正在加载该节点的业务规则…</div>
+      <div v-else-if="loading" class="nrr-loading">{{ t('正在加载该节点的业务规则…') }}</div>
 
       <div v-else-if="!explanationMode">
         <!-- 编辑提示词 + 生成 -->
@@ -55,13 +55,13 @@
             v-model="editPrompt"
             rows="6"
             class="br-textarea"
-            placeholder="可编辑提示词；留空则使用服务器默认提示词（分析该节点源码片段）"
+            :placeholder="t('可编辑提示词；留空则使用服务器默认提示词（分析该节点源码片段）')"
           ></textarea>
           <div class="br-actions">
             <button class="primary sm" :disabled="genLoading" @click="generate">
-              {{ genLoading ? '生成中…' : '生成' }}
+              {{ genLoading ? t('生成中…') : t('生成') }}
             </button>
-            <button class="secondary sm" :disabled="genLoading" @click="cancelEdit">取消</button>
+            <button class="secondary sm" :disabled="genLoading" @click="cancelEdit">{{ t('取消') }}</button>
           </div>
         </div>
 
@@ -70,32 +70,32 @@
           <div v-if="parsed" class="br-parsed">
             <p class="br-purpose">{{ parsed.business_purpose_zh || parsed.business_purpose_en }}</p>
             <details v-if="parsed.business_flow_zh?.length || parsed.business_flow_en?.length" class="br-detail">
-              <summary>业务步骤</summary>
+              <summary>{{ t('业务步骤') }}</summary>
               <ol><li v-for="(s, si) in (parsed.business_flow_zh || parsed.business_flow_en || [])" :key="si">{{ s }}</li></ol>
             </details>
             <details v-if="parsed.business_rules?.length" class="br-detail">
-              <summary>业务规则 ({{ parsed.business_rules.length }})</summary>
+              <summary>{{ t('业务规则') }} ({{ parsed.business_rules.length }})</summary>
               <ul><li v-for="(r, ri) in parsed.business_rules" :key="ri">{{ r }}</li></ul>
             </details>
             <details v-if="parsed.side_effects?.length" class="br-detail">
-              <summary>副作用</summary>
+              <summary>{{ t('副作用') }}</summary>
               <ul><li v-for="(e, ei) in parsed.side_effects" :key="ei">{{ e }}</li></ul>
             </details>
           </div>
           <pre v-else class="br-raw">{{ rule.result }}</pre>
           <p v-if="rule.error" class="nrr-error">{{ rule.error }}</p>
           <div class="br-actions">
-            <button class="secondary sm" :disabled="genLoading" @click="startEdit">编辑提示词</button>
+            <button class="secondary sm" :disabled="genLoading" @click="startEdit">{{ t('编辑提示词') }}</button>
             <button class="secondary sm" :disabled="genLoading" @click="retry">
-              {{ genLoading ? '重试中…' : '重试' }}
+              {{ genLoading ? t('重试中…') : t('重试') }}
             </button>
           </div>
         </div>
 
         <!-- 尚无结果 -->
         <div v-else class="nrr-empty">
-          <p class="nrr-muted">尚未生成该节点的业务规则。</p>
-          <button class="primary sm" @click="startEdit">生成业务规则</button>
+          <p class="nrr-muted">{{ t('尚未生成该节点的业务规则。') }}</p>
+          <button class="primary sm" @click="startEdit">{{ t('生成业务规则') }}</button>
         </div>
 
         <p v-if="genError" class="nrr-error">{{ genError }}</p>
@@ -107,6 +107,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { apiClient } from '../api/apiClient.js'
+import { t } from '../i18n.js'
 
 const props = defineProps({
   repo: { type: String, default: '' },
@@ -135,9 +136,9 @@ const status = computed(() => {
   return rule.value?.status || ''
 })
 const statusText = computed(() => {
-  if (status.value === 'loading') return '生成中'
-  if (status.value === 'completed') return '已生成'
-  if (status.value === 'failed') return '失败'
+  if (status.value === 'loading') return t('生成中')
+  if (status.value === 'completed') return t('已生成')
+  if (status.value === 'failed') return t('失败')
   return ''
 })
 
@@ -177,7 +178,7 @@ function loadNode() {
 }
 
 function apiStatusText(value) {
-  return ({ pending: '等待中', running: '生成中', completed: '已完成', partial: '部分完成', failed: '失败' })[value] || value || '未生成'
+  return t(({ pending: '等待中', running: '生成中', completed: '已完成', partial: '部分完成', failed: '失败' })[value] || value || '未生成')
 }
 
 function explanationObject(value) {
@@ -306,7 +307,7 @@ function retry() {
 }
 
 function detail(err) {
-  return (err?.body && (err.body.detail || err.body.message)) || err?.message || '请求失败'
+  return (err?.body && (err.body.detail || err.body.message)) || err?.message || t('请求失败')
 }
 
 watch(

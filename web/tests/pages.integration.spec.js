@@ -61,7 +61,7 @@ describe('repository and knowledge pages', () => {
       },
     })
     const links = wrapper.findAll('.nav-links a')
-    expect(links.map(link => link.text())).toEqual(['知识中心', 'Snapshots', 'Graph View'])
+    expect(links.map(link => link.text())).toEqual(['知识中心', '快照', '图谱视图'])
     expect(links.map(link => link.attributes('href'))).toEqual(['/knowledge', '/snapshots', '/graph-views'])
   })
 
@@ -133,14 +133,14 @@ describe('repository and knowledge pages', () => {
     route.query = { snapshot_id: 'snapshot-mall' }
     await flushPromises()
     expect(api.get).toHaveBeenCalledWith('/api/knowledge', { snapshot_id: 'snapshot-mall', include_llm: false })
-    expect(wrapper.text()).toContain('基于不可变 Repository Snapshot 推导')
+    expect(wrapper.text()).toContain('基于不可变仓库快照推导')
   })
 
   it('guides the user to Snapshots when Knowledge has no snapshot context', async () => {
     const { wrapper, api } = mountPage(Knowledge, {}, { repoName: '' }, { query: {} })
     await flushPromises()
     expect(wrapper.text()).toContain('还没有已发布的项目知识')
-    expect(wrapper.text()).toContain('请先在 Snapshots 中运行分析')
+    expect(wrapper.text()).toContain('请先在快照中运行分析')
     expect(wrapper.find('a[href="/snapshots"]').exists()).toBe(true)
     expect(api.get).toHaveBeenCalledWith('/api/scopes')
   })
@@ -164,8 +164,8 @@ describe('repository and knowledge pages', () => {
   it('guides the user to Snapshots when the Graph View catalog is empty', async () => {
     const { wrapper, api } = mountPage(GraphView, {}, {}, { query: {} })
     await flushPromises()
-    expect(wrapper.text()).toContain('还没有 Graph View')
-    expect(wrapper.text()).toContain('请先在 Snapshots 中选择成员并创建当前 View')
+    expect(wrapper.text()).toContain('还没有图谱视图')
+    expect(wrapper.text()).toContain('请先在快照中选择成员并创建当前视图')
     expect(wrapper.find('a[href="/snapshots"]').exists()).toBe(true)
     expect(api.get).toHaveBeenCalledWith('/api/graph-views')
   })
