@@ -173,6 +173,7 @@
                       <div class="api-explanation-actions">
                         <button class="primary sm" type="button" data-testid="explanation-generate" :disabled="explanationState(item).running || !item.handler || !item.file || !item.line" @click.stop="generateEndpointExplanation(item)">{{ explanationState(item).current ? t('手动刷新解释') : t('生成 API 功能解释') }}</button>
                         <button class="secondary sm" type="button" @click.stop="toggleExplanationSnapshots(item)">{{ explanationState(item).showSnapshots ? t('收起快照') : t('管理快照') }}</button>
+                        <button class="secondary sm" type="button" data-testid="endpoint-prompt-button" :disabled="explanationState(item).running" @click.stop="openEndpointPrompt(item)">{{ t('自定义提示词') }}</button>
                       </div>
                     </div>
                     <p v-if="explanationState(item).loading" class="muted">{{ t('正在读取解释快照…') }}</p>
@@ -307,6 +308,45 @@
 
     <div v-else-if="snapshotId && !loading && !error" class="empty-state">{{ t('暂无知识数据') }}</div>
 
+    <div v-if="endpointPromptEditor" class="endpoint-prompt-backdrop" @click.self="closeEndpointPrompt">
+      <section
+        class="endpoint-prompt-dialog"
+        data-testid="endpoint-prompt-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="endpoint-prompt-title"
+        tabindex="-1"
+        @keydown.esc="closeEndpointPrompt"
+      >
+        <header class="endpoint-prompt-header">
+          <div>
+            <h2 id="endpoint-prompt-title">{{ t('自定义提示词') }}</h2>
+            <p><span class="method">{{ endpointPromptEditor.item.method }}</span> <code>{{ endpointPromptEditor.item.path }}</code> · {{ endpointPromptEditor.item.handler }}</p>
+          </div>
+          <button class="endpoint-prompt-close" type="button" :aria-label="t('关闭自定义提示词')" @click="closeEndpointPrompt">×</button>
+        </header>
+        <div class="endpoint-prompt-body">
+          <p class="prompt-modal-hint">{{ t('系统默认提示词会继续保留证据和 JSON 约束；下面的内容作为当前端点的补充指导。') }}</p>
+          <details class="endpoint-prompt-default" open>
+            <summary>{{ t('查看默认提示词') }}</summary>
+            <pre>{{ endpointPromptDefault }}</pre>
+          </details>
+          <label class="prompt-field endpoint-prompt-field">
+            <span>{{ t('基于默认提示词调整') }}</span>
+            <textarea v-model="endpointPromptEditor.value" data-testid="endpoint-prompt-textarea" rows="12" maxlength="5000"></textarea>
+          </label>
+          <p class="prompt-hint">{{ t('仅本次端点生成使用，不会修改 Snapshot 级提示词或历史解释快照。') }}</p>
+          <p v-if="endpointPromptEditor.error" class="explanation-error">{{ endpointPromptEditor.error }}</p>
+        </div>
+        <footer class="endpoint-prompt-actions">
+          <button class="secondary" type="button" @click="closeEndpointPrompt">{{ t('取消') }}</button>
+          <button class="primary" type="button" data-testid="endpoint-prompt-apply" :disabled="endpointPromptEditor.saving" @click="applyEndpointPrompt">
+            {{ endpointPromptEditor.saving ? t('生成中...') : t('应用并生成') }}
+          </button>
+        </footer>
+      </section>
+    </div>
+
     <div v-if="sequenceZoom" class="sequence-zoom-backdrop" @click.self="closeSequenceZoom">
       <section
         ref="sequenceZoomDialog"
@@ -386,6 +426,8 @@ function loadMermaid() {
   return mermaidPromise
 }
 
+const DEFAULT_ENDPOINT_GUIDANCE = '请完整分析该 API 的业务目的、输入输出、前置条件、业务流程、业务规则、状态变化、副作用、异常处理和外部依赖；所有结论必须有源码或调用链证据，无法确认的内容请明确标记。'
+
 export default {
   components: { UiState, CallChainTree },
   props: { repoName: String },
@@ -410,6 +452,7 @@ export default {
       explanationPollTimers: {},
       promptText: '', promptDefaults: { local: '', synthesis: '', aggregate: '' }, promptTemplates: { local: '', synthesis: '', aggregate: '' }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
       batchJob: null, batchPollTimer: null,
+      endpointCustomPrompts: {}, endpointPromptEditor: null,
     }
   },
   computed: {
@@ -464,6 +507,7 @@ export default {
         this.clearLlmPoll()
         this.promptText = ''; this.promptDefaults = { local: '', synthesis: '', aggregate: '' }; this.promptTemplates = { local: '', synthesis: '', aggregate: '' }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
         this.batchJob = null; this.clearBatchPoll()
+        this.endpointCustomPrompts = {}; this.endpointPromptEditor = null
         this.businessRules = {}
         this.projectCatalog = []
         this.error = null
@@ -720,13 +764,51 @@ export default {
         if (quiet && this.explanationState(item).running) this.scheduleExplanationPoll(item)
       }
     },
-    async generateEndpointExplanation(item) {
+    endpointPromptStorageKey(item) { return `codeevolution:endpoint-prompt:${this.snapshotId}:${this.apiKey(item)}` },
+    endpointStoredPrompt(item) {
+      const key = this.endpointPromptStorageKey(item)
+      if (this.endpointCustomPrompts[key] !== undefined) return this.endpointCustomPrompts[key]
+      try { return window.localStorage?.getItem(key) || '' } catch { return '' }
+    },
+    endpointPromptDefault() {
+      return this.promptDefaults.aggregate || DEFAULT_ENDPOINT_GUIDANCE
+    },
+    openEndpointPrompt(item) {
+      const stored = this.endpointStoredPrompt(item)
+      this.endpointPromptEditor = {
+        item,
+        value: stored || this.promptText.trim() || DEFAULT_ENDPOINT_GUIDANCE,
+        saving: false,
+        error: '',
+      }
+      this.$nextTick(() => this.$el.querySelector('[data-testid="endpoint-prompt-dialog"]')?.focus())
+    },
+    closeEndpointPrompt() {
+      if (!this.endpointPromptEditor?.saving) this.endpointPromptEditor = null
+    },
+    async applyEndpointPrompt() {
+      const editor = this.endpointPromptEditor
+      if (!editor || !editor.value.trim()) return
+      editor.saving = true
+      editor.error = ''
+      const item = editor.item
+      const key = this.endpointPromptStorageKey(item)
+      const prompt = editor.value.trim()
+      this.endpointCustomPrompts = { ...this.endpointCustomPrompts, [key]: prompt }
+      try { window.localStorage?.setItem(key, prompt) } catch { /* Storage may be unavailable in embedded browsers. */ }
+      await this.generateEndpointExplanation(item, prompt)
+      if (this.endpointPromptEditor === editor) this.endpointPromptEditor = null
+    },
+    async generateEndpointExplanation(item, customPrompt = null) {
       this.clearExplanationPoll(item)
       this.setExplanationState(item, { running: true, status: 'running', error: '' })
       try {
+        const prompt = customPrompt === null ? this.endpointStoredPrompt(item) : customPrompt.trim()
+        const payload = { repository_snapshot_id: this.snapshotId, repo: this.repoName || '', member: item.repository || '', method: item.method || '', path: item.path || '', handler: item.handler || '', file: item.file || '', line: Number(item.line || 0) }
+        if (prompt) payload.custom_prompt = prompt
         const response = await this.$api.request('/api/api-explanations/generate', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repository_snapshot_id: this.snapshotId, repo: this.repoName || '', member: item.repository || '', method: item.method || '', path: item.path || '', handler: item.handler || '', file: item.file || '', line: Number(item.line || 0) }),
+          body: JSON.stringify(payload),
         })
         const snapshot = response.snapshot || response
         const snapshots = snapshot?.id ? [snapshot, ...this.explanationState(item).snapshots.filter(existing => existing.id !== snapshot.id)] : this.explanationState(item).snapshots
@@ -1112,7 +1194,7 @@ td code { color: #666; word-break: break-all; }
 .batch-item code { min-width: 210px; }
 .api-explanation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .api-explanation-heading h4 { margin-bottom: 3px; font-size: 13px; color: #333; }
-.api-explanation-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.api-explanation-actions { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .explanation-status { display: inline-block; margin-left: 5px; padding: 2px 6px; border-radius: 8px; background: #eeeef3; color: #666; font-size: 10px; font-weight: 400; }
 .explanation-running, .explanation-pending { background: #e3f0fc; color: #2a6496; }
 .explanation-completed { background: #eaf8f0; color: #23764a; }
@@ -1155,6 +1237,21 @@ td code { color: #666; word-break: break-all; }
 .br-detail li { padding: 2px 0; color: #444; line-height: 1.4; }
 .br-raw { max-height: 200px; overflow: auto; font-size: 10px; padding: 8px; background: #f5f5f8; border-radius: 4px; white-space: pre-wrap; }
 .br-actions { display: flex; gap: 6px; margin-top: 8px; }
+.endpoint-prompt-backdrop { position: fixed; z-index: 110; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(17, 17, 28, .68); }
+.endpoint-prompt-dialog { width: min(760px, 100%); max-height: min(860px, 92vh); display: flex; flex-direction: column; overflow: hidden; background: white; border-radius: 10px; box-shadow: 0 20px 70px rgba(0, 0, 0, .4); }
+.endpoint-prompt-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 16px 18px; border-bottom: 1px solid #e5e5eb; }
+.endpoint-prompt-header h2 { margin: 0 0 5px; font-size: 18px; color: #252b36; }
+.endpoint-prompt-header p { margin: 0; color: #777; font-size: 12px; }
+.endpoint-prompt-close { width: 32px; height: 32px; border: 0; border-radius: 50%; background: #f0f0f4; color: #444; font-size: 22px; line-height: 1; cursor: pointer; }
+.endpoint-prompt-close:hover { background: #e94560; color: white; }
+.endpoint-prompt-body { overflow: auto; padding: 16px 18px 4px; }
+.prompt-modal-hint { margin: 0 0 10px; color: #555; font-size: 12px; line-height: 1.55; }
+.endpoint-prompt-default { margin-bottom: 12px; padding: 8px 10px; border: 1px solid #e2e5eb; border-radius: 6px; background: #fafafd; }
+.endpoint-prompt-default summary { cursor: pointer; color: #2a6496; font-size: 11px; }
+.endpoint-prompt-default pre { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 9px; white-space: pre-wrap; color: #555; background: white; border-radius: 4px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.endpoint-prompt-field { margin-top: 12px; }
+.endpoint-prompt-field textarea { min-height: 180px; box-sizing: border-box; }
+.endpoint-prompt-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid #e5e5eb; }
 .sm { padding: 5px 10px; font-size: 11px; }
 .json-view { max-height: 650px; overflow: auto; margin: 0; padding: 16px; border-radius: 6px; background: #171725; color: #d8d8e5; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .project-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
@@ -1174,6 +1271,8 @@ td code { color: #666; word-break: break-all; }
   .sequence-zoom-backdrop { padding: 0; }
   .sequence-zoom-dialog { width: 100vw; height: 100vh; border-radius: 0; }
   .api-explanation-heading { display: block; }
-  .api-explanation-actions { margin-top: 8px; }
+  .api-explanation-actions { margin-top: 8px; justify-content: flex-start; }
+  .endpoint-prompt-backdrop { padding: 0; }
+  .endpoint-prompt-dialog { width: 100vw; height: 100vh; max-height: none; border-radius: 0; }
 }
 </style>

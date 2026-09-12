@@ -162,6 +162,29 @@ describe('PRD UI acceptance journey', () => {
     expect(api.request).toHaveBeenCalledWith('/api/api-explanations/generate', expect.objectContaining({ method: 'POST' }))
   })
 
+  it('UI-007a edits an endpoint prompt from the default and sends it to generation', async () => {
+    const endpoint = { method: 'POST', path: '/orders', handler: 'OrderController.create', repository: 'shop', file: 'Order.java', line: 10 }
+    const { wrapper, api } = mountUi(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 1, endpoints: [endpoint] } },
+      '/api/api-explanations/current': { status: 'missing' },
+      '/api/api-explanations/snapshots': { snapshots: [] },
+      '/api/api-explanations/generate': { id: 'explanation-custom', status: 'running' },
+    }, { repoName: 'shop' })
+    await flushPromises()
+    await wrapper.find('tbody tr').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="endpoint-prompt-button"]').trigger('click')
+    expect(wrapper.find('[data-testid="endpoint-prompt-dialog"]').exists()).toBe(true)
+    const textarea = wrapper.find('[data-testid="endpoint-prompt-textarea"]')
+    expect(textarea.element.value).toContain('业务目的')
+    await textarea.setValue('请重点关注库存扣减和异常回滚')
+    await wrapper.find('[data-testid="endpoint-prompt-apply"]').trigger('click')
+    await flushPromises()
+    const request = api.request.mock.calls.find(([path]) => path === '/api/api-explanations/generate')
+    expect(JSON.parse(request[1].body).custom_prompt).toBe('请重点关注库存扣减和异常回滚')
+    expect(wrapper.find('[data-testid="endpoint-prompt-dialog"]').exists()).toBe(false)
+  })
+
   it('UI-008 displays default API explanation templates and supports fine-tuning from them', async () => {
     const defaults = { local: 'DEFAULT LOCAL', synthesis: 'DEFAULT SYNTHESIS', aggregate: 'DEFAULT AGGREGATE' }
     const endpoint = { method: 'POST', path: '/orders', handler: 'OrderController.create', repository: 'shop', file: 'Order.java', line: 10 }

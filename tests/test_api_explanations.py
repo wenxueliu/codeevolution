@@ -8,8 +8,10 @@ from codeevolution.infrastructure.explanation_snapshot_store import ExplanationS
 class GenerationStub:
     def __init__(self, store):
         self.store = store
+        self.specs = []
 
     def prepare(self, spec):
+        self.specs.append(spec)
         snapshot = ExplanationSnapshot(
             id="candidate", repo_name=spec["repo"], member_name=spec["member"],
             api_key="POST|/orders|create_order", method="POST", path="/orders",
@@ -42,6 +44,7 @@ def test_manual_generation_current_listing_and_confirmed_delete(tmp_path):
         response = client.post("/api/api-explanations/generate", json={
             "repo": "shop", "member": "orders", "method": "POST",
             "path": "/orders", "handler": "create_order", "file": "orders.py", "line": 1,
+            "custom_prompt": "重点关注库存扣减",
         })
         assert response.status_code == 202
         assert response.json()["snapshot"]["status"] == "pending"
@@ -65,4 +68,6 @@ def test_manual_generation_current_listing_and_confirmed_delete(tmp_path):
             "repo": "shop", "member": "orders", "api_key": "POST|/orders|create_order",
         }).json()
         assert missing == {"status": "missing", "snapshot": None}
+        assert service.specs[0]["_prompt_text"] == "重点关注库存扣减"
+        assert service.specs[0]["_prompt_version"].startswith("custom-")
     store.close()
