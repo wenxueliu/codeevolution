@@ -101,3 +101,32 @@ def test_prompt_api_returns_default_guidance_and_templates(tmp_path):
     assert all(payload["defaults"].values())
     assert payload["current"] is None
     store.close()
+
+
+def test_prompt_api_normalizes_empty_template_profile_to_defaults(tmp_path):
+    store = ExplanationSnapshotStore(tmp_path / "api.db")
+    runtime = SnapshotRuntimeStub()
+    app = create_app({"snapshot_runtime": runtime, "explanation_snapshot_store": store})
+    with TestClient(app) as client:
+        defaults = client.get(
+            "/api/api-explanation-prompts",
+            params={"repository_snapshot_id": "repo-snapshot"},
+        ).json()["defaults"]
+        response = client.post(
+            "/api/api-explanation-prompts",
+            json={
+                "repository_snapshot_id": "repo-snapshot",
+                "prompt_text": "",
+                "templates": {"local": "", "synthesis": "", "aggregate": ""},
+            },
+        )
+        assert response.status_code == 201
+        profile = response.json()["profile"]
+        assert profile["prompt_templates"] == defaults
+
+        current = client.get(
+            "/api/api-explanation-prompts",
+            params={"repository_snapshot_id": "repo-snapshot"},
+        ).json()["current"]
+        assert current["prompt_templates"] == defaults
+    store.close()

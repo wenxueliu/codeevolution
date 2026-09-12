@@ -204,7 +204,9 @@ describe('PRD UI acceptance journey', () => {
     expect(wrapper.vm.promptTemplates).toEqual(defaults)
     await wrapper.find('[data-testid="api-explanation-settings"] .api-prompt-actions .secondary.sm').trigger('click')
     await flushPromises()
-    expect(api.request).toHaveBeenCalledWith('/api/api-explanation-prompts', expect.objectContaining({ method: 'POST' }))
+    const saveRequest = api.request.mock.calls.find(([path, options]) => path === '/api/api-explanation-prompts' && options?.method === 'POST')
+    expect(saveRequest).toBeTruthy()
+    expect(JSON.parse(saveRequest[1].body).templates).toEqual(defaults)
   })
 
   it('UI-009 saves and tests LLM configuration without displaying the key', async () => {
