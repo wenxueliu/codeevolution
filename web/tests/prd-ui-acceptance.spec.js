@@ -162,7 +162,29 @@ describe('PRD UI acceptance journey', () => {
     expect(api.request).toHaveBeenCalledWith('/api/api-explanations/generate', expect.objectContaining({ method: 'POST' }))
   })
 
-  it('UI-008 saves and tests LLM configuration without displaying the key', async () => {
+  it('UI-008 displays default API explanation templates and supports fine-tuning from them', async () => {
+    const defaults = { local: 'DEFAULT LOCAL', synthesis: 'DEFAULT SYNTHESIS', aggregate: 'DEFAULT AGGREGATE' }
+    const endpoint = { method: 'POST', path: '/orders', handler: 'OrderController.create', repository: 'shop', file: 'Order.java', line: 10 }
+    const { wrapper, api } = mountUi(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 1, endpoints: [endpoint] } },
+      '/api/api-explanation-prompts': (options) => options?.method === 'POST'
+        ? { profile: { id: 'prompt-2', version: 2, prompt_text: '', prompt_templates: defaults } }
+        : { current: { id: 'prompt-1', version: 1, prompt_text: '', prompt_templates: { ...defaults, local: 'CUSTOM LOCAL' } }, profiles: [], defaults },
+    }, { repoName: 'shop' })
+    await flushPromises()
+
+    expect(wrapper.find('.prompt-default-reference').text()).toContain('DEFAULT LOCAL')
+    expect(wrapper.vm.promptTemplates.local).toBe('CUSTOM LOCAL')
+    await wrapper.find('.prompt-field .link-button').trigger('click')
+    expect(wrapper.vm.promptTemplates.local).toBe('DEFAULT LOCAL')
+    await wrapper.find('.prompt-default-heading button').trigger('click')
+    expect(wrapper.vm.promptTemplates).toEqual(defaults)
+    await wrapper.find('[data-testid="api-explanation-settings"] .api-prompt-actions .secondary.sm').trigger('click')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/api-explanation-prompts', expect.objectContaining({ method: 'POST' }))
+  })
+
+  it('UI-009 saves and tests LLM configuration without displaying the key', async () => {
     const { wrapper, api } = mountUi(LLMSettings, {
       '/api/llm-config': { available: true, model: 'test-model', api_base: 'http://llm.test/v1', api_key_configured: true, disable_ssl_verification: true },
       '/api/llm-config/test': { ok: true, message: '连接成功' },

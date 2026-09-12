@@ -86,10 +86,18 @@
           <div class="metric">{{ activeData.endpoint_count || 0 }} <small>{{ t('个端点') }}</small></div>
           <section class="api-prompt-panel" data-testid="api-explanation-settings">
             <div class="api-prompt-heading"><div><h3>{{ t('API 解释设置') }}</h3><p>{{ t('提示词按当前 Snapshot 保存版本，并可应用到全部端点。模板结果同时供 Agent 设计方案使用。') }}</p></div><span v-if="promptCurrent">{{ t('当前版本') }} v{{ promptCurrent.version }}</span></div>
+            <div class="prompt-default-heading"><span>{{ t('系统默认模板') }}</span><button class="secondary sm" type="button" :disabled="promptSaving || !promptDefaults.local" @click="restoreAllPromptTemplates">{{ t('恢复全部默认') }}</button></div>
+            <p class="prompt-default-hint">{{ t('编辑框显示当前生效模板；可展开查看系统默认值，并在此基础上微调。') }}</p>
+            <details v-if="promptDefaults.local" class="prompt-default-reference">
+              <summary>{{ t('查看系统默认模板') }}</summary>
+              <div class="prompt-default-item"><b>{{ t('自身源码 / 代码块模板') }}</b><pre>{{ promptDefaults.local }}</pre></div>
+              <div class="prompt-default-item"><b>{{ t('多代码块合并模板') }}</b><pre>{{ promptDefaults.synthesis }}</pre></div>
+              <div class="prompt-default-item"><b>{{ t('节点聚合模板') }}</b><pre>{{ promptDefaults.aggregate }}</pre></div>
+            </details>
             <label class="prompt-field"><span>{{ t('统一业务指导') }}</span><textarea v-model.trim="promptText" rows="3" :placeholder="t('例如：重点关注订单状态变化、库存扣减和异常处理')"></textarea></label>
-            <label class="prompt-field"><span>{{ t('自身源码 / 代码块模板') }}</span><textarea v-model="promptTemplates.local" rows="10"></textarea></label>
-            <label class="prompt-field"><span>{{ t('多代码块合并模板') }}</span><textarea v-model="promptTemplates.synthesis" rows="8"></textarea></label>
-            <label class="prompt-field"><span>{{ t('节点聚合模板') }}</span><textarea v-model="promptTemplates.aggregate" rows="10"></textarea></label>
+            <label class="prompt-field"><span class="prompt-field-heading"><span>{{ t('自身源码 / 代码块模板') }}</span><button class="link-button" type="button" :disabled="promptSaving || !promptDefaults.local" @click="restorePromptTemplate('local')">{{ t('恢复默认') }}</button></span><textarea v-model="promptTemplates.local" rows="10"></textarea></label>
+            <label class="prompt-field"><span class="prompt-field-heading"><span>{{ t('多代码块合并模板') }}</span><button class="link-button" type="button" :disabled="promptSaving || !promptDefaults.synthesis" @click="restorePromptTemplate('synthesis')">{{ t('恢复默认') }}</button></span><textarea v-model="promptTemplates.synthesis" rows="8"></textarea></label>
+            <label class="prompt-field"><span class="prompt-field-heading"><span>{{ t('节点聚合模板') }}</span><button class="link-button" type="button" :disabled="promptSaving || !promptDefaults.aggregate" @click="restorePromptTemplate('aggregate')">{{ t('恢复默认') }}</button></span><textarea v-model="promptTemplates.aggregate" rows="10"></textarea></label>
             <p class="prompt-hint">{{ t('可用变量：{qualified_name}、{source}、{local_explanation}、{children_explanations}、{guidance} 等；JSON 输出约束不可删除。') }}</p>
             <div class="api-prompt-actions"><button class="secondary sm" :disabled="promptSaving || !promptReady" @click="savePrompt">{{ promptSaving ? t('保存中...') : t('保存提示词') }}</button><button class="primary sm" :disabled="promptSaving || batchActive || !promptReady" @click="saveAndApplyBatch">{{ batchActive ? t('批量任务进行中') : t('保存并应用到全部端点') }}</button></div>
             <div v-if="promptError" class="explanation-error">{{ promptError }}</div>
@@ -400,7 +408,7 @@ export default {
       sequenceZoomScale: 1,
       apiExplanations: {},
       explanationPollTimers: {},
-      promptText: '', promptTemplates: { local: '', synthesis: '', aggregate: '' }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
+      promptText: '', promptDefaults: { local: '', synthesis: '', aggregate: '' }, promptTemplates: { local: '', synthesis: '', aggregate: '' }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
       batchJob: null, batchPollTimer: null,
     }
   },
@@ -454,7 +462,7 @@ export default {
         this.llmLoaded = false
         this.llmJob = null
         this.clearLlmPoll()
-        this.promptText = ''; this.promptTemplates = { local: '', synthesis: '', aggregate: '' }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
+        this.promptText = ''; this.promptDefaults = { local: '', synthesis: '', aggregate: '' }; this.promptTemplates = { local: '', synthesis: '', aggregate: '' }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
         this.batchJob = null; this.clearBatchPoll()
         this.businessRules = {}
         this.projectCatalog = []
@@ -551,7 +559,8 @@ export default {
         this.promptCurrent = data?.current || null
         this.promptProfiles = data?.profiles || []
         this.promptText = this.promptCurrent?.prompt_text || ''
-        this.promptTemplates = { ...(data?.defaults || {}), ...(this.promptCurrent?.prompt_templates || {}) }
+        this.promptDefaults = { local: '', synthesis: '', aggregate: '', ...(data?.defaults || {}) }
+        this.promptTemplates = { ...this.promptDefaults, ...(this.promptCurrent?.prompt_templates || {}) }
       } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('读取提示词失败') }
     },
     async savePrompt() {
@@ -560,6 +569,7 @@ export default {
       try {
         const data = await this.$api.request('/api/api-explanation-prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_text: this.promptText, templates: this.promptTemplates }) })
         this.promptCurrent = data.profile; this.promptProfiles = [data.profile, ...this.promptProfiles.filter(item => item.id !== data.profile.id)]
+        this.promptTemplates = { ...this.promptDefaults, ...(data.profile?.prompt_templates || {}) }
       } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('保存提示词失败') }
       finally { this.promptSaving = false }
     },
@@ -571,6 +581,7 @@ export default {
       try {
         const prompt = await this.$api.request('/api/api-explanation-prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_text: this.promptText, templates: this.promptTemplates }) })
         this.promptCurrent = prompt.profile; this.promptProfiles = [prompt.profile, ...this.promptProfiles.filter(item => item.id !== prompt.profile.id)]
+        this.promptTemplates = { ...this.promptDefaults, ...(prompt.profile?.prompt_templates || {}) }
         const response = await this.$api.request('/api/api-explanations/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_profile_id: prompt.profile.id, mode: 'all', concurrency: 2 }) })
         this.batchJob = response?.batch || response
         if (this.batchActive) this.scheduleBatchPoll()
@@ -603,6 +614,8 @@ export default {
       try { const data = await this.$api.request(`/api/api-explanations/batches/${encodeURIComponent(this.batchJob.id)}/retry-failed`, { method: 'POST' }); this.batchJob = data?.batch || data; this.scheduleBatchPoll() } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('重试失败端点失败') }
     },
     promptVersion(profileId) { const profile = this.promptProfiles.find(item => item.id === profileId); return profile ? `v${profile.version}` : profileId },
+    restorePromptTemplate(key) { this.promptTemplates = { ...this.promptTemplates, [key]: this.promptDefaults[key] || '' } },
+    restoreAllPromptTemplates() { this.promptTemplates = { ...this.promptDefaults } },
     batchStatusText(status) { return this.t(({ queued: '排队中', running: '生成中', completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消', skipped: '已跳过' })[status] || status || '') },
     async loadLlm() {
       if (!window.confirm(this.t('LLM 知识抽取可能需要较长时间并产生 API 调用费用，是否继续？'))) return
@@ -1071,9 +1084,20 @@ td code { color: #666; word-break: break-all; }
 .api-prompt-heading h3, .batch-heading h3 { margin: 0 0 4px; font-size: 13px; color: #333; }
 .api-prompt-heading p, .batch-heading p { margin: 0; color: #888; font-size: 11px; }
 .api-prompt-heading > span { color: #2a6496; font-size: 11px; }
+.prompt-default-heading, .prompt-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.prompt-default-heading { margin-top: 12px; color: #555; font-size: 11px; font-weight: 600; }
+.prompt-default-hint { margin: 5px 0 6px; color: #777; font-size: 10px; line-height: 1.45; }
+.prompt-default-reference { margin: 0 0 8px; padding: 7px 9px; border: 1px solid #e2e5eb; border-radius: 5px; background: #fff; font-size: 10px; }
+.prompt-default-reference summary { cursor: pointer; color: #2a6496; }
+.prompt-default-item { margin-top: 8px; }
+.prompt-default-item b { display: block; margin-bottom: 3px; color: #555; }
+.prompt-default-item pre { max-height: 220px; overflow: auto; margin: 0; padding: 7px; white-space: pre-wrap; color: #555; background: #f5f6f8; border-radius: 3px; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .api-prompt-panel textarea { width: 100%; margin: 10px 0 8px; border: 1px solid #cfd3da; border-radius: 5px; padding: 8px; font: 12px/1.5 sans-serif; resize: vertical; }
 .prompt-field { display: block; margin-top: 10px; color: #555; font-size: 11px; }
 .prompt-field span { display: block; margin-bottom: 4px; font-weight: 600; }
+.prompt-field-heading > span { margin-bottom: 0; }
+.link-button { padding: 0; border: 0; color: #2a6496; background: transparent; cursor: pointer; font-size: 10px; }
+.link-button:disabled { color: #aaa; cursor: not-allowed; }
 .prompt-field textarea { margin: 0; min-height: 96px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .prompt-hint { margin: 6px 0 8px; color: #888; font-size: 10px; line-height: 1.45; }
 .api-prompt-actions { display: flex; flex-wrap: wrap; gap: 6px; }
