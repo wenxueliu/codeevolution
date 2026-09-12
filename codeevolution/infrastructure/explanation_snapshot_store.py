@@ -206,6 +206,14 @@ class ExplanationSnapshotStore:
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(explanation_snapshots)")}
         if "repository_snapshot_id" not in columns:
             self.connection.execute("ALTER TABLE explanation_snapshots ADD COLUMN repository_snapshot_id TEXT")
+        for column, definition in (
+            ("prompt_profile_id", "TEXT NOT NULL DEFAULT ''"),
+            ("prompt_digest", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in columns:
+                self.connection.execute(
+                    f"ALTER TABLE explanation_snapshots ADD COLUMN {column} {definition}"
+                )
         prompt_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(api_explanation_prompt_profiles)")}
         if "prompt_templates" not in prompt_columns:
             self.connection.execute(

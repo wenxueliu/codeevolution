@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from codeevolution.domain.explanation import (
@@ -113,6 +115,50 @@ def test_prompt_profile_persists_all_editable_templates(store):
         "synthesis": "synthesis template",
         "aggregate": "aggregate template",
     }
+
+
+def test_migrates_legacy_snapshot_prompt_columns(tmp_path):
+    path = tmp_path / "legacy-explanations.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """CREATE TABLE explanation_snapshots (
+            id TEXT PRIMARY KEY,
+            repo_name TEXT NOT NULL,
+            member_name TEXT NOT NULL DEFAULT '',
+            api_key TEXT NOT NULL,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            handler TEXT NOT NULL,
+            entry_node_key TEXT NOT NULL,
+            source_revision TEXT NOT NULL,
+            source_digest TEXT NOT NULL,
+            graph_digest TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            explanation TEXT NOT NULL DEFAULT '{}',
+            coverage TEXT NOT NULL DEFAULT '{}',
+            statistics TEXT NOT NULL DEFAULT '{}',
+            error TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER
+        )"""
+    )
+    connection.commit()
+    connection.close()
+
+    migrated = ExplanationSnapshotStore(path)
+    columns = {
+        row["name"]
+        for row in migrated.connection.execute("PRAGMA table_info(explanation_snapshots)")
+    }
+    assert {"repository_snapshot_id", "prompt_profile_id", "prompt_digest"} <= columns
+
+    saved = migrated.create_snapshot(snapshot("legacy", created_at=2))
+    assert saved.prompt_profile_id == ""
+    assert saved.prompt_digest == ""
+    migrated.close()
 
 
 def test_publish_atomically_switches_endpoint_current_pointer(store):
