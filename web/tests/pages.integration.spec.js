@@ -516,6 +516,24 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.find('[data-testid="api-explanation-settings"]').text()).toContain('恢复全部默认')
   })
 
+  it('does not let empty current prompt templates hide system defaults', async () => {
+    const { wrapper } = mountPage(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 0, endpoints: [] } },
+      '/api/api-explanation-prompts': {
+        current: { prompt_text: '', prompt_templates: { local: '', synthesis: '', aggregate: '' } },
+        profiles: [],
+        default_guidance: '系统默认 API 分析指导',
+        defaults: { local: '默认自身模板', synthesis: '默认合并模板', aggregate: '默认聚合模板' },
+      },
+      '/api/api-explanations/batches': { batches: [] },
+    }, { repoName: 'mall' })
+    await flushPromises()
+
+    expect(wrapper.vm.promptTemplates).toEqual({
+      local: '默认自身模板', synthesis: '默认合并模板', aggregate: '默认聚合模板',
+    })
+  })
+
   it('enlarges and zooms the sequence diagram for each API endpoint', async () => {
     mermaidRun.mockClear()
     const endpoints = [

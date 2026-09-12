@@ -604,8 +604,16 @@ export default {
         this.promptProfiles = data?.profiles || []
         this.promptText = this.promptCurrent?.prompt_text || data?.default_guidance || DEFAULT_ENDPOINT_GUIDANCE
         this.promptDefaults = { local: '', synthesis: '', aggregate: '', ...(data?.defaults || {}) }
-        this.promptTemplates = { ...this.promptDefaults, ...(this.promptCurrent?.prompt_templates || {}) }
+        this.promptTemplates = this.mergePromptTemplates(this.promptDefaults, this.promptCurrent?.prompt_templates)
       } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('读取提示词失败') }
+    },
+    mergePromptTemplates(defaults, overrides) {
+      const result = { local: '', synthesis: '', aggregate: '', ...(defaults || {}) }
+      for (const key of ['local', 'synthesis', 'aggregate']) {
+        const value = overrides?.[key]
+        if (typeof value === 'string' && value.trim()) result[key] = value
+      }
+      return result
     },
     async savePrompt() {
       if (!this.snapshotId || !this.promptReady) return
@@ -613,7 +621,7 @@ export default {
       try {
         const data = await this.$api.request('/api/api-explanation-prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_text: this.promptText, templates: this.promptTemplates }) })
         this.promptCurrent = data.profile; this.promptProfiles = [data.profile, ...this.promptProfiles.filter(item => item.id !== data.profile.id)]
-        this.promptTemplates = { ...this.promptDefaults, ...(data.profile?.prompt_templates || {}) }
+        this.promptTemplates = this.mergePromptTemplates(this.promptDefaults, data.profile?.prompt_templates)
       } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('保存提示词失败') }
       finally { this.promptSaving = false }
     },
@@ -625,7 +633,7 @@ export default {
       try {
         const prompt = await this.$api.request('/api/api-explanation-prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_text: this.promptText, templates: this.promptTemplates }) })
         this.promptCurrent = prompt.profile; this.promptProfiles = [prompt.profile, ...this.promptProfiles.filter(item => item.id !== prompt.profile.id)]
-        this.promptTemplates = { ...this.promptDefaults, ...(prompt.profile?.prompt_templates || {}) }
+        this.promptTemplates = this.mergePromptTemplates(this.promptDefaults, prompt.profile?.prompt_templates)
         const response = await this.$api.request('/api/api-explanations/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_profile_id: prompt.profile.id, mode: 'all', concurrency: 2 }) })
         this.batchJob = response?.batch || response
         if (this.batchActive) this.scheduleBatchPoll()
