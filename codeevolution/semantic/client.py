@@ -37,6 +37,7 @@ class OpenAILLMClient:
             return json.dumps(
                 {"error": "openai 包未安装：请先执行 pip install 'openai>=1.0,<3'"}
             )
+        http_client = None
         try:
             # max_output_tokens（可选）：设置了就作为本次输出预算，覆盖各调用点的小默认值。
             # 未设置则用调用点自己的 max_tokens。
@@ -57,10 +58,19 @@ class OpenAILLMClient:
                     }
                 )
 
-            client = OpenAI(
-                api_key=self.config["api_key"],
-                base_url=self.config["api_base"] or None,
-            )
+            client_options = {
+                "api_key": self.config["api_key"],
+                "base_url": self.config["api_base"] or None,
+            }
+            if self.config.get("disable_ssl_verification", False):
+                # The OpenAI SDK delegates HTTP(S) transport to httpx. Use a
+                # dedicated client only when explicitly requested so normal
+                # HTTPS keeps certificate verification enabled by default.
+                import httpx
+
+                http_client = httpx.Client(verify=False)
+                client_options["http_client"] = http_client
+            client = OpenAI(**client_options)
             kwargs = {
                 "model": self.config["model"],
                 "messages": [{"role": "user", "content": prompt}],
@@ -83,3 +93,6 @@ class OpenAILLMClient:
             return response.choices[0].message.content
         except Exception as error:
             return json.dumps({"error": str(error)})
+        finally:
+            if http_client is not None:
+                http_client.close()

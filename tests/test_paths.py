@@ -26,6 +26,20 @@ def test_data_dir_falls_back_to_existing_legacy_directory(monkeypatch, tmp_path)
     assert data_dir() == home / ".codehistory"
 
 
+def test_data_dir_falls_back_when_default_home_storage_is_not_writable(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    # A file at the preferred directory path makes mkdir fail without relying
+    # on chmod/root behavior in the test environment.
+    (home / ".codeevolution").write_text("read-only placeholder")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("CODEEVOLUTION_DATA_DIR", raising=False)
+    monkeypatch.delenv("CODEHISTORY_DATA_DIR", raising=False)
+
+    expected = Path(__file__).resolve().parents[1] / "data" / ".codeevolution"
+    assert data_dir() == expected
+
+
 def test_repo_data_file_prefers_new_then_existing_legacy(tmp_path):
     legacy = tmp_path / ".codehistory" / "evolution.db"
     legacy.parent.mkdir()

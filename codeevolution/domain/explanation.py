@@ -30,6 +30,8 @@ class ExplanationSnapshot:
     created_at: int = 0
     completed_at: int | None = None
     repository_snapshot_id: str = ""
+    prompt_profile_id: str = ""
+    prompt_digest: str = ""
 
 
 @dataclass(frozen=True)

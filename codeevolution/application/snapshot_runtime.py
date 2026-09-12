@@ -14,6 +14,10 @@ from codeevolution.application.analysis_run_service import (
 from codeevolution.application.analysis_scheduler import AnalysisScheduler
 from codeevolution.application.graph_artifact_scheduler import GraphArtifactScheduler
 from codeevolution.application.graph_artifact_service import GraphArtifactService
+from codeevolution.application.llm_knowledge_service import (
+    LLMKnowledgeScheduler,
+    LLMKnowledgeService,
+)
 from codeevolution.application.repository_attempt_worker import RepositoryAttemptWorker
 from codeevolution.application.snapshot_query_service import SnapshotQueryService
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
@@ -56,13 +60,17 @@ class SnapshotRuntime:
             builder=TopologyArtifactBuilder(known_external_registry=known_external_registry),
         )
         self.graph_artifact_scheduler = GraphArtifactScheduler(self.graph_artifacts)
+        self.llm_knowledge_service = LLMKnowledgeService(self.store, self.snapshot_queries)
+        self.llm_knowledge_scheduler = LLMKnowledgeScheduler(self.llm_knowledge_service)
 
     def start(self) -> None:
         self.scheduler.start(recover=True)
+        self.llm_knowledge_scheduler.start()
 
     def notify(self) -> None:
         self.scheduler.notify()
 
     def close(self) -> None:
+        self.llm_knowledge_scheduler.close()
         self.graph_artifact_scheduler.close()
         self.scheduler.close()

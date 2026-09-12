@@ -164,11 +164,12 @@ describe('PRD UI acceptance journey', () => {
 
   it('UI-008 saves and tests LLM configuration without displaying the key', async () => {
     const { wrapper, api } = mountUi(LLMSettings, {
-      '/api/llm-config': { available: true, model: 'test-model', api_base: 'https://llm.test/v1', api_key_configured: true },
+      '/api/llm-config': { available: true, model: 'test-model', api_base: 'http://llm.test/v1', api_key_configured: true, disable_ssl_verification: true },
       '/api/llm-config/test': { ok: true, message: '连接成功' },
     }, { open: true })
     await flushPromises()
     expect(wrapper.find('input[type="password"]').element.value).toBe('')
+    expect(wrapper.findAll('input[type="checkbox"]')[1].element.checked).toBe(true)
     await wrapper.find('form').trigger('submit')
     await flushPromises()
     await wrapper.find('.secondary').trigger('click')

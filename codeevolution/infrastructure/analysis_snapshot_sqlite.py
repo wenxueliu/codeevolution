@@ -37,7 +37,7 @@ from codeevolution.domain.analysis_snapshot import (
 from codeevolution.domain.topology import canonical_aliases, canonical_digest
 from codeevolution.platform import ensure_supported_storage_path, set_private_permissions
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DEFAULT_TOPOLOGY_RULES_DIGEST = canonical_digest({"schema": "topology-rules/v1", "rules": []})
 
 # Retention is deliberately expressed in one place so an administrator can
@@ -129,6 +129,25 @@ ALTER TABLE graph_view_artifact_jobs_v3 RENAME TO graph_view_artifact_jobs;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_active_graph_artifact_job
  ON graph_view_artifact_jobs(cache_key_digest) WHERE status IN ('pending','running');
 CREATE INDEX IF NOT EXISTS idx_graph_artifact_jobs_view ON graph_view_artifact_jobs(view_id,status);
+"""
+
+_MIGRATION_4 = """
+CREATE TABLE IF NOT EXISTS llm_knowledge_jobs (
+    id TEXT PRIMARY KEY,
+    repository_snapshot_id TEXT NOT NULL REFERENCES repository_analysis_snapshots(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed')),
+    progress_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT,
+    error_message TEXT,
+    requested_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_llm_knowledge_jobs_snapshot
+    ON llm_knowledge_jobs(repository_snapshot_id, requested_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_llm_knowledge_job
+    ON llm_knowledge_jobs(repository_snapshot_id)
+    WHERE status IN ('pending','running');
 """
 
 _REPAIR_DDL = """
@@ -584,6 +603,9 @@ class AnalysisSnapshotSQLiteStore:
             # The initial schema now includes v4 columns.  Existing v1-v3
             # databases get them through the idempotent repair below.
             self._repair_topology_contract_shape(connection)
+            # Keep this migration idempotent so databases created by older
+            # versions and fresh databases both get durable LLM job state.
+            connection.executescript(_MIGRATION_4)
             if version < SCHEMA_VERSION:
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
@@ -1288,6 +1310,119 @@ class AnalysisSnapshotSQLiteStore:
                 (rule_kind, snapshot_id, view_id or ""),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ── LLM knowledge extraction jobs ──
+
+    @staticmethod
+    def _llm_job(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        item["progress"] = json.loads(item.pop("progress_json") or "{}")
+        item["result"] = json.loads(item.pop("result_json")) if item.get("result_json") else None
+        item.pop("result_json", None)
+        return item
+
+    def get_llm_knowledge_job(self, snapshot_id: str, *, job_id: str | None = None) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            if job_id:
+                row = connection.execute(
+                    "SELECT * FROM llm_knowledge_jobs WHERE id=? AND repository_snapshot_id=?",
+                    (job_id, snapshot_id),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT * FROM llm_knowledge_jobs WHERE repository_snapshot_id=? "
+                    "ORDER BY requested_at DESC, id DESC LIMIT 1",
+                    (snapshot_id,),
+                ).fetchone()
+        return self._llm_job(row)
+
+    def create_llm_knowledge_job(self, snapshot_id: str) -> dict[str, Any]:
+        job_id = str(uuid4())
+        now = utc_now()
+        progress = {"percent": 0, "completed": 0, "total": 4, "stage": "queued"}
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if not connection.execute(
+                    "SELECT 1 FROM repository_analysis_snapshots WHERE id=? AND deletion_state='active'",
+                    (snapshot_id,),
+                ).fetchone():
+                    raise KeyError(snapshot_id)
+                active = connection.execute(
+                    "SELECT * FROM llm_knowledge_jobs WHERE repository_snapshot_id=? "
+                    "AND status IN ('pending','running') ORDER BY requested_at DESC LIMIT 1",
+                    (snapshot_id,),
+                ).fetchone()
+                if active is not None:
+                    connection.commit()
+                    return self._llm_job(active)  # type: ignore[return-value]
+                connection.execute(
+                    """INSERT INTO llm_knowledge_jobs
+                       (id,repository_snapshot_id,status,progress_json,requested_at)
+                       VALUES (?,?, 'pending', ?, ?)""",
+                    (job_id, snapshot_id, _canonical_json(progress), now),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_llm_knowledge_job(snapshot_id, job_id=job_id)  # type: ignore[return-value]
+
+    def update_llm_knowledge_job(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        progress: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> dict[str, Any] | None:
+        if status is not None and status not in {"pending", "running", "completed", "failed"}:
+            raise SnapshotStoreError("invalid LLM knowledge job status")
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM llm_knowledge_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                return None
+            next_status = status or row["status"]
+            next_progress = progress if progress is not None else json.loads(row["progress_json"] or "{}")
+            next_result = result if result is not None else (
+                json.loads(row["result_json"]) if row["result_json"] else None
+            )
+            started_at = row["started_at"] or (utc_now() if next_status == "running" else None)
+            completed_at = utc_now() if next_status in {"completed", "failed"} else row["completed_at"]
+            connection.execute(
+                """UPDATE llm_knowledge_jobs SET status=?,progress_json=?,result_json=?,error_message=?,
+                   started_at=?,completed_at=? WHERE id=?""",
+                (
+                    next_status, _canonical_json(next_progress),
+                    _canonical_json(next_result) if next_result is not None else None,
+                    error_message if error_message is not None else row["error_message"],
+                    started_at, completed_at, job_id,
+                ),
+            )
+            connection.commit()
+        return self.get_llm_knowledge_job(row["repository_snapshot_id"], job_id=job_id)
+
+    def recover_interrupted_llm_knowledge_jobs(self) -> list[str]:
+        """Re-queue jobs left active by a process restart."""
+        with self.connection() as connection, connection:
+            rows = connection.execute(
+                "SELECT id FROM llm_knowledge_jobs WHERE status IN ('pending','running')"
+            ).fetchall()
+            connection.execute(
+                "UPDATE llm_knowledge_jobs SET status='pending',started_at=NULL,completed_at=NULL "
+                "WHERE status IN ('pending','running')"
+            )
+        return [row["id"] for row in rows]
+
+    def list_pending_llm_knowledge_jobs(self) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM llm_knowledge_jobs WHERE status='pending' ORDER BY requested_at,id"
+            ).fetchall()
+        return [self._llm_job(row) for row in rows]  # type: ignore[list-item]
 
     def create_artifact_job(
         self, *, view_id: str, artifact_kind: str, cache_key: str,

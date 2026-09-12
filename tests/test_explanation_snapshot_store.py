@@ -96,6 +96,25 @@ def test_saves_and_reads_complete_snapshot_graph(store):
         store.update_snapshot("one", "failed")
 
 
+def test_prompt_profile_persists_all_editable_templates(store):
+    profile = store.create_prompt_profile(
+        "repository-1",
+        "重点关注状态变化",
+        prompt_templates={
+            "local": "local template",
+            "synthesis": "synthesis template",
+            "aggregate": "aggregate template",
+        },
+    )
+    loaded = store.get_prompt_profile(profile["id"])
+    assert loaded["prompt_text"] == "重点关注状态变化"
+    assert loaded["prompt_templates"] == {
+        "local": "local template",
+        "synthesis": "synthesis template",
+        "aggregate": "aggregate template",
+    }
+
+
 def test_publish_atomically_switches_endpoint_current_pointer(store):
     store.create_snapshot(snapshot("old", created_at=1))
     store.update_snapshot("old", "completed")

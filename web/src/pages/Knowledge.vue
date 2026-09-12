@@ -33,14 +33,22 @@
       </div>
       <div class="actions">
         <button class="secondary" :disabled="loading" @click="load(false)">{{ t('刷新结构知识') }}</button>
-        <button class="primary" :disabled="loading" @click="loadLlm">
-          {{ llmLoaded ? t('重新抽取 LLM 知识') : t('抽取 LLM 知识') }}
+        <button class="primary" :disabled="loading || llmJobActive" @click="loadLlm">
+          {{ llmJobActive ? t('正在抽取 LLM 知识') : (llmLoaded ? t('重新抽取 LLM 知识') : t('抽取 LLM 知识')) }}
         </button>
       </div>
     </div>
 
-    <div class="notice" v-if="snapshotId && !llmLoaded">
+    <div class="llm-progress" v-if="snapshotId && llmJobActive" data-testid="llm-progress">
+      <div class="llm-progress-heading"><span>{{ t('LLM 知识抽取进行中') }}</span><strong>{{ llmProgress.percent }}%</strong></div>
+      <div class="llm-progress-track"><span :style="{ width: `${llmProgress.percent}%` }"></span></div>
+      <p>{{ t('当前阶段：{stage}', { stage: llmStageText(llmJob.progress?.stage) }) }} · {{ t('已完成 {completed}/{total} 个阶段', { completed: llmProgress.completed, total: llmProgress.total }) }}</p>
+    </div>
+    <div class="notice" v-if="snapshotId && !llmLoaded && !llmJobActive">
       {{ t('业务描述、业务规则、错误目录和状态机需要 LLM，可通过页面顶部“LLM 设置”配置，仅在点击抽取时调用。') }}
+    </div>
+    <div class="llm-error" v-if="snapshotId && llmJob?.status === 'failed'">
+      {{ t('LLM 知识抽取失败') }}：{{ llmJob.error_message || t('未知错误') }}
     </div>
 
     <div class="summary-grid" v-if="snapshotId && report">
@@ -76,6 +84,24 @@
 
         <template v-if="activeSection === 'api_contract'">
           <div class="metric">{{ activeData.endpoint_count || 0 }} <small>{{ t('个端点') }}</small></div>
+          <section class="api-prompt-panel" data-testid="api-explanation-settings">
+            <div class="api-prompt-heading"><div><h3>{{ t('API 解释设置') }}</h3><p>{{ t('提示词按当前 Snapshot 保存版本，并可应用到全部端点。模板结果同时供 Agent 设计方案使用。') }}</p></div><span v-if="promptCurrent">{{ t('当前版本') }} v{{ promptCurrent.version }}</span></div>
+            <label class="prompt-field"><span>{{ t('统一业务指导') }}</span><textarea v-model.trim="promptText" rows="3" :placeholder="t('例如：重点关注订单状态变化、库存扣减和异常处理')"></textarea></label>
+            <label class="prompt-field"><span>{{ t('自身源码 / 代码块模板') }}</span><textarea v-model="promptTemplates.local" rows="10"></textarea></label>
+            <label class="prompt-field"><span>{{ t('多代码块合并模板') }}</span><textarea v-model="promptTemplates.synthesis" rows="8"></textarea></label>
+            <label class="prompt-field"><span>{{ t('节点聚合模板') }}</span><textarea v-model="promptTemplates.aggregate" rows="10"></textarea></label>
+            <p class="prompt-hint">{{ t('可用变量：{qualified_name}、{source}、{local_explanation}、{children_explanations}、{guidance} 等；JSON 输出约束不可删除。') }}</p>
+            <div class="api-prompt-actions"><button class="secondary sm" :disabled="promptSaving || !promptReady" @click="savePrompt">{{ promptSaving ? t('保存中...') : t('保存提示词') }}</button><button class="primary sm" :disabled="promptSaving || batchActive || !promptReady" @click="saveAndApplyBatch">{{ batchActive ? t('批量任务进行中') : t('保存并应用到全部端点') }}</button></div>
+            <div v-if="promptError" class="explanation-error">{{ promptError }}</div>
+            <details v-if="promptProfiles.length" class="prompt-history"><summary>{{ t('历史提示词版本（{count}）', { count: promptProfiles.length }) }}</summary><div v-for="profile in promptProfiles" :key="profile.id" class="prompt-history-item"><code>v{{ profile.version }}</code><span>{{ profile.prompt_text }}</span><small>{{ profile.is_current ? t('当前') : '' }}</small></div></details>
+          </section>
+          <section v-if="batchJob" class="batch-card" data-testid="api-explanation-batch">
+            <div class="batch-heading"><div><h3>{{ t('API 解释批量任务') }} <span class="explanation-status" :class="'explanation-' + batchJob.status">{{ batchStatusText(batchJob.status) }}</span></h3><p>{{ t('任务') }} {{ batchJob.id }} · {{ t('提示词版本') }} {{ batchJob.prompt_profile_id ? promptVersion(batchJob.prompt_profile_id) : t('系统默认') }}</p></div><strong>{{ batchJob.progress?.percent || 0 }}%</strong></div>
+            <div class="llm-progress-track"><span :style="{ width: `${batchJob.progress?.percent || 0}%` }"></span></div>
+            <p class="batch-counts">{{ t('已完成 {completed}/{total}', { completed: batchJob.progress?.completed || 0, total: batchJob.progress?.total || 0 }) }} · {{ t('失败 {count}', { count: batchJob.progress?.failed || 0 }) }} · {{ t('跳过 {count}', { count: batchJob.progress?.skipped || 0 }) }} · {{ t('执行中 {count}', { count: batchJob.progress?.running || 0 }) }} · {{ t('取消 {count}', { count: batchJob.progress?.cancelled || 0 }) }}</p>
+            <div class="api-prompt-actions"><button v-if="batchActive" class="secondary sm" @click="cancelBatch">{{ t('取消任务') }}</button><button v-if="batchJob.progress?.failed" class="secondary sm" @click="retryBatch">{{ t('重试失败') }}</button></div>
+            <details class="batch-items"><summary>{{ t('查看端点明细（{count}）', { count: batchJob.items?.length || 0 }) }}</summary><div v-for="item in batchJob.items || []" :key="item.id" class="batch-item"><code>{{ item.method }} {{ item.path }}</code><span class="explanation-status" :class="'explanation-' + item.status">{{ batchStatusText(item.status) }}</span><small v-if="item.explanation_snapshot_id">{{ item.explanation_snapshot_id }}</small><small v-else-if="item.error_message || item.skip_reason">{{ item.error_message || item.skip_reason }}</small></div></details>
+          </section>
           <div class="table-tools">
             <label>{{ t('筛选端点') }}<input v-model.trim="endpointSearch" type="search" :placeholder="t('路径、处理函数或仓库')" @input="endpointPage = 1" /></label>
             <label>{{ t('HTTP 方法') }}<select v-model="endpointMethod" @change="endpointPage = 1"><option value="">{{ t('全部方法') }}</option><option v-for="method in endpointMethods" :key="method">{{ method }}</option></select></label>
@@ -364,6 +390,7 @@ export default {
     return {
       snapshotId,
       report: null, activeSection: 'api_contract', llmLoaded: false,
+      llmJob: null, llmPollTimer: null,
       projectCatalog: [], catalogLoading: false, catalogError: null,
       expandedKeys: new Set(), expandedEntityKeys: new Set(),
       endpointSearch: '', endpointMethod: '', endpointService: '', endpointPage: 1, endpointPageSize: 25,
@@ -373,6 +400,8 @@ export default {
       sequenceZoomScale: 1,
       apiExplanations: {},
       explanationPollTimers: {},
+      promptText: '', promptTemplates: { local: '', synthesis: '', aggregate: '' }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
+      batchJob: null, batchPollTimer: null,
     }
   },
   computed: {
@@ -381,6 +410,16 @@ export default {
     },
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.report?.[this.activeSection] ?? {} },
+    llmJobActive() { return ['pending', 'running'].includes(this.llmJob?.status) },
+    batchActive() { return ['queued', 'running'].includes(this.batchJob?.status) },
+    llmProgress() {
+      const progress = this.llmJob?.progress || {}
+      return {
+        percent: Number(progress.percent || 0),
+        completed: Number(progress.completed || 0),
+        total: Number(progress.total || 4),
+      }
+    },
     summaryCards() {
       return [
         { key: 'api_contract', label: this.t('API 端点'), value: this.report.api_contract?.endpoint_count ?? 0 },
@@ -403,6 +442,7 @@ export default {
     endpointPages() { return Math.max(1, Math.ceil(this.filteredEndpoints.length / this.endpointPageSize)) },
     endpointMethods() { return [...new Set((this.report?.api_contract?.endpoints || []).map(item => item.method).filter(Boolean))].sort() },
     endpointServices() { return [...new Set((this.report?.api_contract?.endpoints || []).map(item => item.repository).filter(Boolean))].sort() },
+    promptReady() { return Boolean(this.promptText.trim() || Object.values(this.promptTemplates).some(value => String(value || '').trim())) },
   },
   watch: {
     '$route': {
@@ -412,6 +452,10 @@ export default {
         this.snapshotId = snapshotId
         this.report = null
         this.llmLoaded = false
+        this.llmJob = null
+        this.clearLlmPoll()
+        this.promptText = ''; this.promptTemplates = { local: '', synthesis: '', aggregate: '' }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
+        this.batchJob = null; this.clearBatchPoll()
         this.businessRules = {}
         this.projectCatalog = []
         this.error = null
@@ -434,6 +478,8 @@ export default {
     }
   },
   beforeUnmount() {
+    this.clearLlmPoll()
+    this.clearBatchPoll()
     for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
   },
   methods: {
@@ -482,10 +528,14 @@ export default {
       }
       await this.$runAsync(async () => {
         this.report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: includeLlm })
+        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus()])
         for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
         this.explanationPollTimers = {}
         this.apiExplanations = {}
-        this.llmLoaded = includeLlm
+        this.llmJob = this.report?.llm_job || null
+        this.llmLoaded = Boolean(this.report?.llm_job?.status === 'completed' || (includeLlm && !this.report?.llm_job))
+        if (this.llmJobActive) this.scheduleLlmPoll()
+        else this.clearLlmPoll()
         this.endpointPage = 1
         this.endpointService = ''
         this.expandedKeys = new Set()
@@ -494,9 +544,107 @@ export default {
         this.loadDuration = Math.round(performance.now() - started)
       })
     },
+    async loadPromptProfiles() {
+      if (!this.snapshotId) return
+      try {
+        const data = await this.$api.get('/api/api-explanation-prompts', { repository_snapshot_id: this.snapshotId })
+        this.promptCurrent = data?.current || null
+        this.promptProfiles = data?.profiles || []
+        this.promptText = this.promptCurrent?.prompt_text || ''
+        this.promptTemplates = { ...(data?.defaults || {}), ...(this.promptCurrent?.prompt_templates || {}) }
+      } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('读取提示词失败') }
+    },
+    async savePrompt() {
+      if (!this.snapshotId || !this.promptReady) return
+      this.promptSaving = true; this.promptError = ''
+      try {
+        const data = await this.$api.request('/api/api-explanation-prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_text: this.promptText, templates: this.promptTemplates }) })
+        this.promptCurrent = data.profile; this.promptProfiles = [data.profile, ...this.promptProfiles.filter(item => item.id !== data.profile.id)]
+      } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('保存提示词失败') }
+      finally { this.promptSaving = false }
+    },
+    async saveAndApplyBatch() {
+      if (!this.snapshotId || !this.promptReady || this.batchActive) return
+      const count = this.report?.api_contract?.endpoint_count || 0
+      if (!window.confirm(this.t('将为 {count} 个 API 端点生成解释，可能产生模型调用费用。是否继续？', { count }))) return
+      this.promptSaving = true; this.promptError = ''
+      try {
+        const prompt = await this.$api.request('/api/api-explanation-prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_text: this.promptText, templates: this.promptTemplates }) })
+        this.promptCurrent = prompt.profile; this.promptProfiles = [prompt.profile, ...this.promptProfiles.filter(item => item.id !== prompt.profile.id)]
+        const response = await this.$api.request('/api/api-explanations/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_profile_id: prompt.profile.id, mode: 'all', concurrency: 2 }) })
+        this.batchJob = response?.batch || response
+        if (this.batchActive) this.scheduleBatchPoll()
+      } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('创建批量任务失败') }
+      finally { this.promptSaving = false }
+    },
+    async loadBatchStatus() {
+      if (!this.snapshotId) return
+      try {
+        const data = await this.$api.get('/api/api-explanations/batches', { repository_snapshot_id: this.snapshotId })
+        const batches = data?.batches || []
+        this.batchJob = batches.find(item => ['queued', 'running'].includes(item.status)) || batches[0] || null
+        if (this.batchActive) this.scheduleBatchPoll(); else this.clearBatchPoll()
+      } catch (err) { /* Batch history is optional for older servers. */ }
+    },
+    scheduleBatchPoll() { this.clearBatchPoll(); this.batchPollTimer = setTimeout(() => this.refreshBatchStatus(), 1200) },
+    clearBatchPoll() { if (this.batchPollTimer) clearTimeout(this.batchPollTimer); this.batchPollTimer = null },
+    async refreshBatchStatus() {
+      this.batchPollTimer = null
+      if (!this.batchJob?.id) return
+      try { const data = await this.$api.get(`/api/api-explanations/batches/${encodeURIComponent(this.batchJob.id)}`); this.batchJob = data?.batch || data } catch (err) { /* retry below */ }
+      if (this.batchActive) this.scheduleBatchPoll()
+    },
+    async cancelBatch() {
+      if (!this.batchJob?.id || !window.confirm(this.t('确定取消当前批量任务吗？'))) return
+      try { const data = await this.$api.request(`/api/api-explanations/batches/${encodeURIComponent(this.batchJob.id)}/cancel`, { method: 'POST' }); this.batchJob = data?.batch || data } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('取消任务失败') }
+    },
+    async retryBatch() {
+      if (!this.batchJob?.id) return
+      try { const data = await this.$api.request(`/api/api-explanations/batches/${encodeURIComponent(this.batchJob.id)}/retry-failed`, { method: 'POST' }); this.batchJob = data?.batch || data; this.scheduleBatchPoll() } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('重试失败端点失败') }
+    },
+    promptVersion(profileId) { const profile = this.promptProfiles.find(item => item.id === profileId); return profile ? `v${profile.version}` : profileId },
+    batchStatusText(status) { return this.t(({ queued: '排队中', running: '生成中', completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消', skipped: '已跳过' })[status] || status || '') },
     async loadLlm() {
       if (!window.confirm(this.t('LLM 知识抽取可能需要较长时间并产生 API 调用费用，是否继续？'))) return
-      await this.load(true)
+      if (!this.snapshotId || this.llmJobActive) return
+      try {
+        const response = await this.$api.request('/api/knowledge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ snapshot_id: this.snapshotId }),
+        })
+        this.llmJob = response?.job || response || null
+        this.llmLoaded = this.llmJob?.status === 'completed'
+        await this.load(true)
+        if (this.llmJobActive) this.scheduleLlmPoll()
+      } catch (err) {
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('抽取 LLM 知识失败')
+        this.error = { message: detail }
+      }
+    },
+    llmStageText(stage) {
+      return this.t(({ starting: '准备中', queued: '排队中', business_descriptions: '业务描述', business_rules: '业务规则', error_catalog: '错误目录', state_machines: '状态机', completed: '已完成', failed: '失败' })[stage] || stage || '排队中')
+    },
+    clearLlmPoll() {
+      if (this.llmPollTimer) clearTimeout(this.llmPollTimer)
+      this.llmPollTimer = null
+    },
+    scheduleLlmPoll() {
+      this.clearLlmPoll()
+      this.llmPollTimer = setTimeout(() => this.refreshLlmStatus(), 1200)
+    },
+    async refreshLlmStatus() {
+      this.llmPollTimer = null
+      if (!this.snapshotId) return
+      try {
+        const report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: false })
+        this.report = report
+        this.llmJob = report?.llm_job || null
+        this.llmLoaded = this.llmJob?.status === 'completed'
+        if (this.llmJobActive) this.scheduleLlmPoll()
+      } catch (err) {
+        if (this.llmJobActive) this.scheduleLlmPoll()
+      }
     },
     isDisabled(value) { return Boolean(value && !Array.isArray(value) && value.note) },
     formatJson(value) { return JSON.stringify(value, null, 2) },
@@ -831,6 +979,12 @@ button:disabled { opacity: .55; cursor: wait; }
 .primary { background: #e94560; color: white; }
 .secondary { background: #ececf2; color: #333; }
 .notice { background: #fff8e1; color: #795c12; border: 1px solid #ffe6a3; border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 16px; }
+.llm-progress { background: #eef7ff; color: #2a6496; border: 1px solid #cfe5f8; border-radius: 6px; padding: 11px 14px; font-size: 13px; margin-bottom: 16px; }
+.llm-progress-heading { display: flex; justify-content: space-between; gap: 12px; }
+.llm-progress-track { height: 7px; margin: 8px 0 6px; overflow: hidden; border-radius: 5px; background: #dbeaf6; }
+.llm-progress-track span { display: block; height: 100%; border-radius: inherit; background: #388ac2; transition: width .25s ease; }
+.llm-progress p, .llm-error { margin: 0; font-size: 11px; }
+.llm-error { margin-bottom: 16px; padding: 10px 14px; border: 1px solid #f2c5ce; border-radius: 6px; background: #fff0f2; color: #b8324a; }
 .summary-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 18px; }
 .summary-card { border: 1px solid #eee; background: white; border-radius: 8px; padding: 16px; text-align: left; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 .summary-card.active { border-color: #e94560; box-shadow: 0 0 0 1px #e94560; }
@@ -912,6 +1066,26 @@ td code { color: #666; word-break: break-all; }
 .muted { color: #aaa; font-size: 11px; }
 .repo-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 8px; background: #fff0f2; color: #c82d48; font-size: 9px; }
 .api-explanation-section { margin-top: 16px; border-top: 1px solid #e2e2e8; padding-top: 12px; }
+.api-prompt-panel, .batch-card { margin: 0 0 16px; padding: 13px; border: 1px solid #e2e5eb; border-radius: 7px; background: #fafafd; }
+.api-prompt-heading, .batch-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.api-prompt-heading h3, .batch-heading h3 { margin: 0 0 4px; font-size: 13px; color: #333; }
+.api-prompt-heading p, .batch-heading p { margin: 0; color: #888; font-size: 11px; }
+.api-prompt-heading > span { color: #2a6496; font-size: 11px; }
+.api-prompt-panel textarea { width: 100%; margin: 10px 0 8px; border: 1px solid #cfd3da; border-radius: 5px; padding: 8px; font: 12px/1.5 sans-serif; resize: vertical; }
+.prompt-field { display: block; margin-top: 10px; color: #555; font-size: 11px; }
+.prompt-field span { display: block; margin-bottom: 4px; font-weight: 600; }
+.prompt-field textarea { margin: 0; min-height: 96px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.prompt-hint { margin: 6px 0 8px; color: #888; font-size: 10px; line-height: 1.45; }
+.api-prompt-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.prompt-history, .batch-items { margin-top: 10px; font-size: 11px; }
+.prompt-history summary, .batch-items summary { cursor: pointer; color: #555; }
+.prompt-history-item, .batch-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #e8e8ed; }
+.prompt-history-item:first-of-type, .batch-item:first-of-type { margin-top: 6px; }
+.prompt-history-item span { flex: 1; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prompt-history-item small, .batch-item small { color: #999; }
+.batch-heading > strong { color: #388ac2; font-size: 20px; }
+.batch-counts { margin: 8px 0; color: #666; font-size: 11px; }
+.batch-item code { min-width: 210px; }
 .api-explanation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .api-explanation-heading h4 { margin-bottom: 3px; font-size: 13px; color: #333; }
 .api-explanation-actions { display: flex; gap: 6px; flex-shrink: 0; }

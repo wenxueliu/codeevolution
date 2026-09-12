@@ -116,3 +116,54 @@ def test_managed_process_requires_instance_nonce(monkeypatch, tmp_path):
 
     monkeypatch.setattr(service, "process_command_line", lambda _pid: "python -m codeevolution.cli web nonce-other")
     assert not service._managed_process_matches(321)
+
+
+def test_stop_waits_for_port_release_after_leader_exits(monkeypatch, tmp_path):
+    pid_file = tmp_path / "codeevolution.pid"
+    pid_file.write_text(
+        json.dumps(
+            {
+                "pid": 321,
+                "started": 99,
+                "nonce": "nonce-123",
+                "command": service.server_command("127.0.0.1", 8765, "nonce-123"),
+                "host": "127.0.0.1",
+                "port": 8765,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "PID_FILE", pid_file)
+    monkeypatch.setattr(service, "LEGACY_PID_FILE", tmp_path / "legacy.pid")
+    monkeypatch.setattr(service, "inspect_process", lambda _pid: "running")
+    monkeypatch.setattr(service, "process_start_time", lambda _pid: 99)
+    monkeypatch.setattr(service, "_managed_process_matches", lambda _pid: True)
+    monkeypatch.setattr(service, "process_exists", lambda _pid: False)
+    monkeypatch.setattr(service, "terminate_process", lambda *_args, **_kwargs: None)
+    availability = iter((False, True))
+    monkeypatch.setattr(service, "port_is_available", lambda *_args: next(availability))
+    monkeypatch.setattr(service.time, "sleep", lambda _seconds: None)
+
+    service.stop()
+
+    assert not pid_file.exists()
+
+
+def test_stop_reports_stale_listener_when_leader_is_already_gone(monkeypatch, tmp_path):
+    pid_file = tmp_path / "codeevolution.pid"
+    pid_file.write_text(
+        json.dumps({"pid": 321, "host": "127.0.0.1", "port": 8765}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "PID_FILE", pid_file)
+    monkeypatch.setattr(service, "LEGACY_PID_FILE", tmp_path / "legacy.pid")
+    monkeypatch.setattr(service, "inspect_process", lambda _pid: "stopped")
+    monkeypatch.setattr(service, "port_is_available", lambda *_args: False)
+
+    try:
+        service.stop()
+    except RuntimeError as error:
+        assert "still occupied" in str(error)
+    else:
+        raise AssertionError("stale listener should not be reported as stopped")
+    assert pid_file.exists()

@@ -6,6 +6,13 @@ from ..infrastructure.llm_config_store import LLMConfigStore
 from ..paths import environment_value
 
 
+def _environment_bool(name: str, default: bool = False) -> bool:
+    value = environment_value(name)
+    if not value:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def get_environment_llm_config() -> dict | None:
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -17,6 +24,9 @@ def get_environment_llm_config() -> dict | None:
         "api_key": api_key,
         "model": model,
         "api_base": environment_value("CODEEVOLUTION_LLM_BASE"),
+        "disable_ssl_verification": _environment_bool(
+            "CODEEVOLUTION_LLM_DISABLE_SSL"
+        ),
     }
 
 
@@ -34,6 +44,9 @@ def get_llm_config_status() -> dict:
         "source": "environment" if environment else ("page" if stored else "none"),
         "model": effective.get("model", "") if effective else "",
         "api_base": effective.get("api_base", "") if effective else "",
+        "disable_ssl_verification": bool(
+            effective and effective.get("disable_ssl_verification", False)
+        ),
         "api_key_configured": bool(effective and effective.get("api_key")),
         "stored_configured": stored is not None,
         "environment_override": environment is not None,

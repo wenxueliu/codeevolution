@@ -48,6 +48,8 @@ class LLMConfigStore:
         }
         if "disable_thinking" in data:
             result["disable_thinking"] = bool(data["disable_thinking"])
+        if "disable_ssl_verification" in data:
+            result["disable_ssl_verification"] = bool(data["disable_ssl_verification"])
         if "context_window" in data:
             result["context_window"] = _optional_int(data["context_window"])
         if "max_output_tokens" in data:
@@ -66,9 +68,18 @@ class LLMConfigStore:
             "model": model,
             "api_base": str(config.get("api_base") or "").strip(),
         }
-        for key in ("disable_thinking", "context_window", "max_output_tokens"):
+        for key in (
+            "disable_thinking",
+            "disable_ssl_verification",
+            "context_window",
+            "max_output_tokens",
+        ):
             if key in config:
-                payload[key] = bool(config[key]) if key == "disable_thinking" else _optional_int(config[key])
+                payload[key] = (
+                    bool(config[key])
+                    if key in {"disable_thinking", "disable_ssl_verification"}
+                    else _optional_int(config[key])
+                )
         ensure_supported_storage_path(self.path.parent)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(

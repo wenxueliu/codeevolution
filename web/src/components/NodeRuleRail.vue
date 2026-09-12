@@ -31,11 +31,11 @@
           </div>
           <section class="nrr-api-card">
             <h4>{{ t('节点自身翻译') }}</h4>
-            <p>{{ explanationSummary(explanationNode.local_explanation) || t('暂无节点自身解释') }}</p>
+            <p>{{ explanationSummary(explanationNode.local_explanation) || nodeExplanationFallback(explanationNode, 'local') }}</p>
           </section>
           <details class="nrr-api-card" open v-if="explanationNode.aggregate_explanation">
             <summary>{{ t('节点聚合结果') }}</summary>
-            <p>{{ explanationSummary(explanationNode.aggregate_explanation) || t('暂无聚合解释') }}</p>
+            <p>{{ explanationSummary(explanationNode.aggregate_explanation) || nodeExplanationFallback(explanationNode, 'aggregate') }}</p>
             <ol v-if="explanationSteps(explanationNode.aggregate_explanation).length">
               <li v-for="(step, index) in explanationSteps(explanationNode.aggregate_explanation)" :key="index">{{ stepText(step) }}</li>
             </ol>
@@ -197,8 +197,19 @@ function explanationSteps(value) {
   return parsed.main_flow || parsed.business_flow || parsed.business_flow_zh || parsed.steps || []
 }
 
+function nodeExplanationFallback(node, kind) {
+  const issues = props.explanationSnapshot?.coverage?.issues || []
+  const issue = issues.find((item) => item.node_key === node.node_key)
+  if (issue?.code === 'source_incomplete') return t('该节点源码未完整纳入快照，无法生成完整解释')
+  if (issue?.code === 'local_explanation_missing') return t('该节点没有可用源码片段，模型无法生成解释')
+  if (issue?.code === 'aggregate_explanation_missing' || kind === 'aggregate') return t('模型未返回该节点的聚合解释')
+  return t('模型未返回可显示的节点解释')
+}
+
 function stepText(step) {
-  return typeof step === 'string' ? step : (step.detail || step.summary || step.title || JSON.stringify(step))
+  return typeof step === 'string'
+    ? step
+    : (step.detail || step.action || step.flow || step.rule || step.description || step.summary || step.title || step.text || JSON.stringify(step))
 }
 
 async function loadGraphNode() {

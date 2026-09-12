@@ -8,10 +8,12 @@ pointer.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,8 @@ PUBLISHABLE_STATUSES = frozenset({"completed", "partial"})
 KNOWN_STATUSES = frozenset(
     {"pending", "running", "validating", "completed", "partial", "failed", "cancelled"}
 )
+BATCH_STATUSES = frozenset({"queued", "running", "completed", "partial", "failed", "cancelled"})
+BATCH_ITEM_STATUSES = frozenset({"queued", "running", "completed", "failed", "skipped", "cancelled"})
 
 
 class SnapshotStateError(ValueError):
@@ -57,8 +61,10 @@ CREATE TABLE IF NOT EXISTS explanation_snapshots (
     statistics TEXT NOT NULL DEFAULT '{}',
     error TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
-    completed_at INTEGER
-    ,repository_snapshot_id TEXT
+    completed_at INTEGER,
+    repository_snapshot_id TEXT,
+    prompt_profile_id TEXT NOT NULL DEFAULT '',
+    prompt_digest TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_explanation_snapshots_endpoint
     ON explanation_snapshots(repo_name, member_name, api_key, created_at DESC);
@@ -108,6 +114,70 @@ CREATE TABLE IF NOT EXISTS current_explanation_snapshots (
     PRIMARY KEY (repo_name, member_name, api_key),
     FOREIGN KEY (snapshot_id) REFERENCES explanation_snapshots(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS api_explanation_prompt_profiles (
+    id TEXT PRIMARY KEY,
+    repository_snapshot_id TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    prompt_templates TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL,
+    prompt_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    created_by TEXT NOT NULL DEFAULT 'web',
+    is_current INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(repository_snapshot_id, version),
+    UNIQUE(repository_snapshot_id, prompt_digest)
+);
+CREATE INDEX IF NOT EXISTS idx_api_prompt_profiles_snapshot
+    ON api_explanation_prompt_profiles(repository_snapshot_id, version DESC);
+
+CREATE TABLE IF NOT EXISTS api_explanation_batch_jobs (
+    id TEXT PRIMARY KEY,
+    repository_snapshot_id TEXT NOT NULL,
+    prompt_profile_id TEXT NOT NULL DEFAULT '',
+    prompt_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    total_count INTEGER NOT NULL DEFAULT 0,
+    completed_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    running_count INTEGER NOT NULL DEFAULT 0,
+    cancelled_count INTEGER NOT NULL DEFAULT 0,
+    concurrency INTEGER NOT NULL DEFAULT 2,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    retry_of_job_id TEXT,
+    requested_at INTEGER NOT NULL,
+    started_at INTEGER,
+    completed_at INTEGER,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_api_batch_jobs_snapshot
+    ON api_explanation_batch_jobs(repository_snapshot_id, requested_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_api_batch_active
+    ON api_explanation_batch_jobs(repository_snapshot_id, prompt_digest)
+    WHERE status IN ('queued', 'running');
+
+CREATE TABLE IF NOT EXISTS api_explanation_batch_items (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL,
+    endpoint_key TEXT NOT NULL,
+    method TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    handler TEXT NOT NULL DEFAULT '',
+    file TEXT NOT NULL DEFAULT '',
+    line INTEGER,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    explanation_snapshot_id TEXT,
+    skip_reason TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at INTEGER,
+    completed_at INTEGER,
+    UNIQUE(batch_id, endpoint_key),
+    FOREIGN KEY (batch_id) REFERENCES api_explanation_batch_jobs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_api_batch_items_batch
+    ON api_explanation_batch_items(batch_id, status, endpoint_key);
 """
 
 
@@ -136,6 +206,11 @@ class ExplanationSnapshotStore:
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(explanation_snapshots)")}
         if "repository_snapshot_id" not in columns:
             self.connection.execute("ALTER TABLE explanation_snapshots ADD COLUMN repository_snapshot_id TEXT")
+        prompt_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(api_explanation_prompt_profiles)")}
+        if "prompt_templates" not in prompt_columns:
+            self.connection.execute(
+                "ALTER TABLE api_explanation_prompt_profiles ADD COLUMN prompt_templates TEXT NOT NULL DEFAULT '{}'"
+            )
         self.connection.commit()
         self._lock = threading.RLock()
 
@@ -150,8 +225,9 @@ class ExplanationSnapshotStore:
                    (id, repo_name, member_name, api_key, method, path, handler,
                     entry_node_key, source_revision, source_digest, graph_digest,
                     model_id, prompt_version, schema_version, status, explanation,
-                    coverage, statistics, error, created_at, completed_at, repository_snapshot_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   coverage, statistics, error, created_at, completed_at, repository_snapshot_id,
+                   prompt_profile_id, prompt_digest)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     stored.id, stored.repo_name, stored.member_name, stored.api_key,
                     stored.method, stored.path, stored.handler, stored.entry_node_key,
@@ -160,6 +236,7 @@ class ExplanationSnapshotStore:
                     stored.status, _dump(stored.explanation), _dump(stored.coverage),
                     _dump(stored.statistics), stored.error, stored.created_at,
                     stored.completed_at, stored.repository_snapshot_id or None,
+                    stored.prompt_profile_id, stored.prompt_digest,
                 ),
             )
         return stored
@@ -406,6 +483,315 @@ class ExplanationSnapshotStore:
                 )
             self.connection.execute("DELETE FROM explanation_snapshots WHERE id = ?", (snapshot_id,))
 
+    # Prompt profiles -------------------------------------------------
+
+    def create_prompt_profile(
+        self, repository_snapshot_id: str, prompt_text: str = "", *,
+        prompt_templates: dict[str, Any] | None = None, created_by: str = "web"
+    ) -> dict[str, Any]:
+        text = " ".join(str(prompt_text or "").split())
+        templates = {
+            key: str(value)
+            for key, value in (prompt_templates or {}).items()
+            if key in {"local", "synthesis", "aggregate"} and str(value).strip()
+        }
+        if not text and not templates:
+            raise ValueError("prompt_text or prompt_templates is required")
+        digest_payload = json.dumps(
+            {"prompt_text": text, "prompt_templates": templates},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        digest = hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()
+        templates_json = _dump(templates)
+        with self._lock, self.connection:
+            existing = self.connection.execute(
+                "SELECT * FROM api_explanation_prompt_profiles WHERE repository_snapshot_id=? AND prompt_digest=?",
+                (repository_snapshot_id, digest),
+            ).fetchone()
+            self.connection.execute(
+                "UPDATE api_explanation_prompt_profiles SET is_current=0 WHERE repository_snapshot_id=?",
+                (repository_snapshot_id,),
+            )
+            if existing:
+                self.connection.execute(
+                    "UPDATE api_explanation_prompt_profiles SET is_current=1 WHERE id=?",
+                    (existing["id"],),
+                )
+                row = self.connection.execute(
+                    "SELECT * FROM api_explanation_prompt_profiles WHERE id=?", (existing["id"],)
+                ).fetchone()
+                return self._prompt_profile(row)
+            version = self.connection.execute(
+                "SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM api_explanation_prompt_profiles WHERE repository_snapshot_id=?",
+                (repository_snapshot_id,),
+            ).fetchone()["next_version"]
+            profile_id = f"prompt-{repository_snapshot_id[:8]}-v{version}-{uuid.uuid4().hex[:8]}"
+            self.connection.execute(
+                """INSERT INTO api_explanation_prompt_profiles
+                   (id, repository_snapshot_id, prompt_text, prompt_templates, version, prompt_digest, created_at, created_by, is_current)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                (profile_id, repository_snapshot_id, text, templates_json, version, digest, int(time.time()), created_by),
+            )
+            row = self.connection.execute(
+                "SELECT * FROM api_explanation_prompt_profiles WHERE id=?", (profile_id,)
+            ).fetchone()
+        return self._prompt_profile(row)
+
+    def list_prompt_profiles(self, repository_snapshot_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT * FROM api_explanation_prompt_profiles WHERE repository_snapshot_id=? ORDER BY version DESC",
+                (repository_snapshot_id,),
+            ).fetchall()
+        return [self._prompt_profile(row) for row in rows]
+
+    def get_prompt_profile(self, profile_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT * FROM api_explanation_prompt_profiles WHERE id=?", (profile_id,)
+            ).fetchone()
+        return self._prompt_profile(row) if row else None
+
+    def get_current_prompt_profile(self, repository_snapshot_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT * FROM api_explanation_prompt_profiles WHERE repository_snapshot_id=? AND is_current=1",
+                (repository_snapshot_id,),
+            ).fetchone()
+        return self._prompt_profile(row) if row else None
+
+    # Batch jobs ------------------------------------------------------
+
+    def get_active_batch(self, repository_snapshot_id: str, prompt_digest: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.connection.execute(
+                """SELECT * FROM api_explanation_batch_jobs
+                   WHERE repository_snapshot_id=? AND prompt_digest=? AND status IN ('queued','running')
+                   ORDER BY requested_at DESC LIMIT 1""",
+                (repository_snapshot_id, prompt_digest),
+            ).fetchone()
+        return self._batch(row, include_items=False) if row else None
+
+    def create_batch(
+        self, repository_snapshot_id: str, prompt_profile_id: str, prompt_digest: str,
+        items: list[dict[str, Any]], *, concurrency: int = 2, retry_of_job_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not 1 <= int(concurrency) <= 5:
+            raise ValueError("concurrency must be between 1 and 5")
+        job_id = f"batch-{uuid.uuid4().hex}"
+        now = int(time.time())
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in items:
+            key = str(item.get("endpoint_key") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(item)
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO api_explanation_batch_jobs
+                   (id, repository_snapshot_id, prompt_profile_id, prompt_digest, status,
+                    total_count, concurrency, retry_of_job_id, requested_at)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)""",
+                (job_id, repository_snapshot_id, prompt_profile_id, prompt_digest,
+                 len(normalized), int(concurrency), retry_of_job_id, now),
+            )
+            for item in normalized:
+                key = str(item.get("endpoint_key") or "")
+                status = str(item.get("status") or "queued")
+                if status not in BATCH_ITEM_STATUSES:
+                    raise ValueError(f"unknown batch item status: {status}")
+                self.connection.execute(
+                    """INSERT INTO api_explanation_batch_items
+                       (id, batch_id, endpoint_key, method, path, handler, file, line, status,
+                        explanation_snapshot_id, skip_reason, error_message, completed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (f"item-{uuid.uuid4().hex}", job_id, key, str(item.get("method") or ""),
+                     str(item.get("path") or ""), str(item.get("handler") or ""),
+                     str(item.get("file") or ""), item.get("line"), status,
+                     item.get("explanation_snapshot_id"), str(item.get("skip_reason") or ""),
+                     str(item.get("error_message") or ""), now if status in {"skipped", "cancelled"} else None),
+                )
+            self._refresh_batch_locked(job_id)
+        return self.get_batch(job_id)  # type: ignore[return-value]
+
+    def list_batches(self, repository_snapshot_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT * FROM api_explanation_batch_jobs WHERE repository_snapshot_id=? ORDER BY requested_at DESC LIMIT ?",
+                (repository_snapshot_id, max(1, min(int(limit), 100))),
+            ).fetchall()
+        return [self._batch(row, include_items=False) for row in rows]
+
+    def get_batch(self, batch_id: str, *, include_items: bool = True) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            items = self.connection.execute(
+                "SELECT * FROM api_explanation_batch_items WHERE batch_id=? ORDER BY endpoint_key",
+                (batch_id,),
+            ).fetchall() if include_items else []
+        return self._batch(row, items=items, include_items=include_items)
+
+    def claim_batch_items(self, batch_id: str, limit: int) -> list[dict[str, Any]]:
+        with self._lock, self.connection:
+            rows = self.connection.execute(
+                "SELECT * FROM api_explanation_batch_items WHERE batch_id=? AND status='queued' ORDER BY endpoint_key LIMIT ?",
+                (batch_id, max(0, int(limit))),
+            ).fetchall()
+            claimed = []
+            for row in rows:
+                now = int(time.time())
+                self.connection.execute(
+                    "UPDATE api_explanation_batch_items SET status='running',attempt_count=attempt_count+1,started_at=?,error_message='' WHERE id=? AND status='queued'",
+                    (now, row["id"]),
+                )
+                claimed.append(dict(row) | {"status": "running", "attempt_count": row["attempt_count"] + 1, "started_at": now})
+            self._refresh_batch_locked(batch_id, force_running=True)
+        return claimed
+
+    def start_batch(self, batch_id: str) -> dict[str, Any]:
+        with self._lock, self.connection:
+            row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
+            if row is None:
+                raise KeyError(batch_id)
+            if row["status"] not in {"queued", "running"}:
+                return self._batch(row)
+            if row["status"] == "queued":
+                self.connection.execute(
+                    "UPDATE api_explanation_batch_jobs SET status='running',started_at=COALESCE(started_at,?) WHERE id=?",
+                    (int(time.time()), batch_id),
+                )
+            self._refresh_batch_locked(batch_id, force_running=True)
+            row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
+        return self._batch(row)
+
+    def update_batch_item(self, item_id: str, status: str, *, explanation_snapshot_id: str | None = None,
+                          error_message: str | None = None, skip_reason: str | None = None) -> dict[str, Any]:
+        if status not in BATCH_ITEM_STATUSES:
+            raise ValueError(f"unknown batch item status: {status}")
+        with self._lock, self.connection:
+            row = self.connection.execute("SELECT * FROM api_explanation_batch_items WHERE id=?", (item_id,)).fetchone()
+            if row is None:
+                raise KeyError(item_id)
+            completed_at = int(time.time()) if status in {"completed", "failed", "skipped", "cancelled"} else None
+            self.connection.execute(
+                """UPDATE api_explanation_batch_items SET status=?, explanation_snapshot_id=COALESCE(?, explanation_snapshot_id),
+                   error_message=COALESCE(?, error_message), skip_reason=COALESCE(?, skip_reason), completed_at=? WHERE id=?""",
+                (status, explanation_snapshot_id, error_message, skip_reason, completed_at, item_id),
+            )
+            self._refresh_batch_locked(row["batch_id"])
+            updated = self.connection.execute("SELECT * FROM api_explanation_batch_items WHERE id=?", (item_id,)).fetchone()
+        return self._batch_item(updated)
+
+    def cancel_batch(self, batch_id: str) -> dict[str, Any]:
+        with self._lock, self.connection:
+            row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
+            if row is None:
+                raise KeyError(batch_id)
+            if row["status"] in {"completed", "partial", "failed", "cancelled"}:
+                return self._batch(row)
+            now = int(time.time())
+            self.connection.execute("UPDATE api_explanation_batch_jobs SET cancel_requested=1 WHERE id=?", (batch_id,))
+            self.connection.execute(
+                "UPDATE api_explanation_batch_items SET status='cancelled',completed_at=? WHERE batch_id=? AND status='queued'",
+                (now, batch_id),
+            )
+            self._refresh_batch_locked(batch_id)
+            row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
+        return self._batch(row)
+
+    def fail_batch(self, batch_id: str, error_message: str) -> dict[str, Any]:
+        with self._lock, self.connection:
+            row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
+            if row is None:
+                raise KeyError(batch_id)
+            self.connection.execute(
+                "UPDATE api_explanation_batch_jobs SET status='failed',error_message=?,completed_at=? WHERE id=?",
+                (error_message, int(time.time()), batch_id),
+            )
+            row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
+        return self._batch(row)
+
+    def recover_interrupted_batches(self) -> list[str]:
+        with self._lock, self.connection:
+            rows = self.connection.execute(
+                "SELECT id FROM api_explanation_batch_jobs WHERE status IN ('queued','running')"
+            ).fetchall()
+            self.connection.execute(
+                "UPDATE api_explanation_batch_items SET status='queued',started_at=NULL WHERE status='running'"
+            )
+            self.connection.execute(
+                "UPDATE api_explanation_batch_jobs SET status='queued',started_at=NULL,running_count=0 WHERE status='running'"
+            )
+        return [row["id"] for row in rows]
+
+    def _refresh_batch_locked(self, batch_id: str, *, force_running: bool = False) -> None:
+        row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
+        if row is None:
+            return
+        counts = {
+            status: self.connection.execute(
+                "SELECT COUNT(*) AS count FROM api_explanation_batch_items WHERE batch_id=? AND status=?",
+                (batch_id, status),
+            ).fetchone()["count"]
+            for status in BATCH_ITEM_STATUSES
+        }
+        status = row["status"]
+        terminal = counts["queued"] == 0 and counts["running"] == 0
+        if terminal:
+            if row["cancel_requested"]:
+                status = "partial" if counts["completed"] else "cancelled"
+            elif counts["failed"] and not counts["completed"]:
+                status = "failed"
+            elif counts["failed"] or counts["skipped"] or counts["cancelled"]:
+                status = "partial"
+            else:
+                status = "completed"
+        elif force_running or status == "running":
+            status = "running"
+        started_at = row["started_at"] or (int(time.time()) if status == "running" else None)
+        completed_at = int(time.time()) if status in BATCH_STATUSES - {"queued", "running"} else None
+        self.connection.execute(
+            """UPDATE api_explanation_batch_jobs SET status=?,total_count=?,completed_count=?,failed_count=?,
+               skipped_count=?,running_count=?,cancelled_count=?,started_at=?,completed_at=? WHERE id=?""",
+            (status, sum(counts.values()), counts["completed"], counts["failed"], counts["skipped"],
+             counts["running"], counts["cancelled"], started_at, completed_at, batch_id),
+        )
+
+    @staticmethod
+    def _prompt_profile(row: sqlite3.Row) -> dict[str, Any]:
+        return {"id": row["id"], "repository_snapshot_id": row["repository_snapshot_id"],
+                "prompt_text": row["prompt_text"],
+                "prompt_templates": _load(row["prompt_templates"] or "{}"),
+                "version": row["version"],
+                "prompt_digest": row["prompt_digest"], "created_at": row["created_at"],
+                "created_by": row["created_by"], "is_current": bool(row["is_current"])}
+
+    @staticmethod
+    def _batch_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        item = dict(row)
+        return item
+
+    def _batch(self, row: sqlite3.Row, *, items=None, include_items: bool = True) -> dict[str, Any]:
+        result = dict(row)
+        result["cancel_requested"] = bool(result.get("cancel_requested"))
+        result["progress"] = {
+            "total": result.get("total_count", 0), "completed": result.get("completed_count", 0),
+            "failed": result.get("failed_count", 0), "skipped": result.get("skipped_count", 0),
+            "running": result.get("running_count", 0), "cancelled": result.get("cancelled_count", 0),
+        }
+        total = result["progress"]["total"]
+        done = sum(result["progress"][key] for key in ("completed", "failed", "skipped", "cancelled"))
+        result["progress"]["percent"] = round(done / total * 100) if total else 100
+        if include_items:
+            result["items"] = [self._batch_item(item) for item in (items if items is not None else [])]
+        return result
+
     def close(self) -> None:
         with self._lock:
             self.connection.close()
@@ -436,6 +822,8 @@ class ExplanationSnapshotStore:
             coverage=_load(row["coverage"]), statistics=_load(row["statistics"]),
             error=row["error"], created_at=row["created_at"], completed_at=row["completed_at"],
             repository_snapshot_id=row["repository_snapshot_id"] or "",
+            prompt_profile_id=row["prompt_profile_id"] or "",
+            prompt_digest=row["prompt_digest"] or "",
         )
 
     @staticmethod

@@ -46,3 +46,15 @@ def test_parent_aggregation_passes_child_facts_and_references():
     assert aggregate["summary"] == "完整流程"
     assert aggregate["children"] == [{"node_key": "Repo.save", "call_line": 2}]
     assert "Repo.save" in client.prompts[-1]
+
+
+def test_custom_prompt_templates_are_rendered_and_agent_fields_are_requested():
+    client = Client(['{"summary":"校验订单","inputs":[{"name":"user"}]}'])
+    service = ExplanationSemanticService(client)
+    service.explain_chunk(
+        {"qualified_name": "Order.create", "file": "order.py"},
+        {"line_start": 10, "line_end": 20, "source": "return user"},
+        guidance="重点关注输入",
+        templates={"local": "CUSTOM {qualified_name} {source} {guidance}"},
+    )
+    assert client.prompts == ["CUSTOM Order.create return user 重点关注输入"]

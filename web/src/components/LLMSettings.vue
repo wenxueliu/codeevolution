@@ -13,7 +13,7 @@
           当前由环境变量配置并优先生效。页面配置可以保存，但需移除环境变量并重启服务后才会启用。
         </div>
         <label>模型名称<input v-model.trim="form.model" required autocomplete="off" placeholder="例如：gpt-4o-mini、anthropic/claude-3-5-sonnet" /></label>
-        <label>API Base <span>可选</span><input v-model.trim="form.api_base" type="url" autocomplete="url" placeholder="例如：https://api.openai.com/v1" /></label>
+        <label>API Base <span>可选，支持 http:// 和 https://</span><input v-model.trim="form.api_base" type="url" autocomplete="url" placeholder="例如：http://localhost:8000/v1" /></label>
         <label>API Key <span>{{ settings.api_key_configured ? '留空则保留现有密钥' : '必填' }}</span><input v-model="form.api_key" :required="!settings.api_key_configured" type="password" autocomplete="new-password" placeholder="不会在页面中回显" /></label>
         <div class="budget-row">
           <label>上下文窗口 Tokens <span>可选，留空自动</span><input v-model.number="form.context_window" type="number" min="1" placeholder="如 32768" /></label>
@@ -22,6 +22,10 @@
         <label class="toggle-row">
           <span>关闭思考 / 推理<small>推理模型会先把 token 预算几乎全部花在"思考"上，导致最终结果为空；开启后让模型直接输出。适用于结构化抽取（业务规则等）。</small></span>
           <input v-model="form.disable_thinking" type="checkbox" :disabled="settings.environment_override" />
+        </label>
+        <label class="toggle-row">
+          <span>关闭 SSL 证书校验<small>HTTP 地址无需证书；仅在 HTTPS 使用自签名证书等场景下关闭。关闭后会降低传输安全性。</small></span>
+          <input v-model="form.disable_ssl_verification" type="checkbox" :disabled="settings.environment_override" />
         </label>
         <p v-if="settings.environment_override" class="toggle-note">当前由环境变量提供配置，此开关不生效；如需调整请在环境侧设置。</p>
         <p class="security-note">密钥保存在 CodeEvolution 数据目录，文件权限为仅当前用户可读写。</p>
@@ -49,7 +53,7 @@ export default {
   components: { UiState },
   emits: ['close', 'saved'],
   props: { open: { type: Boolean, default: false } },
-  data: () => ({ loading: false, saving: false, testing: false, error: '', success: '', settings: {}, form: { model: 'gpt-4o-mini', api_base: '', api_key: '', disable_thinking: true, context_window: null, max_output_tokens: null } }),
+  data: () => ({ loading: false, saving: false, testing: false, error: '', success: '', settings: {}, form: { model: 'gpt-4o-mini', api_base: '', api_key: '', disable_thinking: true, disable_ssl_verification: false, context_window: null, max_output_tokens: null } }),
   computed: {
     busy() { return this.saving || this.testing },
     sourceLabel() { return this.settings.source === 'environment' ? '环境变量' : '页面配置' },
@@ -71,6 +75,7 @@ export default {
           api_base: this.settings.api_base || '',
           api_key: '',
           disable_thinking: this.settings.disable_thinking !== false,
+          disable_ssl_verification: this.settings.disable_ssl_verification === true,
           context_window: toNum(this.settings.context_window),
           max_output_tokens: toNum(this.settings.max_output_tokens),
         }

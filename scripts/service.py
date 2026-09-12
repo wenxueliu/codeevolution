@@ -133,6 +133,47 @@ def _managed_process_matches(pid: int | None) -> bool:
     return isinstance(nonce, str) and bool(nonce) and command_line is not None and nonce in command_line
 
 
+def _service_endpoint(metadata: dict | None) -> tuple[str, int] | None:
+    """Return the endpoint recorded for a managed service instance."""
+    if not metadata:
+        return None
+    host = metadata.get("host")
+    port = metadata.get("port")
+    if not isinstance(host, str) or not host:
+        return None
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= port <= 65535:
+        return None
+    return host, port
+
+
+def _wait_for_service_shutdown(
+    pid: int,
+    endpoint: tuple[str, int] | None,
+    *,
+    timeout: float = 5,
+) -> tuple[bool, bool]:
+    """Wait for the leader and its HTTP endpoint to disappear.
+
+    A process can exit before a descendant releases the listening socket. The
+    old implementation treated the leader's exit as sufficient and could
+    immediately start a second instance while the old one still owned the
+    port. Keep both conditions in the shutdown contract.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        process_stopped = not process_exists(pid)
+        port_released = endpoint is None or port_is_available(*endpoint)
+        if process_stopped and port_released:
+            return True, True
+        if time.monotonic() >= deadline:
+            return process_stopped, port_released
+        time.sleep(0.1)
+
+
 def server_command(host: str, port: int, nonce: str | None = None) -> list[str]:
     python = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     executable = str(python) if python.exists() else sys.executable
@@ -259,15 +300,21 @@ def stop(*, _lock_held: bool = False) -> None:
     lock = nullcontext() if _lock_held else InterProcessLock(PID_FILE.with_name(f"{PID_FILE.name}.lock"))
     with lock:
         pid = read_pid()
+        metadata = read_metadata()
+        endpoint = _service_endpoint(metadata)
         process_state = inspect_process(pid or 0)
         if process_state == "unknown":
             raise RuntimeError(f"service pid={pid} state is unknown; refusing to terminate it")
         if process_state != "running":
+            if endpoint is not None and not port_is_available(*endpoint):
+                host, port = endpoint
+                raise RuntimeError(
+                    f"service pid={pid} is not running but {host}:{port} is still occupied"
+                )
             clear_pid_files()
             print("[codeevolution] not running")
             return
         assert pid is not None
-        metadata = read_metadata()
         expected_start = metadata.get("started") if metadata else None
         actual_start = process_start_time(pid)
         if (
@@ -278,13 +325,16 @@ def stop(*, _lock_held: bool = False) -> None:
         ):
             raise RuntimeError(f"service pid={pid} identity is unknown; refusing to terminate it")
         terminate_process(pid, tree=True, grace_seconds=5)
-        for _ in range(50):
-            if not process_exists(pid):
-                clear_pid_files()
-                print(f"[codeevolution] stopped pid={pid}")
-                return
-            time.sleep(0.1)
-        raise RuntimeError(f"service pid={pid} did not stop within 5 seconds")
+        process_stopped, port_released = _wait_for_service_shutdown(pid, endpoint)
+        if not process_stopped:
+            raise RuntimeError(f"service pid={pid} did not stop within 5 seconds")
+        if not port_released:
+            host, port = endpoint or ("", 0)
+            raise RuntimeError(
+                f"service pid={pid} stopped but {host}:{port} is still occupied"
+            )
+        clear_pid_files()
+        print(f"[codeevolution] stopped pid={pid}")
 
 
 def restart(host: str, port: int, should_build: bool = True) -> None:
@@ -296,6 +346,8 @@ def restart(host: str, port: int, should_build: bool = True) -> None:
 
 def status() -> None:
     pid = read_pid()
+    metadata = read_metadata()
+    endpoint = _service_endpoint(metadata)
     process_state = inspect_process(pid or 0)
     if process_state == "unknown":
         state = f"unknown (pid={pid}; process access was denied)"
@@ -304,11 +356,13 @@ def status() -> None:
     elif not _managed_process_matches(pid):
         state = f"unknown (pid={pid}; refusing to manage it)"
     else:
-        metadata = read_metadata() or {}
+        metadata = metadata or {}
         host = str(metadata.get("host") or "127.0.0.1")
         port = int(metadata.get("port") or 8765)
         ready = api_is_ready(host, port)
         state = f"running/ready (pid={pid})" if ready else f"running/unhealthy (pid={pid})"
+    if process_state != "running" and endpoint is not None and not port_is_available(*endpoint):
+        state = f"{state}; port occupied ({endpoint[0]}:{endpoint[1]})"
     print(f"[codeevolution] {state}; log={LOG_FILE}")
 
 

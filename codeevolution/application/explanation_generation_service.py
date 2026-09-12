@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import uuid
 from dataclasses import asdict
@@ -17,8 +18,8 @@ from ..domain.explanation import (
     ExplanationSnapshot,
 )
 
-PROMPT_VERSION = "api-explanation-v1"
-SCHEMA_VERSION = "api-explanation-v1"
+PROMPT_VERSION = "api-explanation-v2"
+SCHEMA_VERSION = "api-explanation-v2"
 CHUNKER_VERSION = "semantic-lines-v1"
 
 
@@ -41,6 +42,9 @@ class ExplanationGenerationService:
         frozen = self.source_loader.load(spec)
         frozen["_generation_spec"] = dict(spec)
         snapshot_id = uuid.uuid4().hex
+        prompt_text = str(spec.get("_prompt_text") or "")
+        prompt_version = str(spec.get("_prompt_version") or "system-default")
+        prompt_digest = str(spec.get("_prompt_digest") or _digest(prompt_text))
         self.store.create_snapshot(
             ExplanationSnapshot(
                 id=snapshot_id,
@@ -55,9 +59,11 @@ class ExplanationGenerationService:
                 source_digest=frozen["source_digest"],
                 graph_digest=frozen["graph_digest"],
                 model_id=self.model_id,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=prompt_version,
                 schema_version=SCHEMA_VERSION,
                 repository_snapshot_id=str(spec.get("repository_snapshot_id", "")),
+                prompt_profile_id=str(spec.get("_prompt_profile_id") or ""),
+                prompt_digest=prompt_digest,
             )
         )
         return snapshot_id, frozen
@@ -104,6 +110,10 @@ class ExplanationGenerationService:
         statuses: dict[str, str] = {}
         model_calls = 0
         reused_local = 0
+        generation_spec = frozen.get("_generation_spec", {})
+        prompt_text = str(generation_spec.get("_prompt_text") or "")
+        prompt_templates = generation_spec.get("_prompt_templates")
+        prompt_digest = str(generation_spec.get("_prompt_digest") or _digest(prompt_text, prompt_templates or {}))
 
         # Local explanations are independent and must all exist before an SCC
         # can aggregate its internal cycle references.
@@ -112,7 +122,7 @@ class ExplanationGenerationService:
                 return
             node = nodes[node_id]
             local_digest = _digest(
-                node["source_hash"], self.model_id, PROMPT_VERSION, SCHEMA_VERSION, CHUNKER_VERSION
+                node["source_hash"], self.model_id, prompt_digest, SCHEMA_VERSION, CHUNKER_VERSION
             )
             local_digest_by_id[node_id] = local_digest
             previous = reusable.get(node["node_key"])
@@ -144,7 +154,10 @@ class ExplanationGenerationService:
                 else:
                     chunk_rows = []
                     for chunk in chunking.chunks:
-                        explanation = self.semantic.explain_chunk(node, asdict(chunk))
+                        explanation = self._semantic_call(
+                            self.semantic.explain_chunk, node, asdict(chunk), guidance=prompt_text,
+                            templates=prompt_templates,
+                        )
                         model_calls += 1
                         chunk_rows.append(
                             {
@@ -153,7 +166,10 @@ class ExplanationGenerationService:
                                 "status": "completed",
                             }
                         )
-                    local_by_id[node_id] = self.semantic.synthesize_local(node, chunk_rows)
+                    local_by_id[node_id] = self._semantic_call(
+                        self.semantic.synthesize_local, node, chunk_rows, guidance=prompt_text,
+                        templates=prompt_templates,
+                    )
                     if len(chunk_rows) > 1:
                         model_calls += 1
                     statuses[node_id] = "completed" if chunking.source_complete else "partial"
@@ -215,14 +231,17 @@ class ExplanationGenerationService:
                 local_digest_by_id[node_id],
                 sorted(child_digests),
                 [(edge["target"], edge.get("call_line")) for edge in edge_by_parent.get(node_id, [])],
-                PROMPT_VERSION,
+                prompt_digest,
             )
             aggregate_digest_by_id[node_id] = aggregate_digest
             previous = reusable.get(node["node_key"])
             if previous and previous.aggregate_digest == aggregate_digest:
                 aggregate = previous.aggregate_explanation
             else:
-                aggregate = self.semantic.aggregate_node(node, local_by_id[node_id], child_rows)
+                aggregate = self._semantic_call(
+                    self.semantic.aggregate_node, node, local_by_id[node_id], child_rows, guidance=prompt_text,
+                    templates=prompt_templates,
+                )
                 if child_rows:
                     model_calls += 1
             aggregate_by_id[node_id] = aggregate
@@ -325,6 +344,27 @@ class ExplanationGenerationService:
     def _compatible(self, snapshot) -> bool:
         return (
             snapshot.model_id == self.model_id
-            and snapshot.prompt_version == PROMPT_VERSION
             and snapshot.schema_version == SCHEMA_VERSION
+            and bool(getattr(snapshot, "prompt_digest", ""))
         )
+
+    @staticmethod
+    def _semantic_call(method, *args, guidance: str, templates=None):
+        """Call semantic implementations while keeping older test stubs compatible."""
+        kwargs = {}
+        try:
+            parameters = inspect.signature(method).parameters
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            if guidance and (accepts_kwargs or "guidance" in parameters):
+                kwargs["guidance"] = guidance
+            if templates and (accepts_kwargs or "templates" in parameters):
+                kwargs["templates"] = templates
+        except (TypeError, ValueError):
+            if guidance:
+                kwargs["guidance"] = guidance
+            if templates:
+                kwargs["templates"] = templates
+        return method(*args, **kwargs)

@@ -2,6 +2,8 @@
 
 import os
 import stat
+import sys
+import types
 
 import pytest
 
@@ -13,6 +15,7 @@ from codeevolution.api import (
     save_llm_settings,
 )
 from codeevolution.infrastructure.llm_config_store import LLMConfigStore
+from codeevolution.semantic.client import OpenAILLMClient
 from codeevolution.semantic.config import get_llm_config
 
 
@@ -25,6 +28,8 @@ def no_environment_llm(monkeypatch):
         "CODEEVOLUTION_LLM_BASE",
         "CODEHISTORY_LLM_MODEL",
         "CODEHISTORY_LLM_BASE",
+        "CODEEVOLUTION_LLM_DISABLE_SSL",
+        "CODEHISTORY_LLM_DISABLE_SSL",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -32,7 +37,12 @@ def no_environment_llm(monkeypatch):
 def test_store_round_trip_is_private_and_atomic(tmp_path):
     path = tmp_path / "llm-config.json"
     store = LLMConfigStore(path)
-    expected = {"api_key": "secret", "model": "openai/test", "api_base": "https://llm.test/v1"}
+    expected = {
+        "api_key": "secret",
+        "model": "openai/test",
+        "api_base": "https://llm.test/v1",
+        "disable_ssl_verification": True,
+    }
     assert store.save(expected) == expected
     assert store.load() == expected
     if os.name != "nt":
@@ -59,6 +69,7 @@ def test_legacy_environment_configuration_remains_supported(monkeypatch):
         "api_key": "environment",
         "model": "legacy-model",
         "api_base": "https://legacy.test/v1",
+        "disable_ssl_verification": False,
     }
 
 
@@ -66,13 +77,64 @@ def test_api_never_returns_key_and_blank_update_retains_it(tmp_path):
     store = LLMConfigStore(tmp_path / "config.json")
     token = _request_dependencies.set({"llm_config_store": store})
     try:
-        save_llm_settings(LLMConfigRequest(model="model-a", api_key="secret"))
+        save_llm_settings(
+            LLMConfigRequest(
+                model="model-a", api_key="secret", disable_ssl_verification=True
+            )
+        )
         response = get_llm_settings()
         assert response["api_key_configured"] is True
+        assert response["disable_ssl_verification"] is True
         assert "api_key" not in response
 
         save_llm_settings(LLMConfigRequest(model="model-b", api_key=""))
-        assert store.load() == {"api_key": "secret", "model": "model-b", "api_base": ""}
+        assert store.load() == {
+            "api_key": "secret",
+            "model": "model-b",
+            "api_base": "",
+            "disable_ssl_verification": True,
+        }
         assert delete_llm_settings() == {"ok": True, "deleted": True}
     finally:
         _request_dependencies.reset(token)
+
+
+def test_client_supports_http_and_explicitly_disables_ssl_verification(monkeypatch):
+    observed = {}
+
+    class FakeHttpClient:
+        def __init__(self, **kwargs):
+            observed["http_client_kwargs"] = kwargs
+
+        def close(self):
+            observed["closed"] = True
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            observed["request"] = kwargs
+            return types.SimpleNamespace(
+                choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="OK"))]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            observed["client"] = kwargs
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(Client=FakeHttpClient))
+
+    result = OpenAILLMClient(
+        {
+            "api_key": "secret",
+            "model": "local-model",
+            "api_base": "http://localhost:8000/v1",
+            "disable_ssl_verification": True,
+            "disable_thinking": False,
+        }
+    ).complete("Reply with exactly: OK")
+
+    assert result == "OK"
+    assert observed["client"]["base_url"] == "http://localhost:8000/v1"
+    assert observed["http_client_kwargs"] == {"verify": False}
+    assert observed["closed"] is True

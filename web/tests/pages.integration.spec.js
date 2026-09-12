@@ -209,12 +209,13 @@ describe('repository and knowledge pages', () => {
 
   it('loads, saves and tests page-managed LLM configuration without exposing a key', async () => {
     const { wrapper, api } = mountPage(LLMSettings, {
-      '/api/llm-config': { available: true, source: 'page', model: 'openai/test', api_base: 'https://llm.test/v1', api_key_configured: true, stored_configured: true },
+      '/api/llm-config': { available: true, source: 'page', model: 'openai/test', api_base: 'http://llm.test/v1', api_key_configured: true, stored_configured: true, disable_ssl_verification: true },
       '/api/llm-config/test': { ok: true, message: '连接成功', model: 'openai/test' },
     }, { open: true })
     await flushPromises()
     expect(wrapper.text()).toContain('页面配置')
     expect(wrapper.find('input[type="password"]').element.value).toBe('')
+    expect(wrapper.findAll('input[type="checkbox"]')[1].element.checked).toBe(true)
     await wrapper.find('form').trigger('submit')
     await flushPromises()
     expect(api.request).toHaveBeenCalledWith('/api/llm-config', expect.objectContaining({ method: 'PUT' }))
@@ -478,7 +479,7 @@ describe('repository and knowledge pages', () => {
     await wrapper.find('.primary').trigger('click')
     await flushPromises()
     expect(confirm).toHaveBeenCalled()
-    expect(api.get).toHaveBeenLastCalledWith('/api/knowledge', { snapshot_id: 'test-snapshot', include_llm: true })
+    expect(api.get).toHaveBeenCalledWith('/api/knowledge', { snapshot_id: 'test-snapshot', include_llm: true })
     wrapper.vm.activeSection = 'business_descriptions'
     await wrapper.vm.$nextTick()
     expect(wrapper.vm.isDisabled({ note: 'x' })).toBe(true)

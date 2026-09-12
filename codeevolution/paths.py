@@ -13,14 +13,30 @@ def environment_value(name: str, default: str = "") -> str:
 
 
 def data_dir() -> Path:
-    """Return the configured data directory without orphaning existing data."""
+    """Return a writable data directory without orphaning existing data.
+
+    Managed/container runtimes can expose ``HOME`` as read-only. Keep an
+    explicit ``CODEEVOLUTION_DATA_DIR`` authoritative, but use the service's
+    local data directory as a fallback for the default location so settings
+    such as the LLM API key can still be persisted.
+    """
     configured = environment_value("CODEEVOLUTION_DATA_DIR")
     if configured:
         return Path(configured)
 
     current = Path.home() / ".codeevolution"
     legacy = Path.home() / ".codehistory"
-    return current if current.exists() or not legacy.exists() else legacy
+    preferred = current if current.exists() or not legacy.exists() else legacy
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        probe = preferred / ".write-probe"
+        probe.touch(exist_ok=False)
+        probe.unlink()
+        return preferred
+    except OSError:
+        fallback = Path(__file__).resolve().parents[1] / "data" / ".codeevolution"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 def analysis_data_dir() -> Path:

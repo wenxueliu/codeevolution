@@ -37,6 +37,11 @@ from .infrastructure.node_rule_store import NodeRuleStore
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
 from .paths import analysis_data_dir, data_dir, repo_data_file
+from .semantic.explanation_templates import (
+    default_prompt_templates,
+    normalize_prompt_templates,
+    prompt_digest,
+)
 from .registry import (
     REGISTRY_FILE,
     get_repo,
@@ -63,6 +68,7 @@ _ui_test_store: UiTestStore | None = None
 _business_rule_store: BusinessRuleStore | None = None
 _node_rule_store: NodeRuleStore | None = None
 _explanation_snapshot_store: ExplanationSnapshotStore | None = None
+_api_explanation_batch_scheduler = None
 _snapshot_runtime: SnapshotRuntime | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies", default={})
 _explanation_generation_lock = threading.Lock()
@@ -142,8 +148,13 @@ class LLMConfigRequest(BaseModel):
     api_base: str = Field(default="", max_length=1000)
     api_key: str | None = Field(default=None, max_length=4000)
     disable_thinking: bool | None = Field(default=None)
+    disable_ssl_verification: bool | None = Field(default=None)
     context_window: int | None = Field(default=None, ge=1, le=1_000_000)
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+
+
+class KnowledgeExtractionRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=200)
 
 
 class BusinessRuleGenerateRequest(BaseModel):
@@ -181,6 +192,21 @@ class ApiExplanationGenerateRequest(BaseModel):
     handler: str = Field(min_length=1, max_length=500)
     file: str = Field(default="", max_length=2000)
     line: int | None = Field(default=None, ge=1)
+    prompt_profile_id: str = Field(default="", max_length=300)
+    custom_prompt: str = Field(default="", max_length=5000)
+
+
+class ApiExplanationPromptRequest(BaseModel):
+    repository_snapshot_id: str = Field(min_length=1, max_length=200)
+    prompt_text: str = Field(default="", max_length=5000)
+    templates: dict[str, str] = Field(default_factory=dict)
+
+
+class ApiExplanationBatchRequest(BaseModel):
+    repository_snapshot_id: str = Field(min_length=1, max_length=200)
+    prompt_profile_id: str = Field(default="", max_length=300)
+    mode: str = Field(default="all", pattern="^all$")
+    concurrency: int = Field(default=2, ge=1, le=5)
 
 
 class AnalysisRunCreateRequest(BaseModel):
@@ -419,6 +445,49 @@ def get_snapshot_query_service() -> SnapshotQueryService:
     if injected := dependencies.get("snapshot_query_service"):
         return injected
     return get_snapshot_runtime().snapshot_queries
+
+
+def get_llm_knowledge_scheduler():
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("llm_knowledge_scheduler"):
+        return injected
+    if runtime := dependencies.get("snapshot_runtime"):
+        return runtime.llm_knowledge_scheduler
+    return get_snapshot_runtime().llm_knowledge_scheduler
+
+
+def get_snapshot_store():
+    dependencies = _request_dependencies.get()
+    if runtime := dependencies.get("snapshot_runtime"):
+        return runtime.store
+    return get_snapshot_runtime().store
+
+
+def get_api_explanation_batch_scheduler():
+    global _api_explanation_batch_scheduler
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("api_explanation_batch_scheduler"):
+        return injected
+    if _api_explanation_batch_scheduler is None:
+        from .application.api_explanation_batch_service import (
+            ApiExplanationBatchScheduler,
+            ApiExplanationBatchService,
+        )
+        captured = dict(dependencies)
+        store = captured.get("explanation_snapshot_store") or get_explanation_snapshot_store()
+        queries = captured.get("snapshot_query_service") or get_snapshot_query_service()
+        if captured.get("snapshot_runtime"):
+            central = captured["snapshot_runtime"].store
+        elif captured.get("snapshot_query_service"):
+            central = None
+        else:
+            central = get_snapshot_runtime().store
+        _api_explanation_batch_scheduler = ApiExplanationBatchScheduler(
+            ApiExplanationBatchService(
+                store, queries, lambda: _build_explanation_service(captured), central
+            )
+        )
+    return _api_explanation_batch_scheduler
 
 
 def get_snapshot_retention_service():
@@ -1078,9 +1147,18 @@ def get_explanation_snapshot_store() -> ExplanationSnapshotStore:
     if injected := dependencies.get("explanation_snapshot_store"):
         return injected
     if _explanation_snapshot_store is None:
-        _explanation_snapshot_store = ExplanationSnapshotStore(
-            codeevolution_data_dir() / "api-explanations.db"
-        )
+        path = codeevolution_data_dir() / "api-explanations.db"
+        try:
+            _explanation_snapshot_store = ExplanationSnapshotStore(path)
+        except OSError:
+            # SnapshotRuntime already has a writable fallback for managed
+            # environments where ~/.codeevolution is read-only. Keep the
+            # explanation DB in that same persistence boundary in that case.
+            runtime = dependencies.get("snapshot_runtime") or globals().get("_snapshot_runtime")
+            fallback_root = getattr(runtime, "data_root", None)
+            if not fallback_root or Path(fallback_root) == path.parent:
+                raise
+            _explanation_snapshot_store = ExplanationSnapshotStore(Path(fallback_root) / "api-explanations.db")
     return _explanation_snapshot_store
 
 
@@ -1232,6 +1310,9 @@ def get_llm_settings():
         "model": effective.get("model", "") if effective else "",
         "api_base": effective.get("api_base", "") if effective else "",
         "disable_thinking": bool(effective and effective.get("disable_thinking", True)),
+        "disable_ssl_verification": bool(
+            effective and effective.get("disable_ssl_verification", False)
+        ),
         "context_window": (effective or {}).get("context_window"),
         "max_output_tokens": (effective or {}).get("max_output_tokens"),
         "api_key_configured": bool(effective and effective.get("api_key")),
@@ -1258,11 +1339,18 @@ def save_llm_settings(request: LLMConfigRequest):
                 "api_base": request.api_base,
                 "api_key": api_key,
         }
-        for field in ("disable_thinking", "context_window", "max_output_tokens"):
+        for field in (
+            "disable_thinking",
+            "disable_ssl_verification",
+            "context_window",
+            "max_output_tokens",
+        ):
             if field in provided or field in current:
                 payload[field] = keep_or_take(field, current.get(field))
         store.save(payload)
-    except ValueError as error:
+    except (OSError, ValueError) as error:
+        if isinstance(error, OSError):
+            raise HTTPException(500, "LLM 配置保存失败，请检查数据目录权限") from error
         raise HTTPException(400, str(error)) from error
     return {"ok": True, "api_key_configured": True}
 
@@ -1321,11 +1409,35 @@ def get_knowledge_report(
                 raise HTTPException(409, str(error)) from error
         raise HTTPException(400, "snapshot_id is required")
     try:
-        return get_snapshot_query_service().knowledge(snapshot_id, section=section)
+        report = get_snapshot_query_service().knowledge(snapshot_id, section=section)
+        job = get_snapshot_store().get_llm_knowledge_job(snapshot_id)
+        if job is not None:
+            report = {**report, "llm_job": job}
+            if section is None and job["status"] == "completed" and isinstance(job.get("result"), dict):
+                report.update(job["result"])
+        return report
     except KeyError as error:
         raise HTTPException(404, "repository snapshot not found") from error
     except RuntimeError as error:
         raise HTTPException(424, str(error)) from error
+
+
+@app.post("/api/knowledge", status_code=202)
+def start_llm_knowledge_extraction(request: KnowledgeExtractionRequest):
+    """Start or reuse the durable Phase 3 extraction job for a snapshot."""
+    from .semantic.config import get_llm_config
+
+    if not get_llm_config():
+        raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
+    store = get_snapshot_store()
+    if store.get_snapshot(request.snapshot_id) is None:
+        raise HTTPException(404, "repository snapshot not found")
+    try:
+        job = store.create_llm_knowledge_job(request.snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    get_llm_knowledge_scheduler().submit(job["id"])
+    return {"job": job}
 
 
 # ── Call-chain tree (lazy per-node expansion) ──
@@ -1687,8 +1799,8 @@ def _explanation_member(repo: str, member: str) -> str:
     return item.get("name") or Path(item["path"]).name
 
 
-def _build_explanation_service():
-    dependencies = _request_dependencies.get()
+def _build_explanation_service(captured_dependencies=None):
+    dependencies = captured_dependencies or _request_dependencies.get()
     if factory := dependencies.get("explanation_generation_service_factory"):
         return factory()
     from .application.explanation_generation_service import ExplanationGenerationService
@@ -1701,8 +1813,8 @@ def _build_explanation_service():
     if not config:
         raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
     return ExplanationGenerationService(
-        get_explanation_snapshot_store(),
-        SnapshotExplanationSource(get_snapshot_query_service()),
+        dependencies.get("explanation_snapshot_store") or get_explanation_snapshot_store(),
+        SnapshotExplanationSource(dependencies.get("snapshot_query_service") or get_snapshot_query_service()),
         ExplanationSemanticService(OpenAILLMClient(config)),
         config["model"],
     )
@@ -1731,6 +1843,30 @@ def _submit_explanation_generation(service, snapshot_id: str, frozen: dict) -> N
         name=f"api-explanation-{snapshot_id[:8]}",
         daemon=True,
     ).start()
+
+
+def _api_prompt_metadata(store, repository_snapshot_id: str, request) -> dict[str, Any]:
+    """Resolve the documented prompt precedence and freeze it into the candidate."""
+    templates = default_prompt_templates()
+    if request.custom_prompt:
+        text = " ".join(request.custom_prompt.split())
+        digest = prompt_digest(text, templates)
+        return {"_prompt_text": text, "_prompt_version": f"custom-{digest[:12]}", "_prompt_digest": digest,
+                "_prompt_profile_id": "", "_prompt_templates": templates}
+    if request.prompt_profile_id:
+        profile = store.get_prompt_profile(request.prompt_profile_id)
+        if profile is None or profile["repository_snapshot_id"] != repository_snapshot_id:
+            raise HTTPException(400, "prompt profile does not belong to repository snapshot")
+    else:
+        profile = store.get_current_prompt_profile(repository_snapshot_id)
+    if not profile:
+        digest = prompt_digest("", templates)
+        return {"_prompt_text": "", "_prompt_version": "system-default", "_prompt_digest": digest,
+                "_prompt_profile_id": "", "_prompt_templates": templates}
+    templates = normalize_prompt_templates(profile.get("prompt_templates"))
+    return {"_prompt_text": profile["prompt_text"], "_prompt_version": f"v{profile['version']}",
+            "_prompt_digest": profile["prompt_digest"], "_prompt_profile_id": profile["id"],
+            "_prompt_templates": templates}
 
 
 @app.post("/api/api-explanations/generate", status_code=202)
@@ -1768,6 +1904,7 @@ def generate_api_explanation(request: ApiExplanationGenerateRequest):
         try:
             spec = request.model_dump()
             spec["member"] = member
+            spec.update(_api_prompt_metadata(store, request.repository_snapshot_id, request))
             # Never permit a caller-selected live repository identity to affect
             # frozen evidence resolution.
             if request.repository_snapshot_id:
@@ -1784,6 +1921,87 @@ def generate_api_explanation(request: ApiExplanationGenerateRequest):
             )
         _submit_explanation_generation(service, snapshot_id, frozen)
     return {"snapshot": _snapshot_payload(snapshot)}
+
+
+@app.get("/api/api-explanation-prompts")
+def list_api_explanation_prompts(repository_snapshot_id: str = Query(...)):
+    if get_snapshot_store().get_snapshot(repository_snapshot_id) is None:
+        raise HTTPException(404, "repository snapshot not found")
+    store = get_explanation_snapshot_store()
+    profiles = store.list_prompt_profiles(repository_snapshot_id)
+    for profile in profiles:
+        profile["prompt_templates"] = normalize_prompt_templates(profile.get("prompt_templates"))
+    current = store.get_current_prompt_profile(repository_snapshot_id)
+    if current:
+        current["prompt_templates"] = normalize_prompt_templates(current.get("prompt_templates"))
+    return {"current": current, "profiles": profiles, "defaults": default_prompt_templates()}
+
+
+@app.post("/api/api-explanation-prompts", status_code=201)
+def create_api_explanation_prompt(request: ApiExplanationPromptRequest):
+    if get_snapshot_store().get_snapshot(request.repository_snapshot_id) is None:
+        raise HTTPException(404, "repository snapshot not found")
+    try:
+        profile = get_explanation_snapshot_store().create_prompt_profile(
+            request.repository_snapshot_id,
+            request.prompt_text,
+            prompt_templates=normalize_prompt_templates(request.templates),
+        )
+        profile["prompt_templates"] = normalize_prompt_templates(profile.get("prompt_templates"))
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return {"profile": profile}
+
+
+@app.post("/api/api-explanations/batches", status_code=202)
+def create_api_explanation_batch(request: ApiExplanationBatchRequest):
+    try:
+        batch = get_api_explanation_batch_scheduler().service.create(
+            request.repository_snapshot_id,
+            prompt_profile_id=request.prompt_profile_id,
+            concurrency=request.concurrency,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(400, str(error)) from error
+    get_api_explanation_batch_scheduler().submit(batch["id"])
+    return {"batch": batch}
+
+
+@app.get("/api/api-explanations/batches/{batch_id}")
+def get_api_explanation_batch(batch_id: str):
+    batch = get_api_explanation_batch_scheduler().service.store.get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(404, "批量任务不存在")
+    return {"batch": batch}
+
+
+@app.get("/api/api-explanations/batches")
+def list_api_explanation_batches(repository_snapshot_id: str = Query(...)):
+    return {"batches": get_api_explanation_batch_scheduler().service.store.list_batches(repository_snapshot_id)}
+
+
+@app.post("/api/api-explanations/batches/{batch_id}/cancel")
+def cancel_api_explanation_batch(batch_id: str):
+    try:
+        batch = get_api_explanation_batch_scheduler().service.store.cancel_batch(batch_id)
+    except KeyError as error:
+        raise HTTPException(404, "批量任务不存在") from error
+    return {"batch": batch}
+
+
+@app.post("/api/api-explanations/batches/{batch_id}/retry-failed", status_code=202)
+def retry_api_explanation_batch(batch_id: str):
+    scheduler = get_api_explanation_batch_scheduler()
+    try:
+        batch = scheduler.service.retry_failed(batch_id)
+    except KeyError as error:
+        raise HTTPException(404, "批量任务不存在") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    scheduler.submit(batch["id"])
+    return {"batch": batch}
 
 
 @app.get("/api/api-explanations/current")
@@ -2017,12 +2235,26 @@ _route_app = app
 async def _lifespan(application):
     global _audit_store, _ui_test_store, _business_rule_store, _node_rule_store
     global _explanation_snapshot_store
+    global _api_explanation_batch_scheduler
     runtime = application.state.dependencies.get("snapshot_runtime")
     if runtime is None and application.state.use_default_snapshot_runtime:
         runtime = get_snapshot_runtime()
     if runtime is not None:
         runtime.start()
+    batch_scheduler = application.state.dependencies.get("api_explanation_batch_scheduler")
+    if batch_scheduler is None and application.state.use_default_snapshot_runtime:
+        batch_scheduler = get_api_explanation_batch_scheduler()
+    if batch_scheduler is not None and hasattr(batch_scheduler, "start"):
+        batch_scheduler.start()
     yield
+    owned_batch_scheduler = batch_scheduler is _api_explanation_batch_scheduler
+    if batch_scheduler is not None and hasattr(batch_scheduler, "close"):
+        batch_scheduler.close()
+    if owned_batch_scheduler:
+        _api_explanation_batch_scheduler = None
+    elif application.state.dependencies.get("api_explanation_batch_scheduler") is None and _api_explanation_batch_scheduler is not None:
+        _api_explanation_batch_scheduler.close()
+        _api_explanation_batch_scheduler = None
     if runtime is not None:
         runtime.close()
     for store in list(_stores.values()):
