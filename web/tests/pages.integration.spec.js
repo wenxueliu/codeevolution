@@ -534,6 +534,22 @@ describe('repository and knowledge pages', () => {
     })
   })
 
+  it('keeps editable fallback templates and enables restore when prompt loading fails', async () => {
+    const { wrapper } = mountPage(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 0, endpoints: [] } },
+      '/api/api-explanation-prompts': () => { throw new Error('prompt endpoint unavailable') },
+      '/api/api-explanations/batches': { batches: [] },
+    }, { repoName: 'mall' })
+    await flushPromises()
+
+    const panel = wrapper.find('[data-testid="api-explanation-settings"]')
+    const textareas = panel.findAll('textarea')
+    expect(textareas).toHaveLength(4)
+    expect(textareas.slice(1).every(({ element }) => element.value.length > 0)).toBe(true)
+    expect(panel.find('.prompt-default-heading button').element.disabled).toBe(false)
+    expect(panel.find('.explanation-error').text()).toContain('prompt endpoint unavailable')
+  })
+
   it('enlarges and zooms the sequence diagram for each API endpoint', async () => {
     mermaidRun.mockClear()
     const endpoints = [

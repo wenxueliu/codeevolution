@@ -427,6 +427,11 @@ function loadMermaid() {
 }
 
 const DEFAULT_ENDPOINT_GUIDANCE = '请完整分析该 API 的业务目的、输入输出、前置条件、业务流程、业务规则、状态变化、副作用、异常处理和外部依赖；所有结论必须有源码或调用链证据，无法确认的内容请明确标记。'
+const DEFAULT_PROMPT_TEMPLATES = Object.freeze({
+  local: '你是代码行为逆向分析器，为后续 Agent 设计方案提供可靠、可追溯的代码事实。\n\n请基于提供的源码范围分析函数职责、输入输出、前置条件、业务规则、状态变化、副作用和异常路径。\n\n用户补充分析要求：\n{guidance}\n\n只能依据源码分析，不得臆测；重要事实必须附源码行号；请输出合法 JSON，不要输出 Markdown。\n\n输出结构：\n{agent_output_schema}',
+  synthesis: '你是代码事实合并器。请按源码顺序合并同一个函数的代码块分析结果，保留执行顺序、分支、异常、状态变化、副作用和源码行号，不得新增未经证实的推断。\n\n代码块解释：\n{chunk_explanations}\n\n用户补充分析要求：\n{guidance}\n\n请输出合法 JSON，不要输出 Markdown。\n\n输出结构：\n{agent_output_schema}',
+  aggregate: '你是调用链业务行为聚合器。请先说明当前函数自身行为，再结合直接子节点解释和调用关系，描述调用顺序、条件、返回值使用、异常传播、副作用和 API 契约影响；区分当前节点与子节点行为，不得臆测。\n\n当前函数：{qualified_name}\n当前函数自身解释：\n{local_explanation}\n直接子节点解释：\n{children_explanations}\n调用关系：\n{call_edges}\n\n用户补充分析要求：\n{guidance}\n\n请输出合法 JSON，不要输出 Markdown。\n\n输出结构：\n{agent_output_schema}',
+})
 
 export default {
   components: { UiState, CallChainTree },
@@ -450,7 +455,7 @@ export default {
       sequenceZoomScale: 1,
       apiExplanations: {},
       explanationPollTimers: {},
-      promptText: DEFAULT_ENDPOINT_GUIDANCE, promptDefaults: { local: '', synthesis: '', aggregate: '' }, promptTemplates: { local: '', synthesis: '', aggregate: '' }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
+      promptText: DEFAULT_ENDPOINT_GUIDANCE, promptDefaults: { ...DEFAULT_PROMPT_TEMPLATES }, promptTemplates: { ...DEFAULT_PROMPT_TEMPLATES }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
       batchJob: null, batchPollTimer: null,
       endpointCustomPrompts: {}, endpointPromptEditor: null,
     }
@@ -505,7 +510,7 @@ export default {
         this.llmLoaded = false
         this.llmJob = null
         this.clearLlmPoll()
-        this.promptText = DEFAULT_ENDPOINT_GUIDANCE; this.promptDefaults = { local: '', synthesis: '', aggregate: '' }; this.promptTemplates = { local: '', synthesis: '', aggregate: '' }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
+        this.promptText = DEFAULT_ENDPOINT_GUIDANCE; this.promptDefaults = { ...DEFAULT_PROMPT_TEMPLATES }; this.promptTemplates = { ...DEFAULT_PROMPT_TEMPLATES }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
         this.batchJob = null; this.clearBatchPoll()
         this.endpointCustomPrompts = {}; this.endpointPromptEditor = null
         this.businessRules = {}
@@ -603,15 +608,21 @@ export default {
         this.promptCurrent = data?.current || null
         this.promptProfiles = data?.profiles || []
         this.promptText = this.promptCurrent?.prompt_text || data?.default_guidance || DEFAULT_ENDPOINT_GUIDANCE
-        this.promptDefaults = { local: '', synthesis: '', aggregate: '', ...(data?.defaults || {}) }
+        this.promptDefaults = this.mergePromptTemplates(DEFAULT_PROMPT_TEMPLATES, data?.defaults)
         this.promptTemplates = this.mergePromptTemplates(this.promptDefaults, this.promptCurrent?.prompt_templates)
-      } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('读取提示词失败') }
+      } catch (err) {
+        this.promptDefaults = { ...DEFAULT_PROMPT_TEMPLATES }
+        this.promptTemplates = { ...DEFAULT_PROMPT_TEMPLATES }
+        this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('读取提示词失败')
+      }
     },
     mergePromptTemplates(defaults, overrides) {
-      const result = { local: '', synthesis: '', aggregate: '', ...(defaults || {}) }
-      for (const key of ['local', 'synthesis', 'aggregate']) {
-        const value = overrides?.[key]
-        if (typeof value === 'string' && value.trim()) result[key] = value
+      const result = { ...DEFAULT_PROMPT_TEMPLATES }
+      for (const source of [defaults, overrides]) {
+        for (const key of ['local', 'synthesis', 'aggregate']) {
+          const value = source?.[key]
+          if (typeof value === 'string' && value.trim()) result[key] = value
+        }
       }
       return result
     },
