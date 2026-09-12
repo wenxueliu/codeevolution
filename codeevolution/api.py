@@ -38,6 +38,7 @@ from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
 from .paths import analysis_data_dir, data_dir, repo_data_file
 from .semantic.explanation_templates import (
+    default_prompt_guidance,
     default_prompt_templates,
     normalize_prompt_templates,
     prompt_digest,
@@ -1860,8 +1861,9 @@ def _api_prompt_metadata(store, repository_snapshot_id: str, request) -> dict[st
     else:
         profile = store.get_current_prompt_profile(repository_snapshot_id)
     if not profile:
-        digest = prompt_digest("", templates)
-        return {"_prompt_text": "", "_prompt_version": "system-default", "_prompt_digest": digest,
+        guidance = default_prompt_guidance()
+        digest = prompt_digest(guidance, templates)
+        return {"_prompt_text": guidance, "_prompt_version": "system-default", "_prompt_digest": digest,
                 "_prompt_profile_id": "", "_prompt_templates": templates}
     templates = normalize_prompt_templates(profile.get("prompt_templates"))
     return {"_prompt_text": profile["prompt_text"], "_prompt_version": f"v{profile['version']}",
@@ -1934,7 +1936,12 @@ def list_api_explanation_prompts(repository_snapshot_id: str = Query(...)):
     current = store.get_current_prompt_profile(repository_snapshot_id)
     if current:
         current["prompt_templates"] = normalize_prompt_templates(current.get("prompt_templates"))
-    return {"current": current, "profiles": profiles, "defaults": default_prompt_templates()}
+    return {
+        "current": current,
+        "profiles": profiles,
+        "default_guidance": default_prompt_guidance(),
+        "defaults": default_prompt_templates(),
+    }
 
 
 @app.post("/api/api-explanation-prompts", status_code=201)

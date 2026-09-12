@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Thread
 
 from ..semantic.explanation_templates import (
+    default_prompt_guidance,
     default_prompt_templates,
     normalize_prompt_templates,
     prompt_digest,
@@ -35,7 +36,7 @@ class ApiExplanationBatchService:
         digest = (
             prompt_digest(profile["prompt_text"], normalize_prompt_templates(profile.get("prompt_templates")))
             if profile
-            else prompt_digest("", default_prompt_templates())
+            else prompt_digest(default_prompt_guidance(), default_prompt_templates())
         )
         active = self.store.get_active_batch(repository_snapshot_id, digest)
         if active:
@@ -116,8 +117,9 @@ class ApiExplanationBatchService:
                          "_prompt_templates": templates})
         else:
             templates = default_prompt_templates()
-            spec.update({"_prompt_text": "", "_prompt_version": "system-default",
-                         "_prompt_digest": prompt_digest("", templates),
+            guidance = default_prompt_guidance()
+            spec.update({"_prompt_text": guidance, "_prompt_version": "system-default",
+                         "_prompt_digest": prompt_digest(guidance, templates),
                          "_prompt_templates": templates})
         try:
             service = self.generation_factory()

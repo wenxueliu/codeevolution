@@ -5,6 +5,20 @@ from codeevolution.domain.explanation import ExplanationNode, ExplanationSnapsho
 from codeevolution.infrastructure.explanation_snapshot_store import ExplanationSnapshotStore
 
 
+class SnapshotRuntimeStub:
+    def __init__(self):
+        self.store = self
+
+    def get_snapshot(self, snapshot_id):
+        return object() if snapshot_id == "repo-snapshot" else None
+
+    def start(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class GenerationStub:
     def __init__(self, store):
         self.store = store
@@ -70,4 +84,20 @@ def test_manual_generation_current_listing_and_confirmed_delete(tmp_path):
         assert missing == {"status": "missing", "snapshot": None}
         assert service.specs[0]["_prompt_text"] == "重点关注库存扣减"
         assert service.specs[0]["_prompt_version"].startswith("custom-")
+    store.close()
+
+
+def test_prompt_api_returns_default_guidance_and_templates(tmp_path):
+    store = ExplanationSnapshotStore(tmp_path / "api.db")
+    runtime = SnapshotRuntimeStub()
+    app = create_app({"snapshot_runtime": runtime, "explanation_snapshot_store": store})
+    with TestClient(app) as client:
+        response = client.get("/api/api-explanation-prompts", params={"repository_snapshot_id": "repo-snapshot"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_guidance"]
+    assert set(payload["defaults"]) == {"local", "synthesis", "aggregate"}
+    assert all(payload["defaults"].values())
+    assert payload["current"] is None
     store.close()

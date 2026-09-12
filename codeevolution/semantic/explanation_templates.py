@@ -10,6 +10,11 @@ from typing import Any
 PROMPT_TEMPLATE_VERSION = "api-explanation-prompts-v2"
 PROMPT_TEMPLATE_KEYS = ("local", "synthesis", "aggregate")
 
+DEFAULT_PROMPT_GUIDANCE = (
+    "请完整分析该 API 的业务目的、输入输出、前置条件、业务流程、业务规则、状态变化、"
+    "副作用、异常处理和外部依赖；所有结论必须有源码或调用链证据，无法确认的内容请明确标记。"
+)
+
 AGENT_OUTPUT_SCHEMA = """{
   "summary": "当前源码范围或调用节点的业务职责",
   "inputs": [{"name": "输入名称", "role": "用途", "evidence_lines": [1]}],
@@ -128,6 +133,10 @@ _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 def default_prompt_templates() -> dict[str, str]:
     return dict(DEFAULT_PROMPT_TEMPLATES)
+
+
+def default_prompt_guidance() -> str:
+    return DEFAULT_PROMPT_GUIDANCE
 
 
 def normalize_prompt_templates(value: dict[str, Any] | None) -> dict[str, str]:

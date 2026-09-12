@@ -450,7 +450,7 @@ export default {
       sequenceZoomScale: 1,
       apiExplanations: {},
       explanationPollTimers: {},
-      promptText: '', promptDefaults: { local: '', synthesis: '', aggregate: '' }, promptTemplates: { local: '', synthesis: '', aggregate: '' }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
+      promptText: DEFAULT_ENDPOINT_GUIDANCE, promptDefaults: { local: '', synthesis: '', aggregate: '' }, promptTemplates: { local: '', synthesis: '', aggregate: '' }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
       batchJob: null, batchPollTimer: null,
       endpointCustomPrompts: {}, endpointPromptEditor: null,
     }
@@ -505,7 +505,7 @@ export default {
         this.llmLoaded = false
         this.llmJob = null
         this.clearLlmPoll()
-        this.promptText = ''; this.promptDefaults = { local: '', synthesis: '', aggregate: '' }; this.promptTemplates = { local: '', synthesis: '', aggregate: '' }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
+        this.promptText = DEFAULT_ENDPOINT_GUIDANCE; this.promptDefaults = { local: '', synthesis: '', aggregate: '' }; this.promptTemplates = { local: '', synthesis: '', aggregate: '' }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
         this.batchJob = null; this.clearBatchPoll()
         this.endpointCustomPrompts = {}; this.endpointPromptEditor = null
         this.businessRules = {}
@@ -602,7 +602,7 @@ export default {
         const data = await this.$api.get('/api/api-explanation-prompts', { repository_snapshot_id: this.snapshotId })
         this.promptCurrent = data?.current || null
         this.promptProfiles = data?.profiles || []
-        this.promptText = this.promptCurrent?.prompt_text || ''
+        this.promptText = this.promptCurrent?.prompt_text || data?.default_guidance || DEFAULT_ENDPOINT_GUIDANCE
         this.promptDefaults = { local: '', synthesis: '', aggregate: '', ...(data?.defaults || {}) }
         this.promptTemplates = { ...this.promptDefaults, ...(this.promptCurrent?.prompt_templates || {}) }
       } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('读取提示词失败') }

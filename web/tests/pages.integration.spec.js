@@ -496,6 +496,26 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.text()).toContain('现在抽取')
   })
 
+  it('prefills API explanation settings with the system defaults', async () => {
+    const { wrapper } = mountPage(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 0, endpoints: [] } },
+      '/api/api-explanation-prompts': {
+        current: null,
+        profiles: [],
+        default_guidance: '系统默认 API 分析指导',
+        defaults: { local: '默认自身模板', synthesis: '默认合并模板', aggregate: '默认聚合模板' },
+      },
+      '/api/api-explanations/batches': { batches: [] },
+    }, { repoName: 'mall' })
+    await flushPromises()
+
+    const textareas = wrapper.find('[data-testid="api-explanation-settings"]').findAll('textarea')
+    expect(textareas.map(({ element }) => element.value)).toEqual([
+      '系统默认 API 分析指导', '默认自身模板', '默认合并模板', '默认聚合模板',
+    ])
+    expect(wrapper.find('[data-testid="api-explanation-settings"]').text()).toContain('恢复全部默认')
+  })
+
   it('enlarges and zooms the sequence diagram for each API endpoint', async () => {
     mermaidRun.mockClear()
     const endpoints = [
