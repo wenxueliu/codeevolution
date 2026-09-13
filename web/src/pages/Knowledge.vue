@@ -32,6 +32,7 @@
         <p>{{ t('基于不可变 Repository Snapshot 推导。') }} <code v-if="snapshotId">{{ snapshotId }}</code><span v-if="loadedAt"> · {{ loadedAt }} · {{ loadDuration }} ms</span></p>
       </div>
       <div class="actions">
+        <router-link class="secondary" :to="{ name: 'terms', query: { snapshot_id: snapshotId } }">{{ t('术语识别') }}</router-link>
         <button class="secondary" :disabled="loading" @click="load(false)">{{ t('刷新结构知识') }}</button>
         <button class="primary" :disabled="loading || llmJobActive" @click="loadLlm">
           {{ llmJobActive ? t('正在抽取 LLM 知识') : (llmLoaded ? t('重新抽取 LLM 知识') : t('抽取 LLM 知识')) }}

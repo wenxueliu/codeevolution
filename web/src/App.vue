@@ -9,6 +9,7 @@
         <router-link :to="knowledgeRoute">{{ t('知识中心') }}</router-link>
         <router-link to="/snapshots">{{ t('Snapshots') }}</router-link>
         <router-link :to="graphViewRoute">{{ t('Graph View') }}</router-link>
+        <router-link :to="termsRoute">{{ t('术语') }}</router-link>
       </div>
       <div class="nav-right">
         <span v-if="repoName" class="nav-repo">{{ repoName }}</span>
@@ -53,6 +54,9 @@ export default {
     },
     graphViewRoute() {
       return { name: 'graph-view' }
+    },
+    termsRoute() {
+      return { name: 'terms', query: this.$route.query.snapshot_id ? { snapshot_id: this.$route.query.snapshot_id } : {} }
     },
   },
   methods: {

@@ -111,6 +111,153 @@ def cmd_knowledge(args):
         runtime.close()
 
 
+def _terms_local_context():
+    from .application.term_service import TermRecognitionService
+    from .infrastructure.term_store import TermStore
+
+    runtime = SnapshotRuntime(analysis_data_dir())
+    store = TermStore(analysis_data_dir() / "terms.db")
+    return runtime, store, TermRecognitionService(store)
+
+
+def cmd_terms(args):
+    """Extract, inspect, review, or export snapshot terminology."""
+    try:
+        if args.terms_action == "extract":
+            payload = {"snapshot_id": args.snapshot_id, "types": args.types.split(",") if args.types else []}
+            if args.server:
+                _status, result, _headers = _request_json(args.server, "POST", "/api/terms/extract", payload)
+            else:
+                runtime, store, service = _terms_local_context()
+                try:
+                    snapshot = runtime.store.get_snapshot(args.snapshot_id)
+                    if snapshot is None:
+                        raise CLIContractError("repository snapshot not found", 3)
+                    result = service.extract(
+                        args.snapshot_id, snapshot.member_id,
+                        runtime.snapshot_queries.knowledge(args.snapshot_id), args.types.split(",") if args.types else None,
+                    )
+                finally:
+                    store.close()
+                    runtime.close()
+            _canonical_output(result, args.output)
+            return
+
+        if args.terms_action == "review":
+            payload = {
+                "snapshot_id": args.snapshot_id, "action": args.action,
+                "value": json.loads(args.value) if args.value else {},
+                "reason": args.reason, "author": args.author,
+            }
+            if args.server:
+                _status, result, _headers = _request_json(
+                    args.server, "POST", f"/api/terms/{args.term_id}/review", payload
+                )
+            else:
+                runtime, store, service = _terms_local_context()
+                try:
+                    result = {"term": service.review(
+                        args.snapshot_id, args.term_id, args.action, payload["value"], args.reason, args.author
+                    )}
+                finally:
+                    store.close()
+                    runtime.close()
+            _canonical_output(result, args.output)
+            return
+
+        if args.terms_action == "manual":
+            payload = {
+                "snapshot_id": args.snapshot_id, "canonical_name": args.canonical_name,
+                "term_type": args.term_type, "bounded_context": args.bounded_context,
+                "definition": args.definition, "aliases": args.aliases.split(",") if args.aliases else [],
+                "reason": args.reason, "author": args.author,
+            }
+            if args.server:
+                _status, result, _headers = _request_json(args.server, "POST", "/api/terms/manual", payload)
+            else:
+                runtime, store, service = _terms_local_context()
+                try:
+                    snapshot = runtime.store.get_snapshot(args.snapshot_id)
+                    if snapshot is None:
+                        raise CLIContractError("repository snapshot not found", 3)
+                    result = {"term": service.add_manual(args.snapshot_id, snapshot.member_id, payload)}
+                finally:
+                    store.close()
+                    runtime.close()
+            _canonical_output(result, args.output)
+            return
+
+        if args.terms_action == "align":
+            payload = {"view_id": args.view_id, "service_ids": args.service_ids.split(",") if args.service_ids else []}
+            if args.server:
+                _status, result, _headers = _request_json(args.server, "POST", "/api/terms/align", payload)
+            else:
+                runtime, store, service = _terms_local_context()
+                try:
+                    view = runtime.store.get_view(args.view_id)
+                    if view is None:
+                        raise CLIContractError("graph view not found", 3)
+                    selected = set(payload["service_ids"])
+                    reports = []
+                    for member in view.members:
+                        if (selected and member.member_id not in selected) or not member.snapshot_id:
+                            continue
+                        snapshot = runtime.store.get_snapshot(member.snapshot_id)
+                        if snapshot is None:
+                            continue
+                        reports.append(service.extract(member.snapshot_id, snapshot.member_id, runtime.snapshot_queries.knowledge(member.snapshot_id)))
+                    result = {"view_id": args.view_id, **service.align(reports)}
+                finally:
+                    store.close()
+                    runtime.close()
+            _canonical_output(result, args.output)
+            return
+
+        query = {"snapshot_id": args.snapshot_id, "limit": args.limit, "offset": args.offset}
+        if getattr(args, "term_type", ""):
+            query["type"] = args.term_type
+        if getattr(args, "status", ""):
+            query["status"] = args.status
+        if getattr(args, "confidence_band", ""):
+            query["confidence_band"] = args.confidence_band
+        if getattr(args, "term", ""):
+            query["name"] = args.term
+        if args.server:
+            if args.terms_action == "explain":
+                _status, listing, _headers = _request_json(args.server, "GET", "/api/terms?" + urlencode(query))
+                items = listing.get("terms", [])
+                if not items:
+                    raise CLIContractError("term not found", 3)
+                _status, result, _headers = _request_json(
+                    args.server, "GET", f"/api/terms/{items[0]['id']}?{urlencode({'snapshot_id': args.snapshot_id})}"
+                )
+                _status, evidence, _headers = _request_json(
+                    args.server, "GET", f"/api/terms/{items[0]['id']}/evidence?{urlencode({'snapshot_id': args.snapshot_id})}"
+                )
+                result["evidence"] = evidence.get("evidence", [])
+            else:
+                _status, result, _headers = _request_json(args.server, "GET", "/api/terms?" + urlencode(query))
+        else:
+            runtime, store, service = _terms_local_context()
+            try:
+                listing = service.list(**query)
+                if args.terms_action == "explain":
+                    if not listing["terms"]:
+                        raise CLIContractError("term not found", 3)
+                    term = listing["terms"][0]
+                    result = {"term": term, "evidence": service.evidence(args.snapshot_id, term["id"])}
+                else:
+                    result = listing
+            finally:
+                store.close()
+                runtime.close()
+        _canonical_output(result, args.output)
+    except CLIContractError:
+        raise
+    except (KeyError, RuntimeError, ValueError) as error:
+        raise CLIContractError(str(error), 3) from error
+
+
 class CLIContractError(RuntimeError):
     """A mapped public CLI error with a documented process exit code."""
 
@@ -415,6 +562,61 @@ def main():
         help="Which knowledge section to extract (default: all)",
     )
     p.set_defaults(handler=cmd_knowledge)
+
+    # evidence-backed terminology
+    p = subparsers.add_parser("terms", help="Extract and review terminology from a snapshot")
+    term_parsers = p.add_subparsers(dest="terms_action", required=True)
+
+    extract = term_parsers.add_parser("extract", help="Extract ranked terms")
+    extract.add_argument("--snapshot-id", required=True)
+    extract.add_argument("--types", default="", help="Comma-separated term types")
+    extract.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
+    extract.add_argument("--output", "-o", default="")
+    extract.set_defaults(handler=cmd_terms)
+
+    for action, help_text in (("list", "List persisted terms"), ("export", "Export persisted terms"), ("explain", "Show a term and its evidence")):
+        item = term_parsers.add_parser(action, help=help_text)
+        item.add_argument("--snapshot-id", required=True)
+        item.add_argument("--term", default="", help="Term name or normalized name")
+        item.add_argument("--term-type", default="")
+        item.add_argument("--status", default="")
+        item.add_argument("--confidence-band", default="")
+        item.add_argument("--limit", type=int, default=100)
+        item.add_argument("--offset", type=int, default=0)
+        item.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
+        item.add_argument("--output", "-o", default="")
+        item.set_defaults(handler=cmd_terms)
+
+    review = term_parsers.add_parser("review", help="Review a term candidate")
+    review.add_argument("--snapshot-id", required=True)
+    review.add_argument("--term-id", required=True)
+    review.add_argument("--action", required=True, choices=["accept", "reject", "rename", "reclassify", "alias", "relate"])
+    review.add_argument("--value", default="", help="JSON action payload")
+    review.add_argument("--reason", default="")
+    review.add_argument("--author", default="")
+    review.add_argument("--server", default="")
+    review.add_argument("--output", "-o", default="")
+    review.set_defaults(handler=cmd_terms)
+
+    manual = term_parsers.add_parser("manual", help="Add a manually defined term")
+    manual.add_argument("--snapshot-id", required=True)
+    manual.add_argument("--canonical-name", required=True)
+    manual.add_argument("--term-type", default="entity")
+    manual.add_argument("--bounded-context", default="")
+    manual.add_argument("--definition", default="")
+    manual.add_argument("--aliases", default="")
+    manual.add_argument("--reason", default="")
+    manual.add_argument("--author", default="")
+    manual.add_argument("--server", default="")
+    manual.add_argument("--output", "-o", default="")
+    manual.set_defaults(handler=cmd_terms)
+
+    align = term_parsers.add_parser("align", help="Align accepted entity terms across a Graph View")
+    align.add_argument("--view-id", required=True)
+    align.add_argument("--service-ids", default="", help="Comma-separated member IDs")
+    align.add_argument("--server", default="")
+    align.add_argument("--output", "-o", default="")
+    align.set_defaults(handler=cmd_terms)
 
     # cross-repo topology
     p = subparsers.add_parser(

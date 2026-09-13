@@ -120,6 +120,33 @@ def get_snapshot_facts(snapshot_id: str, section: str = "") -> str:
         return _result(queries.knowledge(snapshot_id, section=section or None))
     except KeyError:
         return _result({"error": "Snapshot or knowledge section not found", "snapshot_id": snapshot_id})
+
+
+@mcp.tool()
+def get_snapshot_terms(snapshot_id: str, term_types: str = "") -> str:
+    """Extract and return ranked, evidence-backed terms from a snapshot."""
+    runtime = _require_runtime()
+    if isinstance(runtime, str):
+        return runtime
+    try:
+        snapshot = runtime.store.get_snapshot(snapshot_id)
+        if snapshot is None:
+            return _result({"error": "Snapshot not found", "snapshot_id": snapshot_id})
+        from .application.term_service import TermRecognitionService
+        from .infrastructure.term_store import TermStore
+
+        store = TermStore(runtime.data_root / "terms.db")
+        try:
+            service = TermRecognitionService(store)
+            result = service.extract(
+                snapshot_id, snapshot.member_id, runtime.snapshot_queries.knowledge(snapshot_id),
+                [item.strip() for item in term_types.split(",") if item.strip()] or None,
+            )
+            return _result(result)
+        finally:
+            store.close()
+    except (KeyError, RuntimeError, ValueError) as error:
+        return _result({"error": str(error), "snapshot_id": snapshot_id})
     except RuntimeError as error:
         return _result({"error": str(error), "snapshot_id": snapshot_id})
 

@@ -1,8 +1,14 @@
 # CodeHistory 术语识别详细方案
 
-> 状态：设计方案  
+> 状态：设计方案（已刷新）
 > 范围：单仓领域术语识别、跨仓术语对齐、自然语言查询中的术语定位  
 > 依赖：CodeGraph SQLite（`nodes` / `edges` / `files`），LLM 为可选增强项
+
+本方案采用“证据约束的 AI 术语识别”，而不是无证据的自由生成：
+
+> AI 负责发现和解释，代码证据负责证明，人工负责裁决。
+
+正式术语必须能够追溯到代码事实或明确的人工定义。默认术语清单优先保证准确率，候选池再负责补充召回率。
 
 ## 1. 背景与目标
 
@@ -11,7 +17,7 @@ CodeHistory 当前已经具备两类与“术语”相关的能力：
 1. 从代码类型中识别核心实体；
 2. 根据类型名称相似度对齐不同服务中的实体。
 
-但当前输出仍以“代码实体列表”为主，并不等同于完整的业务术语体系。它缺少统一的候选生成、证据归档、同义词聚类、歧义处理和可解释的置信度模型。本方案在保留现有确定性算法的基础上，将术语识别建设成一条可审计、可增量、可配置的流水线。
+但当前输出仍以“代码实体列表”为主，并不等同于完整的业务术语体系。它缺少统一的候选生成、证据归档、同义词聚类、歧义处理和可解释的置信度模型。本方案在保留现有确定性算法的基础上，将术语识别建设成一条以 API 与实体为高可靠锚点、可审计、可增量、可配置的流水线。
 
 目标如下：
 
@@ -23,6 +29,14 @@ CodeHistory 当前已经具备两类与“术语”相关的能力：
 - 无 LLM 时可稳定运行，启用 LLM 后只增强语义判断，不替代事实提取；
 - 支持增量更新、人工校正和质量评估。
 
+### 1.1 核心决策
+
+- **事实与推断分离**：API 路由、类型、字段、关系、文件和行号属于事实；“是否为业务术语”及“两个名称是否同义”属于推断。
+- **API 与实体双锚点**：显式 API 契约和实体定义优先产生高置信候选，其他信息用于佐证、降噪和补充。
+- **召回与接纳分离**：候选池追求覆盖，默认术语清单追求高 Precision；低置信候选不能因为数量不足而自动接纳。
+- **人工是覆盖层**：人工可以新增、修改、合并和排除术语，但不修改 CodeGraph 事实，也不覆盖原始算法证据。
+- **LLM 只处理语义不确定性**：LLM 不能凭常识创建没有证据的术语，且不能单独使候选进入正式清单。
+
 ## 2. 术语与边界
 
 本方案使用以下规范用语，避免把不同阶段都称为“识别”。
@@ -30,8 +44,10 @@ CodeHistory 当前已经具备两类与“术语”相关的能力：
 | 术语 | 定义 | 示例 |
 |---|---|---|
 | 代码符号 | CodeGraph 中可定位的语法实体 | `OrderService`、`OrderStatus` |
+| 事实 | CodeGraph/API/源码中可直接观测的结构 | `POST /orders`、`Order` 类型、`status` 字段 |
 | 术语候选 | 从一个或多个代码符号中抽取、尚未确认的业务表达 | `Order`、`Payment` |
 | 领域术语 | 有足够业务证据、已通过评分门槛的规范概念 | “订单” |
+| API 资源术语 | API 对外暴露的资源表达，不必然等同于领域实体 | `/orders` → `Order` |
 | 术语提及 | 术语在源码中的一次可定位出现 | `src/domain/Order.java:12` |
 | 规范名 | 用于展示和检索的首选名称 | `Order` |
 | 别名 | 指向同一概念的其他名称 | `PurchaseOrder`、`OrderDTO` |
@@ -102,31 +118,31 @@ score = PageRank × 30
 ## 4. 总体识别流程
 
 ```text
-CodeGraph SQLite + 可选源码文本 + 仓库配置
+CodeGraph/API 事实 + 可选源码文本 + 仓库配置
                     │
                     ▼
-          1. 数据检查与候选采集
+          1. 数据检查与事实冻结
                     │
                     ▼
-          2. 名称解析与规范化
+          2. API/实体双锚点候选生成
                     │
                     ▼
-          3. 特征提取与候选分类
+          3. 名称规范化与候选分类
                     │
                     ▼
-          4. 领域性评分与准入
+          4. 证据聚合与置信度排序
                     │
                     ▼
-          5. 单仓去重、别名归并
+          5. 默认清单 / 候选池分层
                     │
                     ▼
-          6. 跨仓候选召回与匹配
+          6. LLM 处理歧义候选（可选）
                     │
                     ▼
-          7. 可选 LLM 语义复核
+          7. 人工审核与覆盖层
                     │
                     ▼
-          8. 冲突处理、结果持久化
+          8. 术语版本发布、别名与关系维护
                     │
                     ▼
           9. CLI / API / Web / MCP 输出
@@ -134,8 +150,8 @@ CodeGraph SQLite + 可选源码文本 + 仓库配置
 
 流水线必须遵循两个原则：
 
-- **事实与推断分离**：文件、行号、类型、字段、关系来自 CodeGraph；“是否为领域术语”和“两个术语是否相同”属于推断。
-- **召回与裁决分离**：规则负责低成本召回候选，评分器或 LLM 负责裁决，避免对所有实体做全量 LLM 比较。
+- 规则先生成候选和证据，避免对整个仓库做全量 LLM 扫描；
+- LLM 只处理规则无法可靠裁决的候选，人工最终决定是否进入正式术语清单。
 
 ## 5. 阶段一：数据检查与候选采集
 
@@ -153,20 +169,20 @@ CodeGraph SQLite + 可选源码文本 + 仓库配置
 
 ### 5.2 候选来源
 
-优先级从高到低：
+候选来源按“语义可靠性”和“可审计性”分层，而不是按名称数量排序：
 
-| 来源 | CodeGraph 节点/关系 | 可产生的术语类型 |
-|---|---|---|
-| 类型声明 | class/interface/record/struct/type/enum | 实体、值对象、状态 |
-| 字段与属性 | contains → field/property/enum_member | 属性、状态值 |
-| 类型关系 | references/type_of/extends/implements | 领域关联证据 |
-| API 契约 | route、handler、请求/响应类型 | 资源、命令、查询 |
-| 事件与消息 | topic/queue、handler、message 类型 | 领域事件 |
-| 数据持久化 | Entity/Table/Document 注解、表名 | 实体、聚合 |
-| 函数名称 | function/method | 业务动作 |
-| 注释与 docstring | 可选源码读取 | 定义、别名、业务解释 |
+| 层级 | 来源 | 可产生的术语类型 | 默认可信度 |
+|---|---|---|---|
+| 一级锚点 | 显式 API 路由、HTTP 方法、请求/响应类型 | 资源、命令、查询、实体 | 高 |
+| 一级锚点 | 实体/值对象/枚举定义、持久化注解 | 实体、值对象、状态 | 高 |
+| 二级佐证 | 字段与属性、类型关系、API 调用链 | 属性、别名、领域关联 | 中 |
+| 二级佐证 | 事件主题、消息类型、数据库表名 | 事件、实体、关联 | 中 |
+| 三级候选 | 函数名、变量名、目录和命名模式 | 动作、候选实体 | 低到中 |
+| 三级候选 | 注释、docstring、可选源码文本 | 定义、别名、业务解释 | 低到中 |
 
-第一版继续以类型声明为主，逐步增加 API、事件、状态和动作候选，避免一次扩展导致噪声失控。
+第一版以 API 与实体双锚点为主，先覆盖实体、API 资源和 API 动作；状态、事件、别名和跨仓关系在后续阶段逐步扩展。
+
+API 事实还要区分来源强度：显式路由/装饰器高于路由表映射，路由表映射高于根据函数名推断的路径。推断路径只能作为候选或佐证，不能单独生成正式高置信术语。
 
 ### 5.3 基础过滤
 
@@ -254,6 +270,7 @@ UserAcct          → tokens=[user,acct],         expanded=[user,account]
 
 | 分类 | 强证据 |
 |---|---|
+| `resource` | 显式 API 路径、稳定资源前缀、请求/响应模型 |
 | `entity` | Entity/Table/Document 注解、领域目录、标识字段、多关系 |
 | `value_object` | 不可变结构、值类型后缀、被实体字段引用 |
 | `state` | enum/type + 状态字段或状态转换使用 |
@@ -268,39 +285,53 @@ UserAcct          → tokens=[user,acct],         expanded=[user,account]
 
 ### 8.1 评分模型
 
-第一版沿用当前确定性公式，并把各项拆成可展示的 `score_breakdown`：
+第一版沿用当前确定性公式，并把各项拆成可展示的 `score_breakdown`。分数是排序分，不是模型自报的概率；通过黄金标注集校准后，才可解释为近似概率：
 
 ```text
-domain_score = graph_score
-             + structure_score
-             + location_score
-             + annotation_score
-             + usage_score
-             - technical_penalty
-             - noise_penalty
+confidence_score = anchor_score
+                 + corroboration_score
+                 + business_context_score
+                 + naming_score
+                 - technical_penalty
+                 - ambiguity_penalty
 ```
+
+其中 `anchor_score` 表示 API 或实体等一级锚点，`corroboration_score` 表示独立证据组，`business_context_score` 表示 API、持久化、调用链和模块上下文。不同证据组应去重计分，不能因为同一条事实被多个规则命中而虚增可信度。
 
 建议将总分归一到 `[0, 1]`，同时保留原始分数用于迁移比对。阈值分层：
 
-| 区间 | 处理 |
+| 置信度层级 | 处理 |
 |---|---|
-| `[0.80, 1.00]` | 自动接纳为领域术语 |
-| `[0.60, 0.80)` | 接纳但标记为需复核，或进入 LLM 复核 |
-| `[0.40, 0.60)` | 仅保留为候选，不进入默认结果 |
-| `[0.00, 0.40)` | 过滤，但保留诊断计数 |
+| 高 | 自动进入默认术语清单，但保留抽样审核 |
+| 中 | 进入人工审核队列，可由 LLM 提供解释 |
+| 低 | 仅进入候选池或诊断，不进入默认清单 |
 
-阈值必须通过标注集校准，以上只是初始建议值。
+初始建议使用 `auto_accept=0.85`、`review=0.60`，实际阈值必须按实体、API 资源、动作、状态、事件分别用标注集校准。自动接纳的目标是 Precision ≥ 0.95，而不是让固定分数看起来合理。
 
 ### 8.2 强制规则
 
 评分之外允许少量高精度规则：
 
 - 明确的领域注解可提升至最低接纳区间；
+- 高置信自动接纳至少需要一个一级锚点和一个独立佐证，或命中明确的人工白名单；
+- 仅有名称、目录、PageRank 或 LLM 输出时，不得自动接纳；
 - 生成代码、依赖代码和纯测试代码强制排除；
 - 用户黑名单强制排除；
 - 用户白名单强制接纳，但标记 `source=user_override`。
 
 每次强制覆盖都必须写明规则 ID，保证结果可追溯。
+
+### 8.3 排序输出
+
+每条输出至少包含以下字段：
+
+```text
+rank, canonical_name, term_type, bounded_context,
+confidence_score, confidence_band, status,
+source, evidence_summary, evidence_ids, risk_flags
+```
+
+默认按 `confidence_score DESC` 排序，并将结果分成“默认术语清单”和“候选池”。排序分相同时，依次使用证据数量、一级锚点优先级和稳定 ID 做确定性排序，不能依赖遍历顺序。
 
 ## 9. 阶段五：单仓去重与别名归并
 
@@ -417,7 +448,7 @@ LLM 必须返回结构化 JSON：
 - prompt、模型、规则版本和响应摘要写入审计记录；
 - 人工确认后才能将新业务缩写加入受控词典。
 
-## 12. 阶段八：冲突处理与人工反馈
+## 12. 阶段八：人工审核与冲突处理
 
 典型冲突及处理方式：
 
@@ -430,7 +461,9 @@ LLM 必须返回结构化 JSON：
 | 规则与 LLM 结论冲突 | 标记 `needs_review`，不由 LLM 静默覆盖 |
 | 人工判断与算法冲突 | 人工覆盖优先，并记录作用域与版本 |
 
-人工反馈数据包括：接纳、拒绝、修改规范名、添加别名、修改关系、加入黑白名单。反馈应进入独立覆盖层，不能改写原始证据。
+人工审核数据包括：接纳、拒绝、修改规范名、添加别名、修改类型、修改关系、加入黑白名单和新增术语。审核队列按“业务影响 × 不确定性”排序，高置信术语只做抽样审核，中低置信和高影响候选优先进入队列。
+
+人工补充的术语可以没有对应的代码节点，但必须记录定义、所属 bounded context、来源、作者、原因和时间。反馈应进入独立覆盖层，不能改写原始证据。
 
 ## 13. 数据模型
 
@@ -443,13 +476,18 @@ id                 稳定 ID
 repository_id      所属仓库或逻辑服务
 canonical_name     规范名
 normalized_name    规范化名称
-term_type          entity/value_object/state/event/action/technical/unknown
-domain_score       归一化领域分
-status             accepted/candidate/rejected/needs_review
-source             rule/llm/user_override
+term_type          resource/entity/value_object/state/event/action/technical/unknown
+bounded_context    所属业务上下文或逻辑服务
+domain_score       领域性子分（兼容现有实体排序，可为空）
+confidence_score   置信度排序分
+confidence_band    high/medium/low
+status             accepted/candidate/rejected/needs_review/retired
+source             rule/llm/manual/user_override
+definition         人工或 AI 生成的业务定义，可为空
 first_seen_commit  首次出现提交
 last_seen_commit   最近出现提交
 algorithm_version  算法版本
+reviewed_at        最近审核时间，可为空
 created_at
 updated_at
 ```
@@ -457,7 +495,7 @@ updated_at
 ### 13.2 `term_mentions`
 
 ```text
-id, term_id, node_id, symbol_name, qualified_name,
+id, term_id, node_id(nullable), symbol_name, qualified_name,
 file_path, start_line, end_line, commit_hash, mention_kind
 ```
 
@@ -465,7 +503,7 @@ file_path, start_line, end_line, commit_hash, mention_kind
 
 ```text
 id, term_id, evidence_type, evidence_value,
-weight, source_location, rule_id, created_at
+weight, source_location, node_id(nullable), rule_id, created_at
 ```
 
 ### 13.4 `term_relations`
@@ -482,6 +520,8 @@ score_breakdown, llm_status, algorithm_version
 id, scope, matcher, action, value,
 reason, author, created_at, expires_at
 ```
+
+`term_overrides.action` 至少支持 `accept`、`reject`、`rename`、`alias`、`reclassify`、`relate`、`add_term` 和 `exclude`。人工新增术语通过 `add_term` 创建，不伪造 CodeGraph 证据。
 
 稳定 ID 应基于“仓库身份 + bounded context + 规范概念键”生成，不能直接使用文件路径，以免重命名造成术语身份漂移。
 
@@ -516,10 +556,15 @@ accepted_terms:
     type: value_object
 
 thresholds:
-  accept: 0.80
+  auto_accept: 0.85
   review: 0.60
   cross_repo_candidate: 0.60
   llm_review: 0.70
+
+evidence_policy:
+  require_anchor_for_auto_accept: true
+  require_independent_corroboration: true
+  allow_llm_only_accept: false
 
 llm:
   enabled: false
@@ -536,19 +581,22 @@ llm:
 
 ```bash
 # 单仓术语识别
-codeevolution terms extract -r <repo> [--types entity,event,state] [--llm]
+codeevolution terms extract --snapshot-id <snapshot-id> [--types entity,resource,action] [--llm]
 
 # 查看证据与评分
-codeevolution terms explain -r <repo> --term Order
+codeevolution terms explain --snapshot-id <snapshot-id> --term Order
+
+# 人工审核或补充
+codeevolution terms review --snapshot-id <snapshot-id> --term-id <id> --action accept|reject|rename|alias|add-term
 
 # 多仓对齐
-codeevolution terms align [--service orders] [--service billing] [--llm]
+codeevolution terms align --view-id <view-id> [--service orders] [--service billing] [--llm]
 
 # 导出
-codeevolution terms export -r <repo> --format json|markdown
+codeevolution terms export --snapshot-id <snapshot-id> --format json|markdown
 ```
 
-现有 `knowledge -s entities` 和 `entities --llm` 在迁移期保留，内部委托给新服务，并提示新命令。
+现有 `knowledge --section entities` 在迁移期保留，内部委托给新服务，并提示新命令。
 
 ### 15.2 API
 
@@ -559,15 +607,18 @@ GET  /api/terms/{id}
 GET  /api/terms/{id}/evidence
 POST /api/terms/align
 POST /api/terms/{id}/review
+POST /api/terms/manual
 ```
 
-列表接口返回摘要，证据和评分明细按需加载，防止大型仓库响应过大。
+列表接口按 `snapshot_id`、`type`、`status`、`confidence_band` 分页返回，并默认按置信度降序；证据和评分明细按需加载，防止大型仓库响应过大。
 
 ### 15.3 Web
 
 Web 页面至少提供：
 
 - 术语列表和类型/状态/服务筛选；
+- 默认术语清单与候选池分栏；
+- 按置信度降序展示，并显示自动接纳、待审核和人工补充来源；
 - 分数、规则命中和源码定位；
 - 别名与跨服务关系图；
 - 接纳、拒绝、改名和关系修正；
@@ -606,7 +657,7 @@ Web 页面至少提供：
 {
   "canonical_name": "Order",
   "status": "accepted",
-  "domain_score": 0.91,
+  "confidence_score": 0.91,
   "score_breakdown": {
     "annotation": 0.20,
     "domain_path": 0.15,
@@ -658,12 +709,14 @@ Web 页面至少提供：
 
 | 指标 | 目标 |
 |---|---|
-| 领域术语 Precision@默认列表 | ≥ 0.90 |
+| 自动接纳术语 Precision@默认列表 | ≥ 0.95 |
 | 领域术语 Recall | ≥ 0.80 |
 | `same` 对齐 Precision | ≥ 0.90 |
 | 跨仓候选 Recall | ≥ 0.90 |
 | 有完整证据的结果比例 | 100% |
 | 无 LLM 运行成功率 | 100% |
+| 人工新增/修正可追溯率 | 100% |
+| 技术对象误收率 | ≤ 5% |
 
 按语言、框架、仓库规模和术语类型分别统计，不能只报告总体平均值。
 
@@ -686,26 +739,38 @@ Web 页面至少提供：
 
 ## 20. 分阶段实施计划
 
-### M1：统一当前能力
+### M1：高置信候选生成
 
 - 新增 `TermCandidate`、`TermEvidence`、`TermRelation` 领域模型；
 - 抽取统一名称规范化器；
-- 将核心实体评分改成可解释的分项结果；
+- 接入 API 契约和实体定义两个一级锚点；
+- 生成实体、API 资源和 API 动作候选；
+- 将核心实体评分改成可解释的分项结果，并输出置信度排序；
 - 修正文档与实现不一致的缩写/编辑距离描述；
 - 保持现有 CLI/API 输出兼容。
 
-验收：现有测试全部通过，同一输入的核心实体排序不发生无解释变化。
+验收：无 LLM 时可生成带证据的候选，默认高置信列表 Precision 达到初始目标。
 
 ### M2：单仓术语识别
 
 - 引入准入阈值、技术类型分类、别名归并；
 - 支持 `.codeevolution/terms.yml`；
-- 增加术语存储、证据查询和 `terms explain`；
+- 增加默认术语清单、候选池、术语存储和证据查询；
+- 增加人工接纳、拒绝、改名、别名、排除和新增术语；
 - 建立首批黄金标注集。
 
-验收：默认列表 Precision 达到目标，所有结果具有源码证据和评分明细。
+验收：自动生成结果具有源码证据和评分明细；人工新增结果具有定义、来源和审核记录；默认列表 Precision 达到目标。
 
-### M3：跨仓对齐升级
+### M3：补充证据与关系识别
+
+- 加入字段、持久化、调用链和消息上下文；
+- 识别状态、事件和值对象；
+- 支持 `same/subset/wrapper/related/false` 关系；
+- 保存候选关系和冲突。
+
+验收：中置信候选能够通过证据补充或人工审核进入正式清单，技术对象不会被静默合并。
+
+### M4：跨仓对齐升级
 
 - 加入字段、API、消息和调用上下文；
 - 使用 blocking + 精排；
@@ -714,7 +779,7 @@ Web 页面至少提供：
 
 验收：`same` Precision 与候选 Recall 达到目标，不再依赖遍历顺序决定结果。
 
-### M4：LLM 复核与人工反馈
+### M5：LLM 复核与人工反馈增强
 
 - 实现证据包和严格 JSON schema；
 - 增加隐私配置、审计与失败降级；
@@ -723,7 +788,7 @@ Web 页面至少提供：
 
 验收：关闭 LLM 时功能完整；启用后中置信候选准确率提高且不会破坏确定性结果。
 
-### M5：增量与演进
+### M6：增量与演进
 
 - 按节点变化增量更新术语；
 - 跟踪别名、规范名、拆分和合并事件；
@@ -747,14 +812,16 @@ Web 页面至少提供：
 
 ## 22. 完成定义
 
-术语识别能力只有同时满足以下条件才视为完成：
+高置信术语识别 MVP 只有同时满足以下条件才视为完成：
 
-- 能稳定识别至少实体、状态和事件三类领域术语；
+- 能稳定识别实体、API 资源和 API 动作三类术语；
+- API 与实体候选具有明确的来源层级和独立佐证；
+- 默认术语清单与候选池明确分离，并按置信度降序输出；
 - 单仓别名与跨仓关系有明确区分；
 - 每个术语和关系均可追溯到代码位置及规则证据；
+- 人工新增术语可追溯到定义、作者和审核记录；
 - 无 LLM 环境下可完整运行；
 - LLM 失败时可安全降级；
 - 支持配置、人工复核、算法版本和增量更新；
 - 黄金标注集指标达到既定门槛；
 - CLI、API、Web 对同一结果使用一致的数据模型与术语。
-

@@ -24,6 +24,7 @@ from .application.chat_service import ChatService, SnapshotChatService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
 from .application.snapshot_query_service import SnapshotQueryService
 from .application.snapshot_runtime import SnapshotRuntime
+from .application.term_service import TermRecognitionService
 from .application.ui_recording_service import UiRecordingService
 from .infrastructure.analysis_snapshot_sqlite import utc_now
 from .infrastructure.audit_store import AuditStore
@@ -34,15 +35,10 @@ from .infrastructure.explanation_snapshot_store import (
 )
 from .infrastructure.llm_config_store import LLMConfigStore
 from .infrastructure.node_rule_store import NodeRuleStore
+from .infrastructure.term_store import TermStore
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
 from .paths import analysis_data_dir, data_dir, repo_data_file
-from .semantic.explanation_templates import (
-    default_prompt_guidance,
-    default_prompt_templates,
-    normalize_prompt_templates,
-    prompt_digest,
-)
 from .registry import (
     REGISTRY_FILE,
     get_repo,
@@ -51,6 +47,12 @@ from .registry import (
     repository_members,
     unregister_member,
     unregister_repo,
+)
+from .semantic.explanation_templates import (
+    default_prompt_guidance,
+    default_prompt_templates,
+    normalize_prompt_templates,
+    prompt_digest,
 )
 from .store import EvolutionStore
 
@@ -69,6 +71,7 @@ _ui_test_store: UiTestStore | None = None
 _business_rule_store: BusinessRuleStore | None = None
 _node_rule_store: NodeRuleStore | None = None
 _explanation_snapshot_store: ExplanationSnapshotStore | None = None
+_term_store: TermStore | None = None
 _api_explanation_batch_scheduler = None
 _snapshot_runtime: SnapshotRuntime | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies", default={})
@@ -156,6 +159,35 @@ class LLMConfigRequest(BaseModel):
 
 class KnowledgeExtractionRequest(BaseModel):
     snapshot_id: str = Field(min_length=1, max_length=200)
+
+
+class TermExtractionRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=200)
+    types: list[str] = Field(default_factory=list, max_length=16)
+
+
+class TermReviewRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=200)
+    action: str = Field(pattern="^(accept|reject|rename|reclassify|alias|relate)$")
+    value: dict[str, Any] = Field(default_factory=dict)
+    reason: str = Field(default="", max_length=2000)
+    author: str = Field(default="", max_length=200)
+
+
+class ManualTermRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=200)
+    canonical_name: str = Field(min_length=1, max_length=200)
+    term_type: str = Field(default="entity", max_length=40)
+    bounded_context: str = Field(default="", max_length=200)
+    definition: str = Field(default="", max_length=5000)
+    aliases: list[str] = Field(default_factory=list, max_length=32)
+    reason: str = Field(default="", max_length=2000)
+    author: str = Field(default="", max_length=200)
+
+
+class TermAlignRequest(BaseModel):
+    view_id: str = Field(min_length=1, max_length=200)
+    service_ids: list[str] = Field(default_factory=list, max_length=32)
 
 
 class BusinessRuleGenerateRequest(BaseModel):
@@ -338,6 +370,23 @@ def get_snapshot_chat_service() -> SnapshotChatService:
     if injected := dependencies.get("snapshot_chat_service"):
         return injected
     return SnapshotChatService(get_audit_store(), get_snapshot_query_service(), dependencies.get("llm_client"))
+
+
+def get_term_store() -> TermStore:
+    global _term_store
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("term_store"):
+        return injected
+    if _term_store is None:
+        _term_store = TermStore(analysis_data_dir() / "terms.db")
+    return _term_store
+
+
+def get_term_service() -> TermRecognitionService:
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("term_service"):
+        return injected
+    return TermRecognitionService(get_term_store())
 
 
 def get_ui_recording_service() -> UiRecordingService:
@@ -1441,6 +1490,110 @@ def start_llm_knowledge_extraction(request: KnowledgeExtractionRequest):
     return {"job": job}
 
 
+# ── Evidence-backed terminology ──
+
+def _term_snapshot_context(snapshot_id: str) -> tuple[dict, str]:
+    try:
+        facts = get_snapshot_query_service().knowledge(snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
+    snapshot = get_snapshot_store().get_snapshot(snapshot_id)
+    if snapshot is None:
+        raise HTTPException(404, "repository snapshot not found")
+    repository_id = getattr(snapshot, "member_id", "")
+    if isinstance(snapshot, dict):
+        repository_id = snapshot.get("member_id", "")
+    return facts, repository_id or f"snapshot:{snapshot_id}"
+
+
+@app.post("/api/terms/extract")
+def extract_terms(request: TermExtractionRequest):
+    """Extract and persist ranked terms from one immutable repository snapshot."""
+    facts, repository_id = _term_snapshot_context(request.snapshot_id)
+    allowed = {"resource", "entity", "value_object", "state", "event", "action", "technical"}
+    if any(item not in allowed for item in request.types):
+        raise HTTPException(422, "unsupported term type")
+    return get_term_service().extract(request.snapshot_id, repository_id, facts, request.types or None)
+
+
+@app.get("/api/terms")
+def list_terms(
+    snapshot_id: str = Query(..., min_length=1),
+    type: str = Query("", alias="type"),
+    status: str = Query(""),
+    confidence_band: str = Query(""),
+    name: str = Query(""),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    _term_snapshot_context(snapshot_id)
+    return get_term_service().list(
+        snapshot_id, term_type=type, status=status, confidence_band=confidence_band,
+        name=name, limit=limit, offset=offset,
+    )
+
+
+@app.get("/api/terms/{term_id}")
+def get_term(term_id: str, snapshot_id: str = Query(..., min_length=1)):
+    _term_snapshot_context(snapshot_id)
+    result = get_term_service().get(snapshot_id, term_id)
+    if result is None:
+        raise HTTPException(404, "term not found")
+    return {"term": result}
+
+
+@app.get("/api/terms/{term_id}/evidence")
+def get_term_evidence(term_id: str, snapshot_id: str = Query(..., min_length=1)):
+    _term_snapshot_context(snapshot_id)
+    if get_term_service().get(snapshot_id, term_id) is None:
+        raise HTTPException(404, "term not found")
+    return {"evidence": get_term_service().evidence(snapshot_id, term_id)}
+
+
+@app.post("/api/terms/{term_id}/review")
+def review_term(term_id: str, request: TermReviewRequest):
+    _term_snapshot_context(request.snapshot_id)
+    try:
+        result = get_term_service().review(
+            request.snapshot_id, term_id, request.action, request.value, request.reason, request.author
+        )
+    except KeyError as error:
+        raise HTTPException(404, "term not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"term": result}
+
+
+@app.post("/api/terms/manual", status_code=201)
+def add_manual_term(request: ManualTermRequest):
+    _facts, repository_id = _term_snapshot_context(request.snapshot_id)
+    try:
+        term = get_term_service().add_manual(request.snapshot_id, repository_id, request.model_dump())
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"term": term}
+
+
+@app.post("/api/terms/align")
+def align_terms(request: TermAlignRequest):
+    """Align accepted entity terms across the frozen members of a Graph View."""
+    view = get_snapshot_store().get_view(request.view_id)
+    if view is None:
+        raise HTTPException(404, "graph view not found")
+    selected = set(request.service_ids)
+    reports = []
+    for member in view.members:
+        if selected and member.member_id not in selected:
+            continue
+        if not member.snapshot_id:
+            continue
+        facts, repository_id = _term_snapshot_context(member.snapshot_id)
+        reports.append(get_term_service().extract(member.snapshot_id, repository_id, facts))
+    return {"view_id": request.view_id, **get_term_service().align(reports)}
+
+
 # ── Call-chain tree (lazy per-node expansion) ──
 
 
@@ -2241,7 +2394,7 @@ _route_app = app
 @asynccontextmanager
 async def _lifespan(application):
     global _audit_store, _ui_test_store, _business_rule_store, _node_rule_store
-    global _explanation_snapshot_store
+    global _explanation_snapshot_store, _term_store
     global _api_explanation_batch_scheduler
     runtime = application.state.dependencies.get("snapshot_runtime")
     if runtime is None and application.state.use_default_snapshot_runtime:
@@ -2282,6 +2435,9 @@ async def _lifespan(application):
     if _explanation_snapshot_store is not None:
         _explanation_snapshot_store.close()
         _explanation_snapshot_store = None
+    if _term_store is not None:
+        _term_store.close()
+        _term_store = None
 
 
 def create_app(dependencies: dict | None = None) -> FastAPI:

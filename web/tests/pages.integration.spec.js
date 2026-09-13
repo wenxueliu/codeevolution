@@ -7,6 +7,7 @@ import Home from '../src/pages/Home.vue'
 import Knowledge from '../src/pages/Knowledge.vue'
 import Snapshots from '../src/pages/Snapshots.vue'
 import GraphView from '../src/pages/GraphView.vue'
+import Terms from '../src/pages/Terms.vue'
 import RepositoryAssistant from '../src/components/RepositoryAssistant.vue'
 import LLMSettings from '../src/components/LLMSettings.vue'
 
@@ -26,6 +27,7 @@ const RouterLink = {
         return `/repo/${params.repoName}${snapshotId ? `?snapshot_id=${snapshotId}` : ''}`
       }
       if (this.to?.name === 'knowledge-home') return '/knowledge'
+      if (this.to?.name === 'terms') return '/terms'
       return '/'
     },
   },
@@ -61,8 +63,21 @@ describe('repository and knowledge pages', () => {
       },
     })
     const links = wrapper.findAll('.nav-links a')
-    expect(links.map(link => link.text())).toEqual(['知识中心', '快照', '图谱视图'])
-    expect(links.map(link => link.attributes('href'))).toEqual(['/knowledge', '/snapshots', '/graph-views'])
+    expect(links.map(link => link.text())).toEqual(['知识中心', '快照', '图谱视图', '术语'])
+    expect(links.map(link => link.attributes('href'))).toEqual(['/knowledge', '/snapshots', '/graph-views', '/terms'])
+  })
+
+  it('renders ranked terms and evidence actions for a snapshot', async () => {
+    const { wrapper } = mountPage(Terms, {
+      '/api/terms': { total: 1, terms: [{ id: 'term-1', rank: 1, canonical_name: 'Order', term_type: 'entity', confidence_score: 0.96, confidence_band: 'high', status: 'accepted', source: 'rule', aliases: [] }] },
+      '/api/terms/term-1/evidence': { evidence: [{ id: 'ev-1', evidence_type: 'api_model_reference', evidence_value: 'POST /orders → Order' }] },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Order')
+    expect(wrapper.text()).toContain('96%')
+    await wrapper.find('tbody tr').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('POST /orders → Order')
   })
 
   it('keeps the active snapshot and view context in top-level navigation', () => {
