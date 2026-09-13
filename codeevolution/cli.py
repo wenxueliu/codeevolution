@@ -205,8 +205,12 @@ def cmd_terms(args):
                         snapshot = runtime.store.get_snapshot(member.snapshot_id)
                         if snapshot is None:
                             continue
-                        reports.append(service.extract(member.snapshot_id, snapshot.member_id, runtime.snapshot_queries.knowledge(member.snapshot_id)))
-                    result = {"view_id": args.view_id, **service.align(reports)}
+                        report = service.extract(member.snapshot_id, snapshot.member_id, runtime.snapshot_queries.knowledge(member.snapshot_id))
+                        reports.append({**report, "service_id": member.member_id, "display_name": member.display_name or member.member_id})
+                    from .application.snapshot_topology_service import SnapshotTopologyService
+                    topology = SnapshotTopologyService(runtime.store, runtime.snapshot_queries).topology(args.view_id)
+                    alignment = service.align(reports, service_edges=topology.get("edges", []))
+                    result = {"view_id": args.view_id, **alignment, "persisted": service.save_alignments(args.view_id, alignment)}
                 finally:
                     store.close()
                     runtime.close()

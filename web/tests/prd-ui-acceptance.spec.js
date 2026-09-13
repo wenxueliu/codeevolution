@@ -18,7 +18,7 @@ const RouterLink = {
       if (this.to?.name === 'snapshots') return '/snapshots'
       if (this.to?.name === 'knowledge-home') return '/knowledge'
       if (this.to?.name === 'graph-view') return this.to.params?.viewId ? `/graph-views/${this.to.params.viewId}` : '/graph-views'
-      if (this.to?.name === 'terms') return '/terms'
+      if (this.to?.name === 'terms') return `/terms${this.to?.query?.view_id ? `?view_id=${this.to.query.view_id}` : ''}`
       if (this.to?.name === 'knowledge') return `/repo/${this.to.params.repoName}?snapshot_id=${this.to.query?.snapshot_id}`
       return '/'
     },
@@ -337,7 +337,7 @@ describe('PRD UI acceptance journey', () => {
     const links = wrapper.findAll('.nav-links a')
     expect(links[0].attributes('href')).toBe('/knowledge')
     expect(links[2].attributes('href')).toBe('/graph-views')
-    expect(links[3].attributes('href')).toBe('/terms')
+    expect(links[3].attributes('href')).toBe('/terms?view_id=view-old')
   })
 
   it('UI-016 lets users cancel a running Run and retry failed members', async () => {

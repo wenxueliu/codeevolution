@@ -26,7 +26,7 @@
     <template v-else>
       <div class="page-header">
         <div><h1>{{ t('Graph View') }}</h1><p>{{ t('以固定的快照集合浏览跨仓服务拓扑、变更影响和调用流程。') }}</p></div>
-        <router-link class="secondary" :to="{ name: 'snapshots' }">{{ t('返回 Snapshots') }}</router-link>
+        <div class="page-actions"><router-link class="secondary" :to="{ name: 'terms', query: { view_id: viewId } }">{{ t('跨服务术语对齐') }}</router-link><router-link class="secondary" :to="{ name: 'snapshots' }">{{ t('返回 Snapshots') }}</router-link></div>
       </div>
       <UiState v-if="error" kind="error" :title="t('Graph View 加载失败')" :message="error.message" :action-label="t('重试')" @action="load" />
       <UiState v-else-if="loading" kind="loading" :title="t('正在加载 Graph View')" />
@@ -217,6 +217,7 @@ export default {
 
 <style scoped>
 .view-meta { margin-bottom: 20px; }.panel { margin-bottom: 20px; }.panel h2, .panel h3 { margin: 0; }.panel-heading, .analysis-heading { display: flex; justify-content: space-between; gap: 20px; align-items: center; }.panel-heading p { margin: 5px 0 0; }.service-list { margin: 0 0 16px; }.service-list small { margin-left: 5px; opacity: .75; }.edge-card pre, pre { overflow: auto; max-height: 180px; padding: 10px; background: #f6f8fa; border-radius: 6px; font-size: 12px; }
+.page-actions { display:flex; gap:10px; align-items:center; }
 .visual-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }.coverage-list { display: grid; gap: 18px; }.coverage-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }.collector-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }.coverage-row p { margin: 5px 0 0; font-size: 12px; }.resource-table { margin-top: 14px; }.compact-table { margin-top: 12px; }.analysis-panel { overflow: hidden; }.analysis-heading { align-items: start; }.analysis-heading h2 { margin-bottom: 4px; }.analysis-heading .el-form { margin: 0; }.analysis-heading :deep(.el-form-item) { margin: 0; }.method-input { width: 82px; }.path-input { width: 190px; margin-left: 6px; }.analysis-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }.analysis-columns :deep(.el-card__header) { padding: 12px 14px; }.analysis-columns :deep(.el-card__body) { min-height: 90px; padding: 14px; }.path-tag { margin: 0 6px 6px 0; }.path-tag small { margin-left: 6px; opacity: .8; }.analysis-warning { margin-top: 14px; }.flow-card { margin-top: 18px; }.muted { color: #667085; }.view-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }.view-card :deep(.el-card__body) { display: flex; align-items: center; justify-content: space-between; gap: 16px; }.view-card h2 { margin: 0 0 6px; font-size: 18px; }.view-card p { margin: 0 0 6px; color: #667085; font-size: 13px; }.view-card code { overflow-wrap: anywhere; font-size: 11px; color: #666; }.artifact-empty { text-align: center; }.primary { border: 0; border-radius: 5px; padding: 9px 15px; color: #fff; background: #315d9b; cursor: pointer; }.secondary { color: #315d9b; text-decoration: none; }.entry-input { display: flex; gap: 6px; }
 @media (max-width: 900px) { .visual-grid, .analysis-columns { grid-template-columns: 1fr; }.analysis-heading { display: block; }.analysis-heading .el-form { margin-top: 12px; } }
 </style>

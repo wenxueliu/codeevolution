@@ -56,7 +56,10 @@ export default {
       return { name: 'graph-view' }
     },
     termsRoute() {
-      return { name: 'terms', query: this.$route.query.snapshot_id ? { snapshot_id: this.$route.query.snapshot_id } : {} }
+      const query = {}
+      if (this.$route.query.snapshot_id) query.snapshot_id = this.$route.query.snapshot_id
+      if (this.graphViewId) query.view_id = this.graphViewId
+      return { name: 'terms', query }
     },
   },
   methods: {

@@ -27,7 +27,7 @@ const RouterLink = {
         return `/repo/${params.repoName}${snapshotId ? `?snapshot_id=${snapshotId}` : ''}`
       }
       if (this.to?.name === 'knowledge-home') return '/knowledge'
-      if (this.to?.name === 'terms') return '/terms'
+      if (this.to?.name === 'terms') return `/terms${this.to?.query?.view_id ? `?view_id=${this.to.query.view_id}` : ''}`
       return '/'
     },
   },
@@ -78,6 +78,16 @@ describe('repository and knowledge pages', () => {
     await wrapper.find('tbody tr').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('POST /orders → Order')
+  })
+
+  it('renders the Graph View-scoped cross-service alignment workspace', async () => {
+    const { wrapper } = mountPage(Terms, {
+      '/api/terms/alignments': { view_id: 'view-1', total: 1, alignments: [{ id: 'align-1', source_service_id: 'orders', target_service_id: 'billing', source_term_id: 'term-1', target_term_id: 'term-2', relationship: 'same', confidence: 0.96, status: 'needs_review' }] },
+    }, {}, { query: { view_id: 'view-1' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('跨服务术语对齐')
+    expect(wrapper.text()).toContain('orders')
+    expect(wrapper.text()).toContain('96%')
   })
 
   it('keeps the active snapshot and view context in top-level navigation', () => {

@@ -155,6 +155,8 @@ def test_openapi_path_snapshot():
         "/api/scopes/{scope_id}/members",
         "/api/terms",
         "/api/terms/align",
+        "/api/terms/alignments",
+        "/api/terms/alignments/{alignment_id}/review",
         "/api/terms/extract",
         "/api/terms/manual",
         "/api/terms/{term_id}",

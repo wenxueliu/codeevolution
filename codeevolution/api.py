@@ -190,6 +190,12 @@ class TermAlignRequest(BaseModel):
     service_ids: list[str] = Field(default_factory=list, max_length=32)
 
 
+class TermAlignmentReviewRequest(BaseModel):
+    action: str = Field(pattern="^(accept|reject)$")
+    reason: str = Field(default="", max_length=2000)
+    author: str = Field(default="", max_length=200)
+
+
 class BusinessRuleGenerateRequest(BaseModel):
     repository_snapshot_id: str = Field(default="", max_length=200)
     view_id: str = Field(default="", max_length=200)
@@ -1535,6 +1541,18 @@ def list_terms(
     )
 
 
+@app.get("/api/terms/alignments")
+def list_term_alignments(
+    view_id: str = Query(..., min_length=1),
+    status: str = Query(""),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    if get_snapshot_store().get_view(view_id) is None:
+        raise HTTPException(404, "graph view not found")
+    return get_term_service().list_alignments(view_id, status=status, limit=limit, offset=offset)
+
+
 @app.get("/api/terms/{term_id}")
 def get_term(term_id: str, snapshot_id: str = Query(..., min_length=1)):
     _term_snapshot_context(snapshot_id)
@@ -1578,7 +1596,7 @@ def add_manual_term(request: ManualTermRequest):
 
 @app.post("/api/terms/align")
 def align_terms(request: TermAlignRequest):
-    """Align accepted entity terms across the frozen members of a Graph View."""
+    """Recommend alignments only for connected business services in a frozen Graph View."""
     view = get_snapshot_store().get_view(request.view_id)
     if view is None:
         raise HTTPException(404, "graph view not found")
@@ -1590,8 +1608,29 @@ def align_terms(request: TermAlignRequest):
         if not member.snapshot_id:
             continue
         facts, repository_id = _term_snapshot_context(member.snapshot_id)
-        reports.append(get_term_service().extract(member.snapshot_id, repository_id, facts))
-    return {"view_id": request.view_id, **get_term_service().align(reports)}
+        report = get_term_service().extract(member.snapshot_id, repository_id, facts)
+        display_name = getattr(member, "display_name", "") or member.member_id
+        reports.append({**report, "service_id": member.member_id, "display_name": display_name})
+    try:
+        topology = get_snapshot_topology_service().topology(request.view_id)
+    except KeyError as error:
+        raise HTTPException(404, "graph view not found") from error
+    result = get_term_service().align(reports, service_edges=topology.get("edges", []))
+    persisted = get_term_service().save_alignments(request.view_id, result)
+    return {"view_id": request.view_id, **result, "persisted": persisted}
+
+
+@app.post("/api/terms/alignments/{alignment_id}/review")
+def review_term_alignment(alignment_id: str, request: TermAlignmentReviewRequest, view_id: str = Query(..., min_length=1)):
+    if get_snapshot_store().get_view(view_id) is None:
+        raise HTTPException(404, "graph view not found")
+    try:
+        alignment = get_term_service().review_alignment(view_id, alignment_id, request.action, request.reason, request.author)
+    except KeyError as error:
+        raise HTTPException(404, "alignment not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"alignment": alignment}
 
 
 # ── Call-chain tree (lazy per-node expansion) ──

@@ -1,6 +1,23 @@
 <template>
   <div class="terms-page">
     <UiState v-if="error" kind="error" :title="t('术语识别失败')" :message="error.message" :action-label="t('重试')" :dismiss-label="t('关闭')" @action="load" @dismiss="error = null" />
+    <template v-else-if="viewId">
+      <header class="terms-header">
+        <div><h1>{{ t('跨服务术语对齐') }}</h1><p>{{ t('以 Graph View 确定范围，只对齐存在业务通信关系的服务。') }} <code>{{ viewId }}</code></p></div>
+        <button class="primary" :disabled="alignmentLoading" @click="align">{{ alignmentLoading ? t('对齐中...') : t('生成对齐候选') }}</button>
+      </header>
+      <section class="panel alignment-scope">
+        <div class="panel-heading"><div><h2>{{ t('推荐服务对') }}</h2><p>{{ t('默认排除网关、注册中心、配置和监控等技术服务。') }}</p></div><span>{{ t('人工审核后生效') }}</span></div>
+        <div v-if="servicePairs.length" class="pair-list"><span v-for="pair in servicePairs" :key="pair.source_service_id + '-' + pair.target_service_id" class="pair"><code>{{ pair.source_service_id }}</code> ↔ <code>{{ pair.target_service_id }}</code><small>{{ pair.reasons.join(', ') }}</small></span></div>
+        <p v-else class="empty">{{ t('暂无服务对，请先生成对齐候选。') }}</p>
+        <p v-if="excludedServices.length" class="excluded">{{ t('已排除技术服务') }}：{{ excludedServices.map(item => item.service_id).join(', ') }}</p>
+      </section>
+      <section class="panel">
+        <div class="panel-heading"><div><h2>{{ t('跨服务对齐候选') }}</h2><p>{{ t('same 也只是推荐结果，必须经过人工审核。') }}</p></div><span>{{ t('共 {count} 条', { count: alignments.length }) }}</span></div>
+        <div class="table-wrap" v-if="alignments.length"><table><thead><tr><th>{{ t('服务') }}</th><th>{{ t('术语') }}</th><th>{{ t('关系') }}</th><th>{{ t('可信度') }}</th><th>{{ t('状态') }}</th><th>{{ t('操作') }}</th></tr></thead><tbody><tr v-for="item in alignments" :key="item.id"><td><code>{{ item.source_service_id }}</code> ↔ <code>{{ item.target_service_id }}</code></td><td>{{ item.source_term_id }} ↔ {{ item.target_term_id }}</td><td>{{ item.relationship }}</td><td><span class="score">{{ Math.round(Number(item.confidence || 0) * 100) }}%</span></td><td><span class="status" :class="item.status">{{ item.status }}</span></td><td class="row-actions"><button v-if="item.status !== 'accepted' && item.status !== 'rejected'" class="link" @click="reviewAlignment(item, 'accept')">{{ t('接纳') }}</button><button v-if="item.status !== 'rejected'" class="link danger" @click="reviewAlignment(item, 'reject')">{{ t('排除') }}</button></td></tr></tbody></table></div>
+        <p v-else class="empty">{{ t('暂无对齐候选，请确认 Graph View 中存在业务服务调用。') }}</p>
+      </section>
+    </template>
     <UiState v-else-if="!snapshotId" kind="empty" :title="t('需要选择 Snapshot')" :message="t('请先在 Snapshots 中选择一个已发布快照，再识别术语。')" :action-label="t('前往 Snapshots')" @action="$router.push({ name: 'snapshots' })" />
     <template v-else>
       <header class="terms-header">
@@ -48,7 +65,8 @@ export default {
   components: { UiState },
   data() {
     return {
-      snapshotId: this.$route.query.snapshot_id || '', terms: [], summary: null, evidence: [], expanded: '',
+      snapshotId: this.$route.query.snapshot_id || '', viewId: this.$route.query.view_id || '', terms: [], summary: null, evidence: [], expanded: '',
+      servicePairs: [], excludedServices: [], alignments: [], alignmentLoading: false,
       evidenceLoading: false, manualOpen: false, saving: false, locale: locale.value, loadTimer: null,
       filters: { status: '', type: '', name: '' },
       manual: { canonical_name: '', term_type: 'entity', definition: '', author: '' },
@@ -56,11 +74,21 @@ export default {
   },
   created() { window.addEventListener(LOCALE_EVENT, this.refreshLocale); this.load() },
   beforeUnmount() { window.removeEventListener(LOCALE_EVENT, this.refreshLocale); clearTimeout(this.loadTimer) },
-  watch: { '$route.query.snapshot_id'(value) { this.snapshotId = value || ''; this.load() } },
+  watch: {
+    '$route.query.snapshot_id'(value) { this.snapshotId = value || ''; this.load() },
+    '$route.query.view_id'(value) { this.viewId = value || ''; this.load() },
+  },
   methods: {
     t,
     refreshLocale(event) { this.locale = event?.detail || locale.value },
     async load() {
+      if (this.viewId) {
+        await this.$runAsync(async () => {
+          const data = await this.$api.get('/api/terms/alignments', { view_id: this.viewId, limit: 500 })
+          this.alignments = data.alignments || []
+        })
+        return
+      }
       if (!this.snapshotId) return
       await this.$runAsync(async () => {
         const data = await this.$api.get('/api/terms', { snapshot_id: this.snapshotId, status: this.filters.status, type: this.filters.type, name: this.filters.name, limit: 500 })
@@ -71,6 +99,21 @@ export default {
     debouncedLoad() { clearTimeout(this.loadTimer); this.loadTimer = setTimeout(() => this.load(), 250) },
     async extract() {
       await this.$runAsync(async () => { await this.$api.request('/api/terms/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot_id: this.snapshotId }) }); await this.load() })
+    },
+    async align() {
+      this.alignmentLoading = true
+      try {
+        const data = await this.$api.request('/api/terms/align', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ view_id: this.viewId }) })
+        this.servicePairs = data.service_pairs || []
+        this.excludedServices = data.excluded_services || []
+        this.alignments = [...(data.mappings || []), ...(data.alternatives || [])]
+      } finally { this.alignmentLoading = false }
+    },
+    async reviewAlignment(item, action) {
+      await this.$runAsync(async () => {
+        await this.$api.request('/api/terms/alignments/' + item.id + '/review?view_id=' + encodeURIComponent(this.viewId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, author: 'web' }) })
+        await this.load()
+      })
     },
     async toggleEvidence(term) {
       if (this.expanded === term.id) { this.expanded = ''; return }
@@ -89,5 +132,5 @@ export default {
 </script>
 
 <style scoped>
-.terms-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:18px; }.terms-header h1 { margin:0 0 5px; }.terms-header p,.panel-heading p { margin:0; color:#777; font-size:13px; }.actions { display:flex; gap:8px; }.primary,.secondary { border-radius:6px; padding:8px 13px; cursor:pointer; }.primary { border:0; background:#e94560; color:#fff; }.secondary { border:1px solid #cdd2dc; background:#fff; color:#444; }.manual-form,.toolbar,.panel,.summary { background:#fff; border:1px solid #e7e7eb; border-radius:8px; }.manual-form { display:grid; grid-template-columns:1fr 180px 1fr 160px auto; gap:10px; padding:14px; margin-bottom:16px; align-items:end; }.manual-form label,.toolbar label { display:grid; gap:5px; color:#555; font-size:12px; }.manual-form input,.manual-form select,.manual-form textarea,.toolbar input,.toolbar select { border:1px solid #cfd3da; border-radius:5px; padding:7px 8px; min-width:0; }.manual-form .wide { grid-column:auto; }.summary { display:flex; margin-bottom:16px; }.summary div { flex:1; padding:13px 16px; border-right:1px solid #eee; }.summary div:last-child { border:0; }.summary strong,.summary span { display:block; }.summary strong { font-size:21px; color:#e94560; }.summary span { color:#777; font-size:12px; margin-top:3px; }.toolbar { display:flex; gap:12px; padding:12px; margin-bottom:12px; }.toolbar .search { flex:1; }.panel { overflow:hidden; }.panel-heading { display:flex; justify-content:space-between; padding:16px; border-bottom:1px solid #eee; }.panel-heading h2 { margin:0 0 4px; font-size:17px; }.panel-heading > span { color:#888; font-size:12px; }.table-wrap { overflow:auto; }table { width:100%; border-collapse:collapse; font-size:13px; }th,td { padding:10px 12px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }th { color:#777; font-size:11px; }.clickable,tr:not(.evidence-row) { cursor:pointer; }tr.expanded,tr:hover { background:#fff9fa; }td small { display:block; color:#999; margin-top:3px; }.score { color:#1a8050; font-weight:700; }.status { padding:3px 6px; border-radius:10px; font-size:11px; background:#f0f0f5; }.status.accepted { background:#e8f7ed; color:#23764a; }.status.needs_review { background:#fff3db; color:#8a6418; }.status.rejected { background:#fcebed; color:#b8324a; }.row-actions { white-space:nowrap; }.link { border:0; background:transparent; color:#2670a6; cursor:pointer; }.link.danger { color:#b8324a; }.evidence-row td { background:#fafafd; }.evidence-row ul { margin:0; padding-left:20px; }.empty,.muted { color:#888; padding:28px; text-align:center; }@media (max-width:800px) { .terms-header,.toolbar { flex-direction:column; }.manual-form { grid-template-columns:1fr; }.manual-form .wide { grid-column:auto; }.summary { flex-wrap:wrap; }.summary div { min-width:50%; }.actions { width:100%; }.actions button { flex:1; } }
+.terms-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:18px; }.terms-header h1 { margin:0 0 5px; }.terms-header p,.panel-heading p { margin:0; color:#777; font-size:13px; }.actions { display:flex; gap:8px; }.primary,.secondary { border-radius:6px; padding:8px 13px; cursor:pointer; }.primary { border:0; background:#e94560; color:#fff; }.secondary { border:1px solid #cdd2dc; background:#fff; color:#444; }.manual-form,.toolbar,.panel,.summary { background:#fff; border:1px solid #e7e7eb; border-radius:8px; }.manual-form { display:grid; grid-template-columns:1fr 180px 1fr 160px auto; gap:10px; padding:14px; margin-bottom:16px; align-items:end; }.manual-form label,.toolbar label { display:grid; gap:5px; color:#555; font-size:12px; }.manual-form input,.manual-form select,.manual-form textarea,.toolbar input,.toolbar select { border:1px solid #cfd3da; border-radius:5px; padding:7px 8px; min-width:0; }.manual-form .wide { grid-column:auto; }.summary { display:flex; margin-bottom:16px; }.summary div { flex:1; padding:13px 16px; border-right:1px solid #eee; }.summary div:last-child { border:0; }.summary strong,.summary span { display:block; }.summary strong { font-size:21px; color:#e94560; }.summary span { color:#777; font-size:12px; margin-top:3px; }.toolbar { display:flex; gap:12px; padding:12px; margin-bottom:12px; }.toolbar .search { flex:1; }.panel { overflow:hidden; }.panel-heading { display:flex; justify-content:space-between; padding:16px; border-bottom:1px solid #eee; }.panel-heading h2 { margin:0 0 4px; font-size:17px; }.panel-heading > span { color:#888; font-size:12px; }.table-wrap { overflow:auto; }table { width:100%; border-collapse:collapse; font-size:13px; }th,td { padding:10px 12px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }th { color:#777; font-size:11px; }.clickable,tr:not(.evidence-row) { cursor:pointer; }tr.expanded,tr:hover { background:#fff9fa; }td small { display:block; color:#999; margin-top:3px; }.score { color:#1a8050; font-weight:700; }.status { padding:3px 6px; border-radius:10px; font-size:11px; background:#f0f0f5; }.status.accepted { background:#e8f7ed; color:#23764a; }.status.needs_review { background:#fff3db; color:#8a6418; }.status.rejected { background:#fcebed; color:#b8324a; }.row-actions { white-space:nowrap; }.link { border:0; background:transparent; color:#2670a6; cursor:pointer; }.link.danger { color:#b8324a; }.evidence-row td { background:#fafafd; }.evidence-row ul { margin:0; padding-left:20px; }.pair-list { display:flex; gap:10px; flex-wrap:wrap; padding:14px 16px; }.pair { padding:8px 10px; border:1px solid #e7e7eb; border-radius:6px; background:#fafafd; }.pair small { display:block; color:#888; margin-top:4px; }.excluded { margin:0; padding:0 16px 14px; color:#8a6418; font-size:12px; }.empty,.muted { color:#888; padding:28px; text-align:center; }@media (max-width:800px) { .terms-header,.toolbar { flex-direction:column; }.manual-form { grid-template-columns:1fr; }.manual-form .wide { grid-column:auto; }.summary { flex-wrap:wrap; }.summary div { min-width:50%; }.actions { width:100%; }.actions button { flex:1; } }
 </style>

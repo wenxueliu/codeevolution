@@ -89,20 +89,20 @@ score = PageRank × 30
 
 该算法适合回答“哪些类型更像核心领域对象”，但没有绝对准入门槛，因此返回的是排序结果，不是严格的术语判定。
 
-### 3.2 跨服务实体对齐
+### 3.2 跨服务术语对齐
 
-当前跨仓逻辑先收集非测试的 `class/struct/interface/enum/type_alias`，再进行两两服务比较：
+跨服务对齐不对所有服务做无差别两两比较，而是以一个冻结的 `Graph View` 作为范围：
 
-1. 精确同名得分 `1.0`；
-2. 按下划线和 CamelCase 分词；
-3. 使用词集合 Jaccard 相似度；
-4. 一方词集合包含另一方时，最低提升到 `0.7`；
-5. 对 `Service/Svc`、`Repository/Repo`、`Request/Req` 等后缀做有限归一；
-6. 得分不低于 `0.6` 才成为候选映射；
-7. 每一对服务内使用贪心一对一匹配；
-8. 使用 `--llm` 时，只验证分数不低于 `0.7` 的前 20 个映射。
+1. 读取 View 中有可用 Snapshot 的服务；
+2. 根据已确认的 HTTP、消息或 gRPC 服务边，推荐存在业务通信关系的服务对；
+3. 排除 gateway、registry、config、monitor、Redis、Kafka 等技术服务；
+4. 只对齐 `entity`、`resource`、`event`、`value_object`，不把 Controller、DTO、Service 和 API handler 当作跨服务业务术语；
+5. 先用规范名/别名和有限分词相似度生成候选，再保留证据和服务关系原因；
+6. `same` 与 `related` 都进入人工审核，名称相同不等于业务含义相同；
+7. 对齐关系以 `view_id` 持久化，不合并或覆盖任一服务的本地术语；
+8. 审核通过后，才允许将多个本地术语绑定到可复用的跨服务概念。
 
-当前实现注释中提到“缩写展开”和“编辑距离”，但算法实际上尚未实现通用缩写展开与编辑距离。后续文档和代码应保持一致。
+典型边界如下：订单服务 `Order` 与支付服务 `PaymentOrder` 通常是 `related`；商品服务 `Product` 与库存服务 `SKU` 可能相关但不是同一概念；网关与订单服务不做业务术语对齐。当前名称相似度仍是第一版候选生成器，后续应加入字段、API 模型、事件载荷和上下文冲突证据，并用标注集校准阈值。
 
 ### 3.3 查询术语定位
 
@@ -514,6 +514,20 @@ relationship, confidence, status,
 score_breakdown, llm_status, algorithm_version
 ```
 
+### 13.5 `term_alignments`
+
+跨服务关系必须带有 View 范围，避免把某个 View 中的临时判断误认为全局事实：
+
+```text
+id, view_id, source_service_id, target_service_id,
+source_term_id, target_term_id, relationship,
+confidence, status, score_breakdown,
+service_relation_reasons, algorithm_version,
+reviewer, reviewed_at, created_at
+```
+
+`status` 初始为 `needs_review`，人工确认后才变为 `accepted` 或 `rejected`。`same` 仅表示“推荐为同一概念”，不表示已完成审核。
+
 ### 13.5 `term_overrides`
 
 ```text
@@ -558,7 +572,8 @@ accepted_terms:
 thresholds:
   auto_accept: 0.85
   review: 0.60
-  cross_repo_candidate: 0.60
+  cross_service_candidate: 0.60
+  cross_service_auto_accept: false
   llm_review: 0.70
 
 evidence_policy:
@@ -606,6 +621,8 @@ GET  /api/terms?repository=...&type=...&status=...
 GET  /api/terms/{id}
 GET  /api/terms/{id}/evidence
 POST /api/terms/align
+GET  /api/terms/alignments?view_id=...
+POST /api/terms/alignments/{id}/review?view_id=...
 POST /api/terms/{id}/review
 POST /api/terms/manual
 ```
@@ -621,6 +638,7 @@ Web 页面至少提供：
 - 按置信度降序展示，并显示自动接纳、待审核和人工补充来源；
 - 分数、规则命中和源码定位；
 - 别名与跨服务关系图；
+- 跨服务对齐页：选择 Graph View，显示推荐服务对、排除的技术服务、`same/related/conflict` 候选和审核状态；
 - 接纳、拒绝、改名和关系修正；
 - 当前算法版本、索引时间与过期状态。
 

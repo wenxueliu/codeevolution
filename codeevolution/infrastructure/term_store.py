@@ -93,6 +93,26 @@ class TermStore:
                     llm_status TEXT NOT NULL DEFAULT 'not_requested',
                     UNIQUE(snapshot_id, source_term_id, target_term_id, relationship)
                 );
+                CREATE TABLE IF NOT EXISTS term_alignments (
+                    id TEXT PRIMARY KEY,
+                    view_id TEXT NOT NULL,
+                    source_service_id TEXT NOT NULL,
+                    target_service_id TEXT NOT NULL,
+                    source_term_id TEXT NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+                    target_term_id TEXT NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+                    relationship TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    score_breakdown_json TEXT NOT NULL DEFAULT '{}',
+                    service_relation_reasons_json TEXT NOT NULL DEFAULT '[]',
+                    algorithm_version TEXT NOT NULL DEFAULT 'term-alignment/v1',
+                    reviewer TEXT NOT NULL DEFAULT '',
+                    reviewed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(view_id, source_term_id, target_term_id, relationship)
+                );
+                CREATE INDEX IF NOT EXISTS idx_term_alignments_view
+                    ON term_alignments(view_id, status, confidence DESC);
                 CREATE TABLE IF NOT EXISTS term_overrides (
                     id TEXT PRIMARY KEY,
                     snapshot_id TEXT NOT NULL,
@@ -176,6 +196,72 @@ class TermStore:
             ).fetchone()[0]
         counts = {row["status"]: row["count"] for row in rows}
         return {"total": total, "accepted": counts.get("accepted", 0), "candidates": total - counts.get("accepted", 0), "needs_review": counts.get("needs_review", 0)}
+
+    def replace_alignments(self, view_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Persist recommendations while preserving prior human decisions."""
+        now = utc_now()
+        items = list(result.get("mappings", [])) + list(result.get("alternatives", []))
+        with self._connection() as connection:
+            for item in items:
+                source_term_id = str(item.get("source_term_id") or "")
+                target_term_id = str(item.get("target_term_id") or "")
+                if not source_term_id or not target_term_id:
+                    continue
+                existing = connection.execute(
+                    "SELECT status FROM term_alignments WHERE view_id=? AND source_term_id=? AND target_term_id=? AND relationship=?",
+                    (view_id, source_term_id, target_term_id, item.get("relationship", "related")),
+                ).fetchone()
+                if existing and existing["status"] in {"accepted", "rejected"}:
+                    continue
+                alignment_id = item.get("id") or "align-" + sha256(
+                    f"{view_id}|{source_term_id}|{target_term_id}|{item.get('relationship', 'related')}".encode()
+                ).hexdigest()[:24]
+                connection.execute(
+                    """INSERT INTO term_alignments
+                       (id,view_id,source_service_id,target_service_id,source_term_id,target_term_id,relationship,confidence,status,score_breakdown_json,service_relation_reasons_json,algorithm_version,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(view_id,source_term_id,target_term_id,relationship) DO UPDATE SET
+                       confidence=excluded.confidence,status=excluded.status,score_breakdown_json=excluded.score_breakdown_json,
+                       service_relation_reasons_json=excluded.service_relation_reasons_json,algorithm_version=excluded.algorithm_version""",
+                    (alignment_id, view_id, item.get("source_service_id", ""), item.get("target_service_id", ""),
+                     source_term_id, target_term_id, item.get("relationship", "related"), item.get("confidence", 0),
+                     "needs_review", json.dumps(item.get("score_breakdown", {}), ensure_ascii=False),
+                     json.dumps(item.get("service_relation_reasons", []), ensure_ascii=False), "term-alignment/v1", now),
+                )
+        return self.list_alignments(view_id)
+
+    def list_alignments(self, view_id: str, *, status: str = "", limit: int = 500, offset: int = 0) -> dict[str, Any]:
+        clauses = ["view_id=?"]
+        params: list[Any] = [view_id]
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        where = " AND ".join(clauses)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM term_alignments WHERE {where} ORDER BY confidence DESC, id LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+            total = connection.execute(f"SELECT COUNT(*) FROM term_alignments WHERE {where}", tuple(params)).fetchone()[0]
+        return {"view_id": view_id, "total": total, "alignments": [self._alignment_row(row) for row in rows]}
+
+    def review_alignment(self, view_id: str, alignment_id: str, action: str, reason: str = "", author: str = "") -> dict[str, Any]:
+        if action not in {"accept", "reject"}:
+            raise ValueError("unsupported alignment review action")
+        now = utc_now()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                "UPDATE term_alignments SET status=?,reviewer=?,reviewed_at=? WHERE id=? AND view_id=?",
+                ("accepted" if action == "accept" else "rejected", author, now, alignment_id, view_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(alignment_id)
+            connection.execute(
+                "INSERT INTO term_overrides (id,snapshot_id,term_id,scope,matcher,action,value_json,reason,author,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("override-" + uuid4().hex, view_id, None, "view", alignment_id, action, "{}", reason, author, now),
+            )
+        result = self.list_alignments(view_id)
+        return next(item for item in result["alignments"] if item["id"] == alignment_id)
 
     def list_terms(
         self, snapshot_id: str, *, term_type: str = "", status: str = "", confidence_band: str = "",
@@ -307,4 +393,11 @@ class TermStore:
         data = dict(row)
         data["risk_flags"] = json.loads(data.pop("risk_flags_json", "[]"))
         data["aliases"] = json.loads(data.pop("aliases_json", "[]"))
+        return data
+
+    @staticmethod
+    def _alignment_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["score_breakdown"] = json.loads(data.pop("score_breakdown_json", "{}"))
+        data["service_relation_reasons"] = json.loads(data.pop("service_relation_reasons_json", "[]"))
         return data

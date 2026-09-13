@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from codeevolution.analysis.knowledge.terms import TermRecognizer
 from codeevolution.api import create_app
+from codeevolution.application.term_service import TermRecognitionService
 from codeevolution.infrastructure.term_store import TermStore
 
 FACTS = {
@@ -47,6 +48,24 @@ def test_technical_wrapper_does_not_hide_a_real_entity():
     assert order["status"] == "accepted"
 
 
+def test_alignment_recommends_connected_business_services_only():
+    service = TermRecognitionService(None)
+    reports = [
+        {"repository_id": "orders", "service_id": "orders", "terms": [{"id": "order-a", "canonical_name": "Order", "term_type": "entity", "status": "accepted"}]},
+        {"repository_id": "billing", "service_id": "billing", "terms": [{"id": "order-b", "canonical_name": "Order", "term_type": "entity", "status": "accepted"}]},
+        {"repository_id": "gateway", "service_id": "gateway", "terms": [{"id": "order-c", "canonical_name": "Order", "term_type": "entity", "status": "accepted"}]},
+        {"repository_id": "inventory", "service_id": "inventory", "terms": [{"id": "sku", "canonical_name": "SKU", "term_type": "entity", "status": "accepted"}]},
+    ]
+    result = service.align(reports, service_edges=[
+        {"source_member_id": "orders", "target_member_id": "billing", "kind": "http"},
+        {"source_member_id": "gateway", "target_member_id": "orders", "kind": "http"},
+    ])
+
+    assert {(item["source_service_id"], item["target_service_id"]) for item in result["service_pairs"]} == {("billing", "orders")}
+    assert result["excluded_services"] == [{"service_id": "gateway", "display_name": "gateway", "reason": "technical_service"}]
+    assert len(result["mappings"]) == 1
+
+
 class _Runtime:
     def __init__(self, store):
         self.store = store
@@ -63,6 +82,13 @@ class _SnapshotQuery:
         if snapshot_id not in {"snapshot-1", "snapshot-2"}:
             raise KeyError(snapshot_id)
         return FACTS
+
+
+class _SnapshotTopology:
+    def topology(self, view_id):
+        return {"view_id": view_id, "edges": [{
+            "source_member_id": "orders", "target_member_id": "billing", "kind": "http",
+        }]}
 
 
 def test_terms_api_extracts_lists_reviews_and_adds_manual_terms(tmp_path):
@@ -114,6 +140,7 @@ def test_terms_api_aligns_accepted_entities_from_a_view(tmp_path):
     app = create_app({
         "term_store": term_store,
         "snapshot_query_service": _SnapshotQuery(),
+        "snapshot_topology_service": _SnapshotTopology(),
         "snapshot_runtime": _Runtime(snapshot_store),
     })
     with TestClient(app) as client:
@@ -121,4 +148,17 @@ def test_terms_api_aligns_accepted_entities_from_a_view(tmp_path):
         assert response.status_code == 200
         assert response.json()["mappings"]
         assert response.json()["mappings"][0]["relationship"] == "same"
+        assert response.json()["mappings"][0]["status"] == "needs_review"
+        assert response.json()["service_pairs"][0]["reasons"] == ["http"]
+
+        alignments = client.get("/api/terms/alignments", params={"view_id": "view-1"})
+        assert alignments.status_code == 200
+        alignment_id = alignments.json()["alignments"][0]["id"]
+        reviewed = client.post(
+            f"/api/terms/alignments/{alignment_id}/review",
+            params={"view_id": "view-1"},
+            json={"action": "accept", "author": "tester"},
+        )
+        assert reviewed.status_code == 200
+        assert reviewed.json()["alignment"]["status"] == "accepted"
     term_store.close()
