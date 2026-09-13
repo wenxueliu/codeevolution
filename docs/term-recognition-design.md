@@ -145,13 +145,18 @@ CodeGraph/API 事实 + 可选源码文本 + 仓库配置
           8. 术语版本发布、别名与关系维护
                     │
                     ▼
-          9. CLI / API / Web / MCP 输出
+          9. 知识中心左侧“术语识别”知识维度
+                    │
+                    ▼
+          10. CLI / API / Web / MCP 输出
 ```
 
 流水线必须遵循两个原则：
 
 - 规则先生成候选和证据，避免对整个仓库做全量 LLM 扫描；
 - LLM 只处理规则无法可靠裁决的候选，人工最终决定是否进入正式术语清单。
+
+术语生成接入分析运行的 Snapshot 发布生命周期：分析成员成功发布 Snapshot 后，立即以该 Snapshot 的冻结 facts 生成并持久化术语投影。术语生成失败只记录诊断，不回滚已经成功发布的 Snapshot。知识中心加载 Snapshot 时只读取术语投影，不在页面打开时重复生成。
 
 ## 5. 阶段一：数据检查与候选采集
 
@@ -528,7 +533,7 @@ reviewer, reviewed_at, created_at
 
 `status` 初始为 `needs_review`，人工确认后才变为 `accepted` 或 `rejected`。`same` 仅表示“推荐为同一概念”，不表示已完成审核。
 
-### 13.5 `term_overrides`
+### 13.6 `term_overrides`
 
 ```text
 id, scope, matcher, action, value,
@@ -633,6 +638,8 @@ POST /api/terms/manual
 
 Web 页面至少提供：
 
+- 知识中心左侧与“API 契约”并列的“术语识别”入口；
+- 分析运行发布 Snapshot 后自动显示术语结果；
 - 术语列表和类型/状态/服务筛选；
 - 默认术语清单与候选池分栏；
 - 按置信度降序展示，并显示自动接纳、待审核和人工补充来源；

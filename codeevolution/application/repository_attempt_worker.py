@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import ntpath
 import os
 import shutil
@@ -79,6 +80,7 @@ class AttemptCancelledError(RuntimeError):
 
 
 ANALYZER_BUNDLE_DIGEST = f"codeevolution:{__version__}:repository-analysis-v2"
+logger = logging.getLogger(__name__)
 
 
 class RepositoryAttemptWorker:
@@ -314,6 +316,7 @@ class RepositoryAttemptWorker:
             observed_head_commit=final.git_head,
         )
         published = self.store.publish_snapshot(attempt.id, evidence, snapshot)
+        self._generate_terms(published, facts)
         if published.id != snapshot.id:
             # The immutable snapshot identity already existed.  The retry's
             # communication payload embeds a fresh snapshot ID and is therefore
@@ -329,6 +332,20 @@ class RepositoryAttemptWorker:
         # The two published CAS objects were renamed out of this attempt's
         # staging directory; do not leave an empty per-attempt container behind.
         _reclaim_staging(staging)
+
+    def _generate_terms(self, snapshot: RepositoryAnalysisSnapshot, facts: dict[str, Any]) -> None:
+        """Materialize derived terms after snapshot publication without blocking it."""
+        try:
+            from codeevolution.application.term_service import TermRecognitionService
+            from codeevolution.infrastructure.term_store import TermStore
+
+            term_store = TermStore(self.artifacts.data_dir / "terms.db")
+            TermRecognitionService(term_store).extract(snapshot.id, snapshot.member_id, facts)
+        except Exception:
+            # Terminology is a derived knowledge projection. A storage or rule
+            # failure must be visible in logs but must not invalidate a durable
+            # repository snapshot that has already been published.
+            logger.exception("automatic terminology generation failed for snapshot %s", snapshot.id)
 
     def _communication_artifact(
         self,

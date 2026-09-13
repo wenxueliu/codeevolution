@@ -337,7 +337,6 @@ describe('PRD UI acceptance journey', () => {
     const links = wrapper.findAll('.nav-links a')
     expect(links[0].attributes('href')).toBe('/knowledge')
     expect(links[2].attributes('href')).toBe('/graph-views')
-    expect(links[3].attributes('href')).toBe('/terms?view_id=view-old')
   })
 
   it('UI-016 lets users cancel a running Run and retry failed members', async () => {

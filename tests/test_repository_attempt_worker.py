@@ -11,6 +11,7 @@ from codeevolution.infrastructure.codegraph_command import (
     CodeGraphTerminationError,
     CommandResult,
 )
+from codeevolution.infrastructure.term_store import TermStore
 
 
 def _graph(path: Path):
@@ -83,6 +84,33 @@ def test_worker_captures_analyzes_and_publishes_snapshot(tmp_path):
     assert snapshot.facts["files"] == ["app.py"]
     assert snapshot.facts["communication_summary"]["artifact_key"].startswith("sha256:")
     assert snapshot.observed_head_commit is None  # repository has staged but no committed HEAD
+
+
+def test_worker_generates_terms_after_snapshot_publication(tmp_path):
+    _repo, store, _run, attempt = _setup(tmp_path)
+    data_root = tmp_path / "data"
+    worker = RepositoryAttemptWorker(
+        store,
+        FileSystemArtifactStore(data_root),
+        command_runner=SuccessfulRunner(),
+        analyzer=lambda *_: {
+            "api_contract": {"endpoints": [{
+                "method": "GET", "path": "/api/orders", "handler": "get_orders",
+                "node_id": "get-orders", "response_body": {"type": "Order"},
+            }]},
+            "core_entities": [{
+                "node_id": "order", "name": "Order", "kind": "class", "score": 24,
+                "fields": [{"name": "id"}], "relationship_count": 1,
+            }],
+        },
+    )
+
+    worker(attempt)
+
+    snapshot = store.get_current_snapshot("repo")
+    assert snapshot is not None
+    terms = TermStore(data_root / "terms.db").list_terms(snapshot.id)
+    assert any(item["canonical_name"] == "Order" and item["status"] == "accepted" for item in terms["terms"])
 
 
 def test_worker_rejects_source_change_without_publishing(tmp_path):

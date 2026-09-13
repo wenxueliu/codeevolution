@@ -63,8 +63,8 @@ describe('repository and knowledge pages', () => {
       },
     })
     const links = wrapper.findAll('.nav-links a')
-    expect(links.map(link => link.text())).toEqual(['知识中心', '快照', '图谱视图', '术语'])
-    expect(links.map(link => link.attributes('href'))).toEqual(['/knowledge', '/snapshots', '/graph-views', '/terms'])
+    expect(links.map(link => link.text())).toEqual(['知识中心', '快照', '图谱视图'])
+    expect(links.map(link => link.attributes('href'))).toEqual(['/knowledge', '/snapshots', '/graph-views'])
   })
 
   it('renders ranked terms and evidence actions for a snapshot', async () => {
@@ -492,7 +492,10 @@ describe('repository and knowledge pages', () => {
       business_descriptions: { note: 'disabled' }, business_rules: { note: 'disabled' }, error_catalog: { note: 'disabled' }, state_machines: { note: 'disabled' },
     }
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const { wrapper, api } = mountPage(Knowledge, { '/api/knowledge': report }, { repoName: 'mall' })
+    const { wrapper, api } = mountPage(Knowledge, {
+      '/api/knowledge': report,
+      '/api/terms': { total: 1, terms: [{ id: 'term-1', rank: 1, canonical_name: 'Product', term_type: 'entity', confidence_score: 0.98, confidence_band: 'high', status: 'accepted', evidence_count: 2 }] },
+    }, { repoName: 'mall' })
     await flushPromises()
     expect(wrapper.text()).toContain('ProductController.create')
     await wrapper.find('tbody tr').trigger('click')
@@ -501,6 +504,10 @@ describe('repository and knowledge pages', () => {
     const entityButton = wrapper.findAll('.section-nav button').find(button => button.text().includes('核心实体'))
     await entityButton.trigger('click')
     expect(wrapper.text()).toContain('PmsProduct')
+    const termsButton = wrapper.findAll('.section-nav button').find(button => button.text().includes('术语识别'))
+    await termsButton.trigger('click')
+    expect(wrapper.text()).toContain('Product')
+    expect(wrapper.text()).toContain('98%')
     await wrapper.find('.primary').trigger('click')
     await flushPromises()
     expect(confirm).toHaveBeenCalled()

@@ -32,7 +32,6 @@
         <p>{{ t('基于不可变 Repository Snapshot 推导。') }} <code v-if="snapshotId">{{ snapshotId }}</code><span v-if="loadedAt"> · {{ loadedAt }} · {{ loadDuration }} ms</span></p>
       </div>
       <div class="actions">
-        <router-link class="secondary" :to="{ name: 'terms', query: { snapshot_id: snapshotId } }">{{ t('术语识别') }}</router-link>
         <button class="secondary" :disabled="loading" @click="load(false)">{{ t('刷新结构知识') }}</button>
         <button class="primary" :disabled="loading || llmJobActive" @click="loadLlm">
           {{ llmJobActive ? t('正在抽取 LLM 知识') : (llmLoaded ? t('重新抽取 LLM 知识') : t('抽取 LLM 知识')) }}
@@ -82,6 +81,13 @@
           <div><h2>{{ activeMeta.label }}</h2><p>{{ activeMeta.description }}</p></div>
           <span class="phase">{{ activeMeta.phase }}</span>
         </div>
+
+        <template v-if="activeSection === 'terms'">
+          <div class="terms-toolbar"><span>{{ t('术语已在分析发布后自动生成，并按可信度降序排列。') }}</span><router-link class="secondary sm" :to="{ name: 'terms', query: { snapshot_id: snapshotId } }">{{ t('打开术语审核') }}</router-link></div>
+          <div v-if="termsLoading" class="empty-semantic"><p>{{ t('正在加载术语') }}</p></div>
+          <div v-else-if="terms.length" class="table-wrap"><table><thead><tr><th>#</th><th>{{ t('规范名') }}</th><th>{{ t('类型') }}</th><th>{{ t('可信度') }}</th><th>{{ t('状态') }}</th><th>{{ t('证据') }}</th></tr></thead><tbody><tr v-for="term in terms" :key="term.id"><td>{{ term.rank || '-' }}</td><td><b>{{ term.canonical_name }}</b><small v-if="term.aliases?.length">{{ term.aliases.join(', ') }}</small></td><td><code>{{ termTypeLabel(term.term_type) }}</code></td><td><span class="term-score">{{ Math.round(Number(term.confidence_score || 0) * 100) }}%</span><small>{{ termConfidenceBandLabel(term.confidence_band) }}</small></td><td><span class="term-status" :class="term.status">{{ termStatusLabel(term.status) }}</span></td><td>{{ term.evidence_ids?.length || term.evidence_count || 0 }}</td></tr></tbody></table></div>
+          <div v-else class="empty-semantic"><p>{{ t('当前 Snapshot 尚未生成术语。') }}</p></div>
+        </template>
 
         <template v-if="activeSection === 'api_contract'">
           <div class="metric">{{ activeData.endpoint_count || 0 }} <small>{{ t('个端点') }}</small></div>
@@ -396,6 +402,7 @@ function snapshotIdFromRoute(route) {
 
 const SECTIONS = [
   ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
+  ['terms', '术语识别', '阶段1', '从 API 契约和实体定义生成按可信度排序的业务术语'],
   ['module_topology', '模块拓扑', '阶段1', '模块聚类、依赖关系与耦合度'],
   ['core_entities', '核心实体', '阶段1', '按字段、类型关系与领域语义识别核心领域对象'],
   ['test_coverage', '测试缺口', '阶段1', '生产函数覆盖率与未覆盖列表'],
@@ -445,7 +452,7 @@ export default {
     const snapshotId = snapshotIdFromRoute(this.$route)
     return {
       snapshotId,
-      report: null, activeSection: 'api_contract', llmLoaded: false,
+      report: null, terms: [], termsLoading: false, activeSection: 'api_contract', llmLoaded: false,
       llmJob: null, llmPollTimer: null,
       projectCatalog: [], catalogLoading: false, catalogError: null,
       expandedKeys: new Set(), expandedEntityKeys: new Set(),
@@ -466,7 +473,7 @@ export default {
       return SECTIONS.map(item => ({ ...item, label: this.t(item.label), phase: this.t(item.phase), description: this.t(item.description) }))
     },
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
-    activeData() { return this.report?.[this.activeSection] ?? {} },
+    activeData() { return this.activeSection === 'terms' ? this.terms : (this.report?.[this.activeSection] ?? {}) },
     llmJobActive() { return ['pending', 'running'].includes(this.llmJob?.status) },
     batchActive() { return ['queued', 'running'].includes(this.batchJob?.status) },
     llmProgress() {
@@ -480,6 +487,7 @@ export default {
     summaryCards() {
       return [
         { key: 'api_contract', label: this.t('API 端点'), value: this.report.api_contract?.endpoint_count ?? 0 },
+        { key: 'terms', label: this.t('术语'), value: this.terms.length },
         { key: 'module_topology', label: this.t('模块'), value: this.report.module_topology?.module_count ?? 0 },
         { key: 'core_entities', label: this.t('核心实体'), value: this.report.core_entities?.length ?? 0 },
         { key: 'test_coverage', label: this.t('测试覆盖率'), value: `${this.report.test_coverage?.coverage_pct ?? 0}%` },
@@ -508,6 +516,7 @@ export default {
         if (snapshotId === this.snapshotId) return
         this.snapshotId = snapshotId
         this.report = null
+        this.terms = []
         this.llmLoaded = false
         this.llmJob = null
         this.clearLlmPoll()
@@ -542,6 +551,18 @@ export default {
   },
   methods: {
     t,
+    termTypeLabel(type) {
+      const labels = { entity: '实体', value_object: '值对象', state: '状态', event: '事件', action: '动作' }
+      return labels[type] ? this.t(labels[type]) : type || '-'
+    },
+    termConfidenceBandLabel(band) {
+      const labels = { high: '高', medium: '中', low: '低' }
+      return labels[band] ? this.t(labels[band]) : band || '-'
+    },
+    termStatusLabel(status) {
+      const labels = { accepted: '已接纳', needs_review: '待审核', rejected: '已排除' }
+      return labels[status] ? this.t(labels[status]) : status || '-'
+    },
     async loadCatalog() {
       this.catalogLoading = true
       this.catalogError = null
@@ -586,7 +607,7 @@ export default {
       }
       await this.$runAsync(async () => {
         this.report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: includeLlm })
-        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus()])
+        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus(), this.loadTerms()])
         for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
         this.explanationPollTimers = {}
         this.apiExplanations = {}
@@ -601,6 +622,18 @@ export default {
         this.loadedAt = new Date().toLocaleTimeString()
         this.loadDuration = Math.round(performance.now() - started)
       })
+    },
+    async loadTerms() {
+      if (!this.snapshotId) return
+      this.termsLoading = true
+      try {
+        const data = await this.$api.get('/api/terms', { snapshot_id: this.snapshotId, limit: 500 })
+        this.terms = data.terms || []
+      } catch {
+        this.terms = []
+      } finally {
+        this.termsLoading = false
+      }
     },
     async loadPromptProfiles() {
       if (!this.snapshotId) return
@@ -1128,6 +1161,12 @@ button:disabled { opacity: .55; cursor: wait; }
 .detail-card p, .detail-card code { color: #888; font-size: 11px; }
 .table-wrap { overflow-x: auto; }
 .table-tools { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.terms-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 12px; background: #f8f9fc; border-radius: 6px; color: #667085; font-size: 13px; }
+.term-score { color: #1a8050; font-weight: 700; }
+.term-status { padding: 3px 7px; border-radius: 10px; font-size: 11px; background: #f0f0f5; }
+.term-status.accepted { background: #e8f7ed; color: #23764a; }
+.term-status.needs_review { background: #fff3db; color: #8a6418; }
+.term-status.rejected { background: #fcebed; color: #b8324a; }
 .table-tools label { display: grid; gap: 4px; color: #666; font-size: 11px; }
 .table-tools input, .table-tools select { min-width: 150px; border: 1px solid #cfd3da; border-radius: 5px; padding: 7px 8px; background: white; }
 .table-tools > span { margin-left: auto; color: #888; font-size: 12px; }
