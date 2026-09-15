@@ -74,7 +74,7 @@ class CodeGraphCapture:
             with closing(sqlite3.connect(source_uri, uri=True)) as input_db:
                 with closing(sqlite3.connect(destination)) as output_db:
                     input_db.backup(output_db)
-            with destination.open("rb") as captured_file:
+            with destination.open("r+b") as captured_file:
                 fsync_file(captured_file)
             set_private_permissions(destination, sensitive=False)
             with closing(sqlite3.connect(sqlite_readonly_uri(destination), uri=True)) as db:
