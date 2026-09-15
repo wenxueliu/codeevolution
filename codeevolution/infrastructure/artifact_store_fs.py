@@ -194,7 +194,7 @@ class FileSystemArtifactStore:
         directories, files = _tree_entries(root)
         for path in files:
             if path.is_file():
-                fd = os.open(path, os.O_RDONLY)
+                fd = os.open(path, os.O_RDWR | getattr(os, "O_BINARY", 0))
                 try:
                     fsync_file(fd)
                 finally:
