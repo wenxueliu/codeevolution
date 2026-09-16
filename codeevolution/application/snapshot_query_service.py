@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from codeevolution.analysis.knowledge.api_contract import ApiContractExtractor
 from codeevolution.analysis.knowledge.node_rule import SnapshotNodeRuleService
 from codeevolution.infrastructure.snapshot_bundle_resolver import (
     RepositorySnapshotHandle,
@@ -74,6 +75,39 @@ class SnapshotQueryService:
                 raise KeyError(section)
             return {key: facts[key]}
 
+    def api_contract(self, snapshot_id: str) -> dict:
+        """Return the complete API contract, including legacy-truncated facts.
+
+        Older published reports intentionally retained only the first 100
+        endpoints for the dashboard payload.  The frozen CodeGraph still has
+        the complete route data, so exports must rebuild the contract from the
+        snapshot graph when the persisted count is larger than that list.
+        """
+        with self.open(snapshot_id) as handle:
+            facts = handle.snapshot.facts
+            if facts is None:
+                raise RuntimeError("snapshot facts are unavailable")
+            projected = _project_api_node_ids(facts)
+            api = projected.get("api_contract") or {}
+            endpoints = api.get("endpoints") if isinstance(api, dict) else None
+            expected_count = api.get("endpoint_count", 0) if isinstance(api, dict) else 0
+            if isinstance(endpoints, list) and len(endpoints) >= expected_count:
+                return api
+
+            contract = ApiContractExtractor(handle.graph).extract()
+            serialized = [_serialize_api_endpoint(item) for item in contract.endpoints]
+            return {
+                "endpoint_count": len(serialized),
+                "endpoints": serialized,
+                "resource_groups": {
+                    name: [
+                        {"method": item.method, "path": item.path, "handler": item.handler_name}
+                        for item in items
+                    ]
+                    for name, items in contract.resource_groups.items()
+                },
+            }
+
     def call_tree_children(self, snapshot_id: str, node_id: str) -> dict:
         with self.open(snapshot_id) as handle:
             return _children(handle, node_id)
@@ -124,3 +158,25 @@ def _project_api_node_ids(facts: dict) -> dict:
     if not changed:
         return facts
     return {**facts, "api_contract": {**api, "endpoints": endpoints}}
+
+
+def _serialize_api_endpoint(endpoint) -> dict:
+    """Use the stable report shape when serializing a freshly rebuilt contract."""
+    return {
+        "method": endpoint.method,
+        "path": endpoint.path,
+        "handler": endpoint.handler_name,
+        "node_id": endpoint.node_id,
+        "file": endpoint.file_path,
+        "line": endpoint.line,
+        "params": endpoint.params,
+        "return_type": endpoint.return_type,
+        "request_headers": endpoint.request_headers,
+        "query_params": endpoint.query_params,
+        "path_params": endpoint.path_params,
+        "request_body": endpoint.request_body,
+        "response_body": endpoint.response_body,
+        "call_chain": endpoint.call_chain,
+        "call_chain_mermaid": endpoint.call_chain_mermaid,
+        "frontend_callers": endpoint.frontend_callers,
+    }

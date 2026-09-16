@@ -1,3 +1,4 @@
+import json
 import sys
 
 import pytest
@@ -66,6 +67,100 @@ def test_knowledge_route_uses_injected_service_without_closing_it():
         assert service.closed is False
     finally:
         _request_dependencies.reset(token)
+
+
+def test_knowledge_route_can_request_complete_api_contract():
+    class SnapshotQueries:
+        def api_contract(self, snapshot_id):
+            assert snapshot_id == "frozen-1"
+            return {"endpoint_count": 2, "endpoints": [{"path": "/one"}, {"path": "/two"}]}
+
+    class SnapshotStore:
+        def get_llm_knowledge_job(self, snapshot_id):
+            assert snapshot_id == "frozen-1"
+            return None
+
+    class Runtime:
+        snapshot_queries = SnapshotQueries()
+        store = SnapshotStore()
+
+    isolated = create_app({"snapshot_runtime": Runtime()})
+    token = _request_dependencies.set(isolated.state.dependencies)
+    try:
+        assert get_knowledge_report(
+            snapshot_id="frozen-1", section="api", complete=True
+        ) == {
+            "api_contract": {
+                "endpoint_count": 2,
+                "endpoints": [{"path": "/one"}, {"path": "/two"}],
+            }
+        }
+    finally:
+        _request_dependencies.reset(token)
+
+
+def test_cli_exports_one_contract_file_per_endpoint_without_source(monkeypatch, tmp_path):
+    class Queries:
+        def api_contract(self, snapshot_id):
+            assert snapshot_id == "frozen-1"
+            return {
+                "endpoint_count": 2,
+                "endpoints": [
+                    {
+                        "method": "GET",
+                        "path": "/orders/{id}",
+                        "request_headers": [{"name": "Authorization"}],
+                        "request_body": None,
+                        "path_params": [{"name": "id"}],
+                        "query_params": [],
+                        "response_body": {"type": "Order"},
+                        "call_chain": [
+                            {"id": "root", "name": "get", "source": "secret"},
+                            {"id": "child", "name": "load", "aggregate_explanation": {"summary": "secret"}},
+                        ],
+                    },
+                    {"method": "POST", "path": "/orders", "call_chain": []},
+                ],
+            }
+
+    class Runtime:
+        snapshot_queries = Queries()
+
+        def __init__(self, _root):
+            pass
+
+        def close(self):
+            pass
+
+    output_dir = tmp_path / "contracts"
+    monkeypatch.setattr(cli, "SnapshotRuntime", Runtime)
+    monkeypatch.setattr(cli, "analysis_data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "codeevolution",
+            "api-contract",
+            "--snapshot-id",
+            "frozen-1",
+            "--format",
+            "json",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    cli.main()
+
+    files = sorted(output_dir.glob("*.json"))
+    assert len(files) == 2
+    first = json.loads(files[0].read_text())
+    assert set(first) == {
+        "url", "method", "request_headers", "request_body", "path_params",
+        "query_params", "response_body", "call_chain", "main_node_explanation",
+    }
+    assert "source" not in json.dumps(first, ensure_ascii=False)
+    assert "aggregate_explanation" not in json.dumps(first["call_chain"], ensure_ascii=False)
 
 
 def test_unregister_route_removes_registration_and_closes_cached_store(monkeypatch):

@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -109,6 +110,209 @@ def cmd_knowledge(args):
         sys.exit(1)
     finally:
         runtime.close()
+
+
+def cmd_api_contract(args):
+    """Export one contract document per endpoint from an immutable snapshot."""
+    runtime = None
+    explanation_store = None
+    try:
+        if args.server:
+            _status, report, _headers = _request_json(
+                args.server,
+                "GET",
+                "/api/knowledge?" + urlencode({
+                    "snapshot_id": args.snapshot_id,
+                    "section": "api",
+                    "complete": "true",
+                    "include_llm": "false",
+                }),
+            )
+            endpoints = (report.get("api_contract") or {}).get("endpoints", [])
+
+            def explanation_loader(endpoint):
+                return _remote_main_node_explanation(args.server, args.snapshot_id, endpoint)
+
+        else:
+            runtime = SnapshotRuntime(analysis_data_dir())
+            report = {"api_contract": runtime.snapshot_queries.api_contract(args.snapshot_id)}
+            endpoints = (report.get("api_contract") or {}).get("endpoints", [])
+            explanation_path = analysis_data_dir() / "api-explanations.db"
+            if explanation_path.exists():
+                from .infrastructure.explanation_snapshot_store import ExplanationSnapshotStore
+
+                explanation_store = ExplanationSnapshotStore(explanation_path)
+
+            def explanation_loader(endpoint):
+                return _local_main_node_explanation(explanation_store, args.snapshot_id, endpoint)
+
+        if not isinstance(endpoints, list):
+            raise CLIContractError("snapshot API contract is invalid", 5)
+
+        documents = [
+            _api_contract_document(endpoint, explanation_loader(endpoint))
+            for endpoint in endpoints
+            if isinstance(endpoint, dict)
+        ]
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        extension = "json" if args.format == "json" else "md"
+        for index, document in enumerate(documents, start=1):
+            filename = _endpoint_filename(document, index, extension)
+            target = output_dir / filename
+            content = (
+                json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+                if args.format == "json"
+                else _render_api_contract_markdown(document)
+            )
+            _write_text_output(target, content)
+        print(f"Exported {len(documents)} API contract endpoint(s) to {output_dir}")
+    except CLIContractError as error:
+        _fail(str(error), error.code)
+    except (KeyError, RuntimeError, ValueError, OSError) as error:
+        _fail(str(error), 3)
+    finally:
+        if explanation_store is not None:
+            explanation_store.close()
+        if runtime is not None:
+            runtime.close()
+
+
+def _api_contract_document(endpoint: dict, main_explanation: dict | None) -> dict:
+    """Keep the exported contract deliberately narrower than the full report."""
+    return {
+        "url": endpoint.get("url") or endpoint.get("path") or "",
+        "method": str(endpoint.get("method") or "").upper(),
+        "request_headers": endpoint.get("request_headers") or [],
+        "request_body": endpoint.get("request_body"),
+        "path_params": endpoint.get("path_params") or [],
+        "query_params": endpoint.get("query_params") or [],
+        "response_body": endpoint.get("response_body"),
+        "call_chain": _contract_call_chain(endpoint.get("call_chain")),
+        "main_node_explanation": main_explanation,
+    }
+
+
+def _contract_call_chain(value) -> list[dict]:
+    """Copy call-chain facts while excluding explanation/source-shaped fields."""
+    if not isinstance(value, list):
+        return []
+    excluded = {"source", "source_snippet", "snippet", "explanation", "local_explanation", "aggregate_explanation"}
+    result = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        result.append({key: value for key, value in item.items() if key not in excluded})
+    return result
+
+
+def _local_main_node_explanation(store, snapshot_id: str, endpoint: dict) -> dict | None:
+    if store is None:
+        return None
+    from .infrastructure.explanation_source import api_key
+
+    current = store.get_current_for_repository_snapshot(
+        snapshot_id,
+        api_key(endpoint.get("method", ""), endpoint.get("path") or endpoint.get("url", ""), endpoint.get("handler", "")),
+    )
+    if current is None:
+        return None
+    node = store.get_node(current.id, current.entry_node_key)
+    if node is None:
+        return {
+            "snapshot_id": current.id,
+            "node_key": current.entry_node_key,
+            "status": current.status,
+            "local_explanation": None,
+            "aggregate_explanation": None,
+        }
+    return {
+        "snapshot_id": current.id,
+        "node_key": node.node_key,
+        "status": node.status,
+        "local_explanation": node.local_explanation,
+        "aggregate_explanation": node.aggregate_explanation,
+    }
+
+
+def _remote_main_node_explanation(server: str, snapshot_id: str, endpoint: dict) -> dict | None:
+    from .infrastructure.explanation_source import api_key
+
+    query = urlencode({
+        "repository_snapshot_id": snapshot_id,
+        "api_key": api_key(
+            endpoint.get("method", ""),
+            endpoint.get("path") or endpoint.get("url", ""),
+            endpoint.get("handler", ""),
+        ),
+    })
+    _status, result, _headers = _request_json(
+        server, "GET", "/api/api-explanations/current?" + query
+    )
+    snapshot = result.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    entry_key = snapshot.get("entry_node_key", "")
+    node = next(
+        (
+            item for item in snapshot.get("nodes", [])
+            if isinstance(item, dict) and item.get("node_key") == entry_key
+        ),
+        None,
+    )
+    return {
+        "snapshot_id": snapshot.get("id", ""),
+        "node_key": entry_key,
+        "status": (node or {}).get("status") or snapshot.get("status", ""),
+        "local_explanation": (node or {}).get("local_explanation"),
+        "aggregate_explanation": (node or {}).get("aggregate_explanation"),
+    }
+
+
+def _endpoint_filename(document: dict, index: int, extension: str) -> str:
+    method = _filename_part(document.get("method", "endpoint"))
+    url = _filename_part(document.get("url", "endpoint"))
+    return f"{index:04d}-{method}-{url}.{extension}"
+
+
+def _filename_part(value: object) -> str:
+    value = re.sub(r"[^\w.-]+", "-", str(value or "").strip(), flags=re.UNICODE)
+    return value.strip(".-")[:100] or "endpoint"
+
+
+def _render_api_contract_markdown(document: dict) -> str:
+    def block(value) -> str:
+        return "```json\n" + json.dumps(value, indent=2, ensure_ascii=False) + "\n```"
+
+    title = f"{document['method']} {document['url']}".strip()
+    explanation = document.get("main_node_explanation")
+    local = explanation.get("local_explanation") if explanation else None
+    aggregate = explanation.get("aggregate_explanation") if explanation else None
+    status = explanation.get("status", "missing") if explanation else "missing"
+    return (
+        f"# {title}\n\n"
+        "## Endpoint Contract\n\n"
+        f"- URL: `{document['url']}`\n"
+        f"- Method: `{document['method']}`\n\n"
+        "### Request Headers\n\n"
+        f"{block(document['request_headers'])}\n\n"
+        "### Request Body\n\n"
+        f"{block(document['request_body'])}\n\n"
+        "### Path Parameters\n\n"
+        f"{block(document['path_params'])}\n\n"
+        "### Query Parameters\n\n"
+        f"{block(document['query_params'])}\n\n"
+        "### Response Body\n\n"
+        f"{block(document['response_body'])}\n\n"
+        "## Call Chain\n\n"
+        f"{block(document['call_chain'])}\n\n"
+        "## Main Node Explanation\n\n"
+        f"- Status: `{status}`\n\n"
+        "### Local Explanation\n\n"
+        f"{block(local)}\n\n"
+        "### Aggregate Explanation\n\n"
+        f"{block(aggregate)}\n"
+    )
 
 
 def _terms_local_context():
@@ -281,12 +485,17 @@ def _canonical_output(value: object, output: str) -> None:
     if not output:
         print(rendered, end="")
         return
-    target = Path(output)
+    _write_text_output(Path(output), rendered)
+
+
+def _write_text_output(target: Path, content: str) -> None:
+    """Atomically write one UTF-8 CLI artifact with private permissions."""
+    target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(rendered)
+            handle.write(content)
             handle.flush()
             fsync_file(handle)
         set_private_permissions(temporary)
@@ -566,6 +775,27 @@ def main():
         help="Which knowledge section to extract (default: all)",
     )
     p.set_defaults(handler=cmd_knowledge)
+
+    # API contract export
+    p = subparsers.add_parser(
+        "api-contract",
+        help="Export one Markdown or JSON contract file per endpoint from a snapshot",
+    )
+    p.add_argument("--snapshot-id", required=True, help="Published repository snapshot ID")
+    p.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="File format (default: markdown)",
+    )
+    p.add_argument(
+        "--output-dir",
+        "-o",
+        default="api-contract",
+        help="Directory for one file per endpoint (default: ./api-contract)",
+    )
+    p.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
+    p.set_defaults(handler=cmd_api_contract)
 
     # evidence-backed terminology
     p = subparsers.add_parser("terms", help="Extract and review terminology from a snapshot")

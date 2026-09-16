@@ -1444,6 +1444,7 @@ def get_knowledge_report(
     snapshot_id: str = Query("", min_length=0),
     view_id: str = Query("", min_length=0),
     section: str | None = Query(None),
+    complete: bool = Query(False),
     # Compatibility is deliberately limited to an explicitly injected test/
     # embedding service; production never falls back to a live repo.
     repo: str = Query(""),
@@ -1465,7 +1466,10 @@ def get_knowledge_report(
                 raise HTTPException(409, str(error)) from error
         raise HTTPException(400, "snapshot_id is required")
     try:
-        report = get_snapshot_query_service().knowledge(snapshot_id, section=section)
+        if complete and section == "api":
+            report = {"api_contract": get_snapshot_query_service().api_contract(snapshot_id)}
+        else:
+            report = get_snapshot_query_service().knowledge(snapshot_id, section=section)
         job = get_snapshot_store().get_llm_knowledge_job(snapshot_id)
         if job is not None:
             report = {**report, "llm_job": job}
