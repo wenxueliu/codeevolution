@@ -1,10 +1,11 @@
 <template>
-  <div class="call-chain-tree">
+  <div ref="splitRef" class="call-chain-tree">
     <div v-if="rootError" class="ct-error">{{ rootError }}</div>
 
-    <div v-else class="ct-split">
+    <div v-else class="ct-split" :style="splitStyle">
       <!-- 左侧：端点根 + 调用链树 -->
-      <div class="ct-main">
+      <div class="ct-column ct-main">
+        <div class="ct-column-title">{{ t('后端调用链') }}</div>
         <div
           class="ct-root"
           :class="{ 'ct-root-selected': selected?.kind === 'root' }"
@@ -62,9 +63,24 @@
         </el-tree>
       </div>
 
-      <!-- 右侧：当前节点的业务规则解释 -->
-      <aside class="ct-rail">
-        <div class="ct-rail-title">{{ t('后端调用链 · 节点解释与聚合') }}</div>
+      <div
+        class="ct-divider"
+        role="separator"
+        tabindex="0"
+        data-testid="call-chain-divider-0"
+        :aria-label="dividerLabel(0)"
+        :aria-valuenow="columnWidths[0]"
+        aria-valuemin="20"
+        aria-valuemax="60"
+        @pointerdown="startResize(0, $event)"
+        @keydown.left.prevent="resizeDivider(0, -2)"
+        @keydown.right.prevent="resizeDivider(0, 2)"
+        @dblclick="resetWidths"
+      ></div>
+
+      <!-- 中间：当前节点的业务规则解释 -->
+      <aside class="ct-column ct-rail">
+        <div class="ct-column-title">{{ t('节点解释与聚合') }}</div>
         <NodeRuleRail
           :repo="repo"
           :member="member"
@@ -79,14 +95,35 @@
           @manage-api-explanations="emit('manage-api-explanations')"
         />
       </aside>
+
+      <div
+        class="ct-divider"
+        role="separator"
+        tabindex="0"
+        data-testid="call-chain-divider-1"
+        :aria-label="dividerLabel(1)"
+        :aria-valuenow="columnWidths[1]"
+        aria-valuemin="20"
+        aria-valuemax="60"
+        @pointerdown="startResize(1, $event)"
+        @keydown.left.prevent="resizeDivider(1, -2)"
+        @keydown.right.prevent="resizeDivider(1, 2)"
+        @dblclick="resetWidths"
+      ></div>
+
+      <!-- 右侧：当前节点源码 -->
+      <aside class="ct-column ct-source-rail">
+        <NodeSourcePanel :snapshot-id="snapshotId" :target="selected" />
+      </aside>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { apiClient } from '../api/apiClient.js'
 import NodeRuleRail from './NodeRuleRail.vue'
+import NodeSourcePanel from './NodeSourcePanel.vue'
 import { t } from '../i18n.js'
 
 const props = defineProps({
@@ -112,6 +149,13 @@ const rootEmpty = ref(false)
 const rootError = ref('')
 
 const selected = ref(null) // { kind, identity, title, subtitle, node_type, descriptor, rootMeta }
+const splitRef = ref(null)
+const columnWidths = ref([42, 29, 29])
+let resizeState = null
+
+const splitStyle = computed(() => ({
+  gridTemplateColumns: `minmax(0, ${columnWidths.value[0]}fr) 10px minmax(0, ${columnWidths.value[1]}fr) 10px minmax(0, ${columnWidths.value[2]}fr)`,
+}))
 
 const rootLabel = computed(() => ({
   method: props.label.method || 'HTTP',
@@ -265,12 +309,80 @@ function onNodeClick(data) {
     selected.value = { kind: 'note', identity: `note:${data.__key}`, title: data.name || t('提示') }
   }
 }
+
+function dividerLabel(index) {
+  return index === 0 ? t('调整调用链与节点解释宽度') : t('调整节点解释与源码宽度')
+}
+
+function resizeDivider(index, delta) {
+  const base = columnWidths.value
+  const left = index
+  const right = index + 1
+  const total = base[left] + base[right]
+  const nextLeft = Math.max(20, Math.min(total - 20, base[left] + delta))
+  const applied = nextLeft - base[left]
+  columnWidths.value = base.map((value, position) => {
+    if (position === left) return nextLeft
+    if (position === right) return value - applied
+    return value
+  })
+}
+
+function startResize(index, event) {
+  if (event.button !== undefined && event.button !== 0) return
+  const element = splitRef.value
+  if (!element) return
+  resizeState = {
+    index,
+    startX: event.clientX,
+    width: element.getBoundingClientRect().width,
+    widths: [...columnWidths.value],
+  }
+  window.addEventListener('pointermove', onResize)
+  window.addEventListener('pointerup', stopResize)
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
+}
+
+function onResize(event) {
+  if (!resizeState || !resizeState.width) return
+  const delta = ((event.clientX - resizeState.startX) / resizeState.width) * 100
+  const base = resizeState.widths
+  const index = resizeState.index
+  const left = index
+  const right = index + 1
+  const total = base[left] + base[right]
+  const nextLeft = Math.max(20, Math.min(total - 20, base[left] + delta))
+  const applied = nextLeft - base[left]
+  columnWidths.value = base.map((value, position) => {
+    if (position === left) return nextLeft
+    if (position === right) return value - applied
+    return value
+  })
+}
+
+function stopResize() {
+  resizeState = null
+  window.removeEventListener('pointermove', onResize)
+  window.removeEventListener('pointerup', stopResize)
+}
+
+function resetWidths() {
+  stopResize()
+  columnWidths.value = [42, 29, 29]
+}
+
+onUnmounted(stopResize)
 </script>
 
 <style scoped>
 .call-chain-tree { margin-bottom: 14px; }
-.ct-split { display: flex; align-items: flex-start; gap: 12px; }
-.ct-main { flex: 1; min-width: 0; }
+.ct-split { display: grid; align-items: stretch; gap: 0; min-width: 0; }
+.ct-column { min-width: 0; max-height: 480px; overflow: auto; }
+.ct-main { min-width: 0; padding-right: 10px; }
+.ct-column-title { color: #a0a6b1; font-size: 11px; margin-bottom: 6px; }
+.ct-divider { width: 10px; min-height: 100%; cursor: col-resize; position: relative; touch-action: none; }
+.ct-divider::before { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; border-left: 1px solid #e2e5eb; }
+.ct-divider:hover::before, .ct-divider:focus::before { border-color: #e94560; border-left-width: 2px; }
 .ct-root { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 6px 6px; border-bottom: 1px dashed #e2e5eb; margin-bottom: 2px; font-size: 12px; cursor: pointer; border-radius: 4px; }
 .ct-root:hover { background: #faf7ff; }
 .ct-root-selected { background: #fff0f2; }
@@ -290,9 +402,14 @@ function onNodeClick(data) {
 .ct-note { color: #b98a00; font-size: 11px; background: #fff8e1; border-radius: 4px; padding: 0 5px; }
 .ct-cycle { color: #b98a00; font-size: 10px; background: #fff8e1; border-radius: 4px; padding: 0 4px; }
 .ct-error { color: #c0392b; font-size: 11px; }
-.ct-rail { width: 360px; flex-shrink: 0; border-left: 1px solid #e2e5eb; padding-left: 12px; max-height: 480px; overflow: auto; }
-.ct-rail-title { color: #a0a6b1; font-size: 11px; margin-bottom: 6px; }
+.ct-rail { padding: 0 10px; }
+.ct-source-rail { padding-left: 10px; }
 :deep(.el-tree-node__content) { height: 26px; }
 :deep(.el-tree-node__content:hover) { background: #fff0f2; }
 :deep(.el-tree-node.is-current > .el-tree-node__content) { background: #fff0f2; }
+@media (max-width: 900px) {
+  .ct-split { display: block; }
+  .ct-column { max-height: none; overflow: visible; padding: 0 0 12px; }
+  .ct-divider { display: none; }
+}
 </style>

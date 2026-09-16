@@ -3,8 +3,27 @@ import { describe, expect, it, vi } from 'vitest'
 
 import Knowledge from '../src/pages/Knowledge.vue'
 
+const callChainApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  request: vi.fn(),
+  delete: vi.fn(),
+}))
+
+vi.mock('../src/api/apiClient.js', () => ({ apiClient: callChainApi }))
+
 describe('API explanation call-chain rail', () => {
   it('uses the endpoint node_id and renders local plus aggregate explanations in the right rail', async () => {
+    callChainApi.get.mockImplementation(async (path) => {
+      if (path === '/api/call-tree/rule') {
+        return {
+          source: {
+            file: 'orders.py', start_line: 10, end_line: 12,
+            content: 'def get_orders():\n    validate_order()\n    return save_order()',
+          },
+        }
+      }
+      return {}
+    })
     const api = {
       get: vi.fn(async (path) => {
         if (path === '/api/knowledge') {
@@ -60,10 +79,24 @@ describe('API explanation call-chain rail', () => {
     expect(tree.props('label').node_id).toBe('fn-root')
 
     await wrapper.find('.ct-root').trigger('click')
+    await flushPromises()
     expect(wrapper.text()).toContain('节点自身翻译')
     expect(wrapper.text()).toContain('校验订单请求')
     expect(wrapper.text()).toContain('校验订单请求并创建订单')
     expect(wrapper.find('.nrr-api-mode .primary').text()).toContain('手动刷新 API 解释')
+    expect(wrapper.text()).toContain('节点源码')
+    expect(wrapper.text()).toContain('orders.py:10-12')
+    expect(wrapper.find('.nsp-code').text()).toContain('def get_orders()')
+    expect(callChainApi.get).toHaveBeenCalledWith('/api/call-tree/rule', {
+      snapshot_id: 'repo-snapshot', node_id: 'fn-root', view_id: '',
+    })
+
+    const divider = tree.find('[data-testid="call-chain-divider-0"]')
+    expect(tree.findAll('.ct-divider')).toHaveLength(2)
+    const split = tree.find('.ct-split')
+    const beforeResize = split.attributes('style')
+    await divider.trigger('keydown.right')
+    expect(split.attributes('style')).not.toBe(beforeResize)
 
     await wrapper.find('.nrr-api-mode .primary').trigger('click')
     expect(api.request).toHaveBeenCalledWith('/api/api-explanations/generate', expect.objectContaining({ method: 'POST' }))

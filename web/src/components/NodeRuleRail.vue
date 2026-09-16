@@ -16,24 +16,6 @@
         <span v-if="status" class="br-status" :class="'br-' + status">{{ statusText }}</span>
       </div>
 
-      <section class="nrr-source">
-        <div class="nrr-source-heading">
-          <h4>{{ t('节点源码') }}</h4>
-          <span v-if="source?.file" class="nrr-source-location">
-            {{ source.file }}:{{ source.start_line }}<span v-if="source.end_line && source.end_line !== source.start_line">-{{ source.end_line }}</span>
-          </span>
-        </div>
-        <p v-if="sourceLoading" class="nrr-loading">{{ t('正在读取节点源码…') }}</p>
-        <p v-else-if="sourceError" class="nrr-error">{{ sourceError }}</p>
-        <p v-else-if="!source?.content" class="nrr-muted">{{ t('该节点源码不可用，可能未纳入当前 Snapshot。') }}</p>
-        <div v-else class="nrr-source-code" role="region" :aria-label="t('节点源码')">
-          <div v-for="(line, index) in sourceLines" :key="index" class="nrr-source-line">
-            <span class="nrr-source-number">{{ source.start_line + index }}</span>
-            <code>{{ line || ' ' }}</code>
-          </div>
-        </div>
-      </section>
-
       <div v-if="explanationMode" class="nrr-api-mode">
         <div v-if="target.kind === 'root'" class="nrr-api-actions">
           <button class="primary sm" :disabled="explanationState.running" @click="emit('generate-api')">
@@ -145,13 +127,9 @@ const loading = ref(false)
 const genLoading = ref(false)
 const editing = ref(false)
 const rule = ref(null)
-const source = ref(null)
-const sourceLoading = ref(false)
-const sourceError = ref('')
 const defaultPrompt = ref('')
 const editPrompt = ref('')
 const genError = ref('')
-let sourceRequestId = 0
 
 const status = computed(() => {
   if (genLoading.value) return 'loading'
@@ -176,19 +154,13 @@ const parsed = computed(() => {
   return null
 })
 
-const sourceLines = computed(() => (source.value?.content || '').split('\n'))
-
 // ── load state for the currently selected node ─────────────────────────────
 
 function empty() {
-  sourceRequestId += 1
   loading.value = false
   genLoading.value = false
   editing.value = false
   rule.value = null
-  source.value = null
-  sourceLoading.value = false
-  sourceError.value = ''
   defaultPrompt.value = ''
   editPrompt.value = ''
   genError.value = ''
@@ -197,13 +169,7 @@ function empty() {
 function loadNode() {
   empty()
   const kind = props.target?.kind
-  if (kind === 'root') {
-    loadSource()
-  }
-  if (props.explanationMode) {
-    if (kind === 'func') loadSource()
-    return
-  }
+  if (props.explanationMode) return
   if (kind === 'root') {
     loadRoot()
   } else if (kind === 'func' || kind === 'cross') {
@@ -258,36 +224,11 @@ async function loadGraphNode() {
       handler: d.handler,
     })
     rule.value = resp.rule || null
-    source.value = resp.source || null
     defaultPrompt.value = resp.default_prompt || ''
   } catch (err) {
     genError.value = detail(err)
   } finally {
     loading.value = false
-  }
-}
-
-async function loadSource() {
-  const target = props.target
-  const nodeId = target?.kind === 'root'
-    ? target.rootMeta?.node_id
-    : target?.descriptor?.node_id
-  if (!props.snapshotId || !nodeId || (target?.kind !== 'root' && target?.kind !== 'func')) return
-
-  const requestId = ++sourceRequestId
-  sourceLoading.value = true
-  sourceError.value = ''
-  try {
-    const resp = await apiClient.get('/api/call-tree/rule', {
-      snapshot_id: props.snapshotId,
-      node_id: nodeId,
-      view_id: '',
-    })
-    if (requestId === sourceRequestId) source.value = resp.source || null
-  } catch (err) {
-    if (requestId === sourceRequestId) sourceError.value = detail(err)
-  } finally {
-    if (requestId === sourceRequestId) sourceLoading.value = false
   }
 }
 
@@ -407,14 +348,6 @@ watch(
 .nrr-api-card p { margin: 0; color: #454852; }
 .nrr-api-card ol { margin: 6px 0 0 16px; padding: 0; color: #555; }
 .nrr-api-card summary { cursor: pointer; color: #555; font-weight: 600; }
-.nrr-source { display: grid; gap: 5px; }
-.nrr-source-heading { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
-.nrr-source-heading h4 { margin: 0; color: #555; font-size: 11px; }
-.nrr-source-location { color: #8a8f9a; font: 10px/1.4 monospace; word-break: break-all; }
-.nrr-source-code { max-height: 250px; overflow: auto; padding: 6px 0; background: #f5f5f8; border: 1px solid #ececf2; border-radius: 5px; font: 10px/1.5 monospace; tab-size: 2; }
-.nrr-source-line { display: grid; grid-template-columns: 38px minmax(0, 1fr); padding-right: 7px; white-space: pre; }
-.nrr-source-number { color: #a0a6b1; text-align: right; padding-right: 8px; user-select: none; }
-.nrr-source-line code { color: #343740; overflow-wrap: normal; font: inherit; }
 .nrr-error { color: #c0392b; font-size: 11px; margin: 6px 0 0; word-break: break-word; }
 .nrr-edit { display: grid; gap: 8px; }
 
