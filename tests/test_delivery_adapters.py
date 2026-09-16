@@ -163,6 +163,117 @@ def test_cli_exports_one_contract_file_per_endpoint_without_source(monkeypatch, 
     assert "aggregate_explanation" not in json.dumps(first["call_chain"], ensure_ascii=False)
 
 
+def test_cli_exports_one_json_file_per_term_with_evidence(monkeypatch, tmp_path):
+    terms = [
+        {
+            "id": "term-order",
+            "canonical_name": "Order",
+            "normalized_name": "order",
+            "term_type": "entity",
+            "bounded_context": "orders",
+            "definition": "A purchase order.",
+            "confidence_score": 0.95,
+            "confidence_band": "high",
+            "status": "accepted",
+            "source": "rule",
+            "risk_flags": [],
+            "aliases": ["PurchaseOrder"],
+        },
+        {
+            "id": "term-create-order",
+            "canonical_name": "CreateOrder",
+            "normalized_name": "createorder",
+            "term_type": "action",
+            "bounded_context": "orders",
+            "definition": "Create an order.",
+            "confidence_score": 0.9,
+            "confidence_band": "high",
+            "status": "accepted",
+            "source": "rule",
+            "risk_flags": [],
+            "aliases": [],
+        },
+    ]
+
+    class Service:
+        def list(self, **query):
+            assert query == {"snapshot_id": "frozen-1", "limit": 100, "offset": 0}
+            return {"terms": terms, "total": len(terms), "limit": 100, "offset": 0}
+
+        def evidence(self, snapshot_id, term_id):
+            assert snapshot_id == "frozen-1"
+            return [{
+                "evidence_type": "entity_anchor",
+                "evidence_value": term_id,
+                "weight": 1.0,
+                "source_location": {"file": "orders.py", "line": 12},
+                "node_id": "node-order",
+                "rule_id": "entity-anchor",
+            }]
+
+    class Resource:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "_terms_local_context", lambda: (Resource(), Resource(), Service()))
+    output_dir = tmp_path / "terms"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "codeevolution",
+            "terms",
+            "export",
+            "--snapshot-id",
+            "frozen-1",
+            "--format",
+            "json",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    cli.main()
+
+    files = sorted(output_dir.glob("*.json"))
+    assert len(files) == 2
+    first = json.loads(files[0].read_text())
+    assert first["canonical_name"] == "Order"
+    assert first["snapshot_id"] == "frozen-1"
+    assert first["evidence"][0]["source_location"] == {"file": "orders.py", "line": 12}
+
+
+def test_cli_exports_terms_as_markdown(monkeypatch, tmp_path):
+    class Service:
+        def list(self, **_query):
+            return {"terms": [{
+                "id": "term-order", "canonical_name": "Order", "term_type": "entity",
+                "definition": "A purchase order.", "aliases": [], "risk_flags": [],
+            }]}
+
+        def evidence(self, _snapshot_id, _term_id):
+            return []
+
+    class Resource:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "_terms_local_context", lambda: (Resource(), Resource(), Service()))
+    output_dir = tmp_path / "terms"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["codeevolution", "terms", "export", "--snapshot-id", "frozen-1", "--output-dir", str(output_dir)],
+    )
+
+    cli.main()
+
+    content = next(output_dir.glob("*.md")).read_text()
+    assert "# Order" in content
+    assert "## Evidence" in content
+    assert "_No evidence recorded._" in content
+
+
 def test_unregister_route_removes_registration_and_closes_cached_store(monkeypatch):
     removed = []
 

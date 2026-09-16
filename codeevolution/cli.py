@@ -445,6 +445,8 @@ def cmd_terms(args):
                 result["evidence"] = evidence.get("evidence", [])
             else:
                 _status, result, _headers = _request_json(args.server, "GET", "/api/terms?" + urlencode(query))
+                if args.terms_action == "export" and not args.output:
+                    result = _remote_term_export(args.server, args.snapshot_id, result)
         else:
             runtime, store, service = _terms_local_context()
             try:
@@ -454,15 +456,20 @@ def cmd_terms(args):
                         raise CLIContractError("term not found", 3)
                     term = listing["terms"][0]
                     result = {"term": term, "evidence": service.evidence(args.snapshot_id, term["id"])}
+                elif args.terms_action == "export" and not args.output:
+                    result = _local_term_export(args.snapshot_id, listing, service)
                 else:
                     result = listing
             finally:
                 store.close()
                 runtime.close()
-        _canonical_output(result, args.output)
+        if args.terms_action == "export" and not args.output:
+            _write_term_export(result, args.output_dir, args.format)
+        else:
+            _canonical_output(result, args.output)
     except CLIContractError:
         raise
-    except (KeyError, RuntimeError, ValueError) as error:
+    except (KeyError, RuntimeError, ValueError, OSError) as error:
         raise CLIContractError(str(error), 3) from error
 
 
@@ -507,6 +514,116 @@ def _write_text_output(target: Path, content: str) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def _local_term_export(snapshot_id: str, listing: dict, service) -> list[dict]:
+    return [
+        _term_export_document(snapshot_id, term, service.evidence(snapshot_id, term["id"]))
+        for term in listing.get("terms", [])
+        if isinstance(term, dict) and term.get("id")
+    ]
+
+
+def _remote_term_export(server: str, snapshot_id: str, listing: dict) -> list[dict]:
+    documents = []
+    for term in listing.get("terms", []):
+        if not isinstance(term, dict) or not term.get("id"):
+            continue
+        _status, evidence, _headers = _request_json(
+            server,
+            "GET",
+            f"/api/terms/{term['id']}/evidence?{urlencode({'snapshot_id': snapshot_id})}",
+        )
+        documents.append(_term_export_document(snapshot_id, term, evidence.get("evidence", [])))
+    return documents
+
+
+def _term_export_document(snapshot_id: str, term: dict, evidence: list) -> dict:
+    """Keep one exported artifact self-contained and limited to term facts/evidence."""
+    return {"snapshot_id": snapshot_id, **term, "evidence": evidence}
+
+
+def _term_filename(document: dict, index: int, extension: str) -> str:
+    name = _filename_part(document.get("canonical_name") or document.get("id"))
+    term_type = _filename_part(document.get("term_type", "term"))
+    return f"{index:04d}-{name}-{term_type}.{extension}"
+
+
+def _render_term_markdown(document: dict) -> str:
+    def block(value) -> str:
+        return "```json\n" + json.dumps(value, indent=2, ensure_ascii=False) + "\n```"
+
+    evidence = document.get("evidence") or []
+    aliases = document.get("aliases") or []
+    risk_flags = document.get("risk_flags") or []
+    alias_lines = [f"- `{item}`" for item in aliases] or ["_None._"]
+    risk_flag_lines = [f"- `{item}`" for item in risk_flags] or ["_None._"]
+    lines = [
+        f"# {document.get('canonical_name') or document.get('id') or 'Term'}",
+        "",
+        "## Term",
+        "",
+        f"- Snapshot ID: `{document.get('snapshot_id', '')}`",
+        f"- ID: `{document.get('id', '')}`",
+        f"- Type: `{document.get('term_type', '')}`",
+        f"- Bounded Context: `{document.get('bounded_context', '')}`",
+        f"- Status: `{document.get('status', '')}`",
+        f"- Confidence: `{document.get('confidence_score', '')}` ({document.get('confidence_band', '')})",
+        f"- Domain Score: `{document.get('domain_score', '')}`",
+        f"- Source: `{document.get('source', '')}`",
+        "",
+        "## Definition",
+        "",
+        document.get("definition") or "_No definition provided._",
+        "",
+        "## Normalized Name",
+        "",
+        f"`{document.get('normalized_name', '')}`",
+        "",
+        "## Aliases",
+        "",
+        *alias_lines,
+        "",
+        "## Risk Flags",
+        "",
+        *risk_flag_lines,
+        "",
+        "## Evidence",
+        "",
+    ]
+    if not evidence:
+        lines.append("_No evidence recorded._")
+    else:
+        for index, item in enumerate(evidence, start=1):
+            lines.extend([
+                f"### {index}. {item.get('evidence_type', 'evidence')}",
+                "",
+                f"- Value: `{item.get('evidence_value', '')}`",
+                f"- Weight: `{item.get('weight', '')}`",
+                f"- Node ID: `{item.get('node_id') or ''}`",
+                f"- Rule ID: `{item.get('rule_id') or ''}`",
+                "",
+                "Source location:",
+                "",
+                block(item.get("source_location") or {}),
+                "",
+            ])
+    return "\n".join(lines) + "\n"
+
+
+def _write_term_export(documents: list[dict], output_dir: str, file_format: str) -> None:
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    extension = "json" if file_format == "json" else "md"
+    for index, document in enumerate(documents, start=1):
+        target = output_path / _term_filename(document, index, extension)
+        content = (
+            json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+            if file_format == "json"
+            else _render_term_markdown(document)
+        )
+        _write_text_output(target, content)
+    print(f"Exported {len(documents)} term(s) to {output_path}")
 
 
 def _parse_channels(value: str) -> tuple[str, ...]:
@@ -808,7 +925,7 @@ def main():
     extract.add_argument("--output", "-o", default="")
     extract.set_defaults(handler=cmd_terms)
 
-    for action, help_text in (("list", "List persisted terms"), ("export", "Export persisted terms"), ("explain", "Show a term and its evidence")):
+    for action, help_text in (("list", "List persisted terms"), ("explain", "Show a term and its evidence")):
         item = term_parsers.add_parser(action, help=help_text)
         item.add_argument("--snapshot-id", required=True)
         item.add_argument("--term", default="", help="Term name or normalized name")
@@ -820,6 +937,25 @@ def main():
         item.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
         item.add_argument("--output", "-o", default="")
         item.set_defaults(handler=cmd_terms)
+
+    export = term_parsers.add_parser(
+        "export", help="Export one Markdown or JSON file per persisted term"
+    )
+    export.add_argument("--snapshot-id", required=True)
+    export.add_argument("--term", default="", help="Term name or normalized name")
+    export.add_argument("--term-type", default="")
+    export.add_argument("--status", default="")
+    export.add_argument("--confidence-band", default="")
+    export.add_argument("--limit", type=int, default=100)
+    export.add_argument("--offset", type=int, default=0)
+    export.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    export.add_argument("--output-dir", "-d", default="terms")
+    export.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
+    export.add_argument(
+        "--output", "-o", default="",
+        help="Legacy aggregate JSON output file; omit to write one file per term",
+    )
+    export.set_defaults(handler=cmd_terms)
 
     review = term_parsers.add_parser("review", help="Review a term candidate")
     review.add_argument("--snapshot-id", required=True)
