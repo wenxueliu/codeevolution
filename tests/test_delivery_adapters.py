@@ -1,7 +1,9 @@
 import json
 import sys
+from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 from codeevolution import api, cli
 from codeevolution.api import (
@@ -13,6 +15,9 @@ from codeevolution.api import (
     get_knowledge_report,
     list_assistant_audit_logs,
 )
+from codeevolution.application.knowledge_service import KnowledgeService
+from codeevolution.domain.knowledge import ApiContract, ApiEndpoint
+from codeevolution.knowledge import KnowledgeExtractor
 
 
 def test_chat_and_audit_routes_use_injected_services():
@@ -67,6 +72,45 @@ def test_knowledge_route_uses_injected_service_without_closing_it():
         assert service.closed is False
     finally:
         _request_dependencies.reset(token)
+
+
+def test_knowledge_api_returns_all_endpoints_in_report():
+    endpoints = [
+        ApiEndpoint(
+            method="GET",
+            path=f"/items/{index}",
+            handler_name=f"handlers::get_item_{index}",
+            file_path="handlers.py",
+            line=index + 1,
+        )
+        for index in range(101)
+    ]
+    extractor = KnowledgeExtractor.__new__(KnowledgeExtractor)
+    extractor.extract_api_contract = lambda: ApiContract(
+        endpoints=endpoints,
+        resource_groups={"items": endpoints},
+    )
+    extractor.extract_module_topology = lambda: SimpleNamespace(
+        modules=[], coupling_score=0, dependency_graph={}
+    )
+    extractor.extract_core_entities = lambda _top_n: []
+    extractor.extract_test_gaps = lambda: []
+    extractor.extract_test_coverage_stats = lambda: {}
+    extractor.extract_layer_violations = lambda: []
+    extractor.extract_config_consumption = lambda: []
+    extractor.extract_external_dependencies = lambda: []
+    extractor.extract_authorization_model = lambda: []
+    extractor.extract_heat_map = lambda: []
+
+    client = TestClient(create_app({"knowledge_service": KnowledgeService(extractor)}))
+    response = client.get("/api/knowledge")
+
+    assert response.status_code == 200
+    contract = response.json()["api_contract"]
+    assert contract["endpoint_count"] == 101
+    assert len(contract["endpoints"]) == 101
+    assert contract["endpoints"][-1]["path"] == "/items/100"
+    assert len(contract["resource_groups"]["items"]) == 101
 
 
 def test_knowledge_route_can_request_complete_api_contract():

@@ -119,12 +119,12 @@ class KnowledgeExtractor:
                         "call_chain_mermaid": item.call_chain_mermaid,
                         "frontend_callers": item.frontend_callers,
                     }
-                    for item in api.endpoints[:100]
+                    for item in api.endpoints
                 ],
                 "resource_groups": {
                     name: [
                         {"method": item.method, "path": item.path, "handler": item.handler_name}
-                        for item in items[:10]
+                        for item in items
                     ]
                     for name, items in api.resource_groups.items()
                 },
