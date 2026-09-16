@@ -157,7 +157,11 @@ def freeze_sources(
                 before = os.fstat(source_fd)
                 output = target_root / relative
                 output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                output_fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                output_fd = os.open(
+                    output,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                    0o600,
+                )
                 digest = hashlib.sha256()
                 copied = 0
                 try:
