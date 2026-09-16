@@ -46,6 +46,41 @@ class GenerationStub:
         self.store.publish(snapshot_id)
 
 
+class NodeRuleQueryStub:
+    def node_rule_context(self, snapshot_id, node_id):
+        if snapshot_id != "repo-snapshot" or node_id != "orders::create":
+            return None
+        return {
+            "repository_snapshot_id": snapshot_id,
+            "member_id": "orders",
+            "service": "orders",
+            "member": "orders",
+            "node_type": "func",
+            "node_key": f"{snapshot_id}::{node_id}",
+            "node_id": node_id,
+            "qualified_name": "orders.create",
+            "name": "create",
+            "file": "orders.py",
+            "line": 10,
+            "end_line": 12,
+            "snippet": "def create():\n    validate_order()\n    return save_order()",
+        }
+
+
+class NodeRuleRuntimeStub:
+    class Store:
+        def get_current_rule(self, **_kwargs):
+            return None
+
+    store = Store()
+
+    def start(self):
+        pass
+
+    def close(self):
+        pass
+
+
 def test_manual_generation_current_listing_and_confirmed_delete(tmp_path):
     store = ExplanationSnapshotStore(tmp_path / "api.db")
     service = GenerationStub(store)
@@ -85,6 +120,26 @@ def test_manual_generation_current_listing_and_confirmed_delete(tmp_path):
         assert service.specs[0]["_prompt_text"] == "重点关注库存扣减"
         assert service.specs[0]["_prompt_version"].startswith("custom-")
     store.close()
+
+
+def test_call_tree_node_rule_returns_frozen_source_context():
+    app = create_app({
+        "snapshot_query_service": NodeRuleQueryStub(),
+        "snapshot_runtime": NodeRuleRuntimeStub(),
+    })
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/call-tree/rule",
+            params={"snapshot_id": "repo-snapshot", "node_id": "orders::create"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["source"] == {
+        "file": "orders.py",
+        "start_line": 10,
+        "end_line": 12,
+        "content": "def create():\n    validate_order()\n    return save_order()",
+    }
 
 
 def test_prompt_api_returns_default_guidance_and_templates(tmp_path):

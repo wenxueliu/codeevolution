@@ -216,5 +216,6 @@ class SnapshotNodeRuleService(NodeRuleService):
             "name": fn.name or "",
             "file": fn.file_path or "",
             "line": start,
+            "end_line": fn.end_line or start,
             "snippet": handle.sources.snippet(fn.file_path or "", start, end) or "",
         }

@@ -1879,6 +1879,13 @@ def call_tree_node_rule(
             "name": ctx["name"],
             "file": ctx["file"],
             "line": ctx["line"],
+            "end_line": ctx.get("end_line", ctx["line"]),
+        },
+        "source": {
+            "file": ctx["file"],
+            "start_line": ctx["line"],
+            "end_line": ctx.get("end_line", ctx["line"]),
+            "content": ctx.get("snippet", ""),
         },
         "default_prompt": svc.default_prompt(ctx),
         "rule": rule,
