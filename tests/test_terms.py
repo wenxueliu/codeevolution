@@ -118,6 +118,18 @@ def test_terms_api_extracts_lists_reviews_and_adds_manual_terms(tmp_path):
         assert reviewed.status_code == 200
         assert reviewed.json()["term"]["canonical_name"] == "PurchaseOrder"
 
+        rejected = client.post(f"/api/terms/{term['id']}/review", json={
+            "snapshot_id": "snapshot-1", "action": "reject", "value": {}, "author": "tester",
+        })
+        assert rejected.status_code == 200
+        assert rejected.json()["term"]["status"] == "rejected"
+
+        restored = client.post(f"/api/terms/{term['id']}/review", json={
+            "snapshot_id": "snapshot-1", "action": "accept", "value": {}, "author": "tester",
+        })
+        assert restored.status_code == 200
+        assert restored.json()["term"]["status"] == "accepted"
+
         manual = client.post("/api/terms/manual", json={
             "snapshot_id": "snapshot-1", "canonical_name": "SKU", "term_type": "value_object",
             "definition": "库存单位", "author": "tester",

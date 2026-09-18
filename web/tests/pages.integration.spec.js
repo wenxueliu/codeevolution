@@ -80,6 +80,28 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.text()).toContain('POST /orders → Order')
   })
 
+  it('restores a rejected term through the review API', async () => {
+    let status = 'rejected'
+    const term = () => ({ id: 'term-1', rank: 1, canonical_name: 'Order', term_type: 'entity', confidence_score: 0.96, confidence_band: 'high', status, source: 'user_override', aliases: [] })
+    const { wrapper, api } = mountPage(Terms, {
+      '/api/terms': () => ({ total: 1, terms: [term()] }),
+      '/api/terms/term-1/review': (options) => {
+        expect(JSON.parse(options.body)).toMatchObject({ snapshot_id: 'test-snapshot', action: 'accept', value: {}, author: 'web' })
+        status = 'accepted'
+        return { term: term() }
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('恢复')
+    expect(wrapper.text()).not.toContain('排除')
+    await wrapper.find('.row-actions .link').trigger('click')
+    await flushPromises()
+
+    expect(api.request).toHaveBeenCalledWith('/api/terms/term-1/review', expect.objectContaining({ method: 'POST' }))
+    expect(wrapper.text()).toContain('已接纳')
+  })
+
   it('renders the Graph View-scoped cross-service alignment workspace', async () => {
     const { wrapper } = mountPage(Terms, {
       '/api/terms/alignments': { view_id: 'view-1', total: 1, alignments: [{ id: 'align-1', source_service_id: 'orders', target_service_id: 'billing', source_term_id: 'term-1', target_term_id: 'term-2', relationship: 'same', confidence: 0.96, status: 'needs_review' }] },
