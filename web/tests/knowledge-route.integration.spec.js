@@ -32,6 +32,7 @@ describe('Knowledge route integration', () => {
     expect(api.get).toHaveBeenCalledWith('/api/knowledge', {
       snapshot_id: 'snapshot-1',
       include_llm: false,
+      complete: true,
     })
     expect(wrapper.text()).not.toContain('缺少 snapshot_id')
     wrapper.unmount()

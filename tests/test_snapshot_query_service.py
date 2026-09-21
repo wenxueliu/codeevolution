@@ -2,6 +2,7 @@ import json
 import sqlite3
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 from codeevolution import cli, mcp_server
 from codeevolution.application.analysis_run_service import RepositoryCatalogService
@@ -11,6 +12,7 @@ from codeevolution.application.snapshot_query_service import (
     SnapshotQueryService,
     _project_api_node_ids,
 )
+from codeevolution.domain.knowledge import ApiContract, ApiEndpoint
 from codeevolution.domain.analysis_snapshot import AttemptStatus
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
 from codeevolution.infrastructure.artifact_store_fs import FileSystemArtifactStore
@@ -35,6 +37,69 @@ def test_snapshot_knowledge_backfills_node_id_for_legacy_api_facts():
 
     assert projected["api_contract"]["endpoints"][0]["node_id"] == "method:root"
     assert "node_id" not in facts["api_contract"]["endpoints"][0]
+
+
+def test_snapshot_knowledge_rebuilds_legacy_truncated_api_contract(monkeypatch):
+    persisted_endpoints = [
+        {"method": "GET", "path": f"/items/{index}", "handler": f"items.get_{index}"}
+        for index in range(100)
+    ]
+    facts = {
+        "api_contract": {
+            "endpoint_count": 101,
+            "endpoints": persisted_endpoints,
+        },
+        "module_topology": {"module_count": 0},
+    }
+    graph = object()
+
+    class Handle:
+        def __init__(self):
+            self.snapshot = SimpleNamespace(facts=facts)
+            self.graph = graph
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            pass
+
+    endpoint = ApiEndpoint(
+        method="GET",
+        path="/items/100",
+        handler_name="items.get_100",
+        file_path="items.py",
+        line=101,
+    )
+
+    class Extractor:
+        def __init__(self, source):
+            assert source is graph
+
+        def extract(self):
+            return ApiContract(endpoints=[*[
+                ApiEndpoint(
+                    method="GET",
+                    path=f"/items/{index}",
+                    handler_name=f"items.get_{index}",
+                    file_path="items.py",
+                    line=index + 1,
+                )
+                for index in range(100)
+            ], endpoint], resource_groups={"items": [endpoint]})
+
+    monkeypatch.setattr(
+        "codeevolution.application.snapshot_query_service.ApiContractExtractor",
+        Extractor,
+    )
+    service = SnapshotQueryService.__new__(SnapshotQueryService)
+    service.open = lambda _snapshot_id: Handle()
+
+    report = service.knowledge("snapshot-1")
+
+    assert report["api_contract"]["endpoint_count"] == 101
+    assert len(report["api_contract"]["endpoints"]) == 101
+    assert report["api_contract"]["endpoints"][-1]["path"] == "/items/100"
 
 
 def _graph(path: Path) -> None:

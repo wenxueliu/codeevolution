@@ -756,7 +756,10 @@ class ExplanationSnapshotStore:
                 status = "partial" if counts["completed"] else "cancelled"
             elif counts["failed"] and not counts["completed"]:
                 status = "failed"
-            elif counts["failed"] or counts["skipped"] or counts["cancelled"]:
+            # A skipped item means a completed explanation with the same
+            # prompt already exists, so it satisfies the batch contract. Only
+            # failed or cancelled items make the overall result partial.
+            elif counts["failed"] or counts["cancelled"]:
                 status = "partial"
             else:
                 status = "completed"

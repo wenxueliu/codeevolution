@@ -606,7 +606,7 @@ export default {
         return
       }
       await this.$runAsync(async () => {
-        this.report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: includeLlm })
+        this.report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: includeLlm, complete: true })
         await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus(), this.loadTerms()])
         for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
         this.explanationPollTimers = {}
@@ -747,7 +747,7 @@ export default {
       this.llmPollTimer = null
       if (!this.snapshotId) return
       try {
-        const report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: false })
+        const report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: false, complete: true })
         this.report = report
         this.llmJob = report?.llm_job || null
         this.llmLoaded = this.llmJob?.status === 'completed'

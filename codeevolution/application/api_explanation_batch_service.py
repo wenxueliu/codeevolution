@@ -41,10 +41,18 @@ class ApiExplanationBatchService:
         active = self.store.get_active_batch(repository_snapshot_id, digest)
         if active:
             return self.store.get_batch(active["id"])  # type: ignore[return-value]
-        report = self.snapshot_queries.knowledge(repository_snapshot_id)
+        # Batch generation must use the complete contract.  The ordinary
+        # persisted knowledge payload may be a legacy snapshot whose endpoint
+        # list was capped at 100 entries.
+        report = {"api_contract": self.snapshot_queries.api_contract(repository_snapshot_id)}
         items = []
         for raw in report.get("api_contract", {}).get("endpoints", []):
             if not isinstance(raw, dict):
+                items.append({
+                    "endpoint_key": f"invalid-{len(items)}",
+                    "status": "failed",
+                    "error_message": "API contract contains an invalid endpoint",
+                })
                 continue
             item = self._item_from_endpoint(repository_snapshot_id, raw, digest)
             items.append(item)
@@ -161,7 +169,7 @@ class ApiExplanationBatchService:
         if not method or not path or not handler:
             return {"endpoint_key": key or f"invalid-{id(endpoint)}", "method": method, "path": path,
                     "handler": handler, "file": endpoint.get("file"), "line": endpoint.get("line"),
-                    "status": "skipped", "skip_reason": "端点信息不完整"}
+                    "status": "failed", "error_message": "端点信息不完整"}
         existing = self.store.list_snapshots_for_repository_snapshot(snapshot_id, key)
         reusable = next((item for item in existing if item.status == "completed" and item.prompt_digest == prompt_digest), None)
         if reusable:

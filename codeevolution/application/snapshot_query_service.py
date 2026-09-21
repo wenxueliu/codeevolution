@@ -68,11 +68,18 @@ class SnapshotQueryService:
             # at the read boundary without mutating the historical facts.
             facts = _project_api_node_ids(facts)
             if section is None:
-                return facts
+                # API contracts were historically persisted with only the
+                # first 100 endpoints.  Keep the normal knowledge boundary
+                # complete so every consumer (dashboard, batch jobs, views,
+                # and topology) sees the same endpoint set.
+                api_contract = self._complete_api_contract(handle, facts)
+                return {**facts, "api_contract": api_contract}
             aliases = {"gaps": "test_coverage", "tests": "test_coverage", "deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map"}
             key = aliases.get(section, section)
             if key not in facts:
                 raise KeyError(section)
+            if key == "api_contract":
+                return {key: self._complete_api_contract(handle, facts)}
             return {key: facts[key]}
 
     def api_contract(self, snapshot_id: str) -> dict:
@@ -87,26 +94,43 @@ class SnapshotQueryService:
             facts = handle.snapshot.facts
             if facts is None:
                 raise RuntimeError("snapshot facts are unavailable")
-            projected = _project_api_node_ids(facts)
-            api = projected.get("api_contract") or {}
-            endpoints = api.get("endpoints") if isinstance(api, dict) else None
-            expected_count = api.get("endpoint_count", 0) if isinstance(api, dict) else 0
-            if isinstance(endpoints, list) and len(endpoints) >= expected_count:
-                return api
+            return self._complete_api_contract(handle, facts)
 
-            contract = ApiContractExtractor(handle.graph).extract()
-            serialized = [_serialize_api_endpoint(item) for item in contract.endpoints]
-            return {
-                "endpoint_count": len(serialized),
-                "endpoints": serialized,
-                "resource_groups": {
-                    name: [
-                        {"method": item.method, "path": item.path, "handler": item.handler_name}
-                        for item in items
-                    ]
-                    for name, items in contract.resource_groups.items()
-                },
-            }
+    def _complete_api_contract(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
+        projected = _project_api_node_ids(facts)
+        api = projected.get("api_contract") or {}
+        endpoints = api.get("endpoints") if isinstance(api, dict) else None
+        expected_count = api.get("endpoint_count", 0) if isinstance(api, dict) else 0
+        if isinstance(endpoints, list) and len(endpoints) >= expected_count:
+            return api
+
+        contract = ApiContractExtractor(handle.graph).extract()
+        serialized = [_serialize_api_endpoint(item) for item in contract.endpoints]
+        # Preserve fields captured in the historical report (notably frontend
+        # callers) when a legacy endpoint is rebuilt from the frozen graph.
+        previous_by_key = {
+            _api_endpoint_key(item): item
+            for item in endpoints or []
+            if isinstance(item, dict)
+        }
+        merged = []
+        for item in serialized:
+            previous = previous_by_key.get(_api_endpoint_key(item), {})
+            combined = {**previous, **item}
+            if not item.get("frontend_callers") and previous.get("frontend_callers"):
+                combined["frontend_callers"] = previous["frontend_callers"]
+            merged.append(combined)
+        return {
+            "endpoint_count": len(merged),
+            "endpoints": merged,
+            "resource_groups": {
+                name: [
+                    {"method": item.method, "path": item.path, "handler": item.handler_name}
+                    for item in items
+                ]
+                for name, items in contract.resource_groups.items()
+            },
+        }
 
     def call_tree_children(self, snapshot_id: str, node_id: str) -> dict:
         with self.open(snapshot_id) as handle:
@@ -180,3 +204,13 @@ def _serialize_api_endpoint(endpoint) -> dict:
         "call_chain_mermaid": endpoint.call_chain_mermaid,
         "frontend_callers": endpoint.frontend_callers,
     }
+
+
+def _api_endpoint_key(endpoint: dict) -> str:
+    return "|".join(
+        (
+            str(endpoint.get("method") or "").upper(),
+            str(endpoint.get("path") or ""),
+            str(endpoint.get("handler") or ""),
+        )
+    )

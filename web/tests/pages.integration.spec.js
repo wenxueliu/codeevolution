@@ -179,7 +179,7 @@ describe('repository and knowledge pages', () => {
 
     route.query = { snapshot_id: 'snapshot-mall' }
     await flushPromises()
-    expect(api.get).toHaveBeenCalledWith('/api/knowledge', { snapshot_id: 'snapshot-mall', include_llm: false })
+    expect(api.get).toHaveBeenCalledWith('/api/knowledge', { snapshot_id: 'snapshot-mall', include_llm: false, complete: true })
     expect(wrapper.text()).toContain('基于不可变仓库快照推导')
   })
 
@@ -533,7 +533,7 @@ describe('repository and knowledge pages', () => {
     await wrapper.find('.primary').trigger('click')
     await flushPromises()
     expect(confirm).toHaveBeenCalled()
-    expect(api.get).toHaveBeenCalledWith('/api/knowledge', { snapshot_id: 'test-snapshot', include_llm: true })
+    expect(api.get).toHaveBeenCalledWith('/api/knowledge', { snapshot_id: 'test-snapshot', include_llm: true, complete: true })
     wrapper.vm.activeSection = 'business_descriptions'
     await wrapper.vm.$nextTick()
     expect(wrapper.vm.isDisabled({ note: 'x' })).toBe(true)
