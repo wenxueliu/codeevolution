@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -10,6 +11,13 @@ def environment_value(name: str, default: str = "") -> str:
     """Read a CodeEvolution setting, falling back to its legacy name."""
     legacy_name = name.replace("CODEEVOLUTION_", "CODEHISTORY_", 1)
     return os.environ.get(name) or os.environ.get(legacy_name, default)
+
+
+def _probe_writable(directory: Path) -> None:
+    """Probe a directory without sharing a fixed filename across threads."""
+    descriptor, probe_name = tempfile.mkstemp(prefix=".write-probe-", dir=directory)
+    os.close(descriptor)
+    Path(probe_name).unlink(missing_ok=True)
 
 
 def data_dir() -> Path:
@@ -29,9 +37,7 @@ def data_dir() -> Path:
     preferred = current if current.exists() or not legacy.exists() else legacy
     try:
         preferred.mkdir(parents=True, exist_ok=True)
-        probe = preferred / ".write-probe"
-        probe.touch(exist_ok=False)
-        probe.unlink()
+        _probe_writable(preferred)
         return preferred
     except OSError:
         fallback = Path(__file__).resolve().parents[1] / "data" / ".codeevolution"
@@ -49,9 +55,7 @@ def analysis_data_dir() -> Path:
     # Keep the snapshot store usable in that case without resurrecting legacy data.
     try:
         current.mkdir(parents=True, exist_ok=True)
-        probe = current / ".write-probe"
-        probe.touch(exist_ok=False)
-        probe.unlink()
+        _probe_writable(current)
         return current
     except OSError:
         fallback = Path(__file__).resolve().parents[1] / "data" / ".codeevolution"
