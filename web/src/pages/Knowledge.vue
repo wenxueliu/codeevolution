@@ -114,7 +114,8 @@
             <div class="batch-heading"><div><h3>{{ t('API 解释批量任务') }} <span class="explanation-status" :class="'explanation-' + batchJob.status">{{ batchStatusText(batchJob.status) }}</span></h3><p>{{ t('任务') }} {{ batchJob.id }} · {{ t('提示词版本') }} {{ batchJob.prompt_profile_id ? promptVersion(batchJob.prompt_profile_id) : t('系统默认') }}</p></div><strong>{{ batchJob.progress?.percent || 0 }}%</strong></div>
             <div class="llm-progress-track"><span :style="{ width: `${batchJob.progress?.percent || 0}%` }"></span></div>
             <p class="batch-counts">{{ t('已完成 {completed}/{total}', { completed: batchJob.progress?.completed || 0, total: batchJob.progress?.total || 0 }) }} · {{ t('失败 {count}', { count: batchJob.progress?.failed || 0 }) }} · {{ t('跳过 {count}', { count: batchJob.progress?.skipped || 0 }) }} · {{ t('执行中 {count}', { count: batchJob.progress?.running || 0 }) }} · {{ t('取消 {count}', { count: batchJob.progress?.cancelled || 0 }) }}</p>
-            <div class="api-prompt-actions"><button v-if="batchActive" class="secondary sm" @click="cancelBatch">{{ t('取消任务') }}</button><button v-if="batchJob.progress?.failed" class="secondary sm" @click="retryBatch">{{ t('重试失败') }}</button></div>
+            <div class="api-prompt-actions"><button v-if="batchActive && !batchJob.cancel_requested" class="secondary sm" @click="cancelBatch">{{ t('取消任务') }}</button><span v-if="batchJob.cancel_requested && batchActive" class="batch-cancelling">{{ t('取消中') }}</span><button v-if="batchJob.progress?.failed && !batchActive" class="secondary sm" @click="retryBatch">{{ t('重试失败') }}</button></div>
+            <p v-if="batchJob.cancel_requested && batchActive" class="batch-cancel-hint">{{ t('取消请求已提交，正在等待当前端点安全停止…') }}</p>
             <details class="batch-items"><summary>{{ t('查看端点明细（{count}）', { count: batchJob.items?.length || 0 }) }}</summary><div v-for="item in batchJob.items || []" :key="item.id" class="batch-item"><code>{{ item.method }} {{ item.path }}</code><span class="explanation-status" :class="'explanation-' + item.status">{{ batchStatusText(item.status) }}</span><small v-if="item.explanation_snapshot_id">{{ item.explanation_snapshot_id }}</small><small v-else-if="item.error_message || item.skip_reason">{{ item.error_message || item.skip_reason }}</small></div></details>
           </section>
           <div class="table-tools">
@@ -704,7 +705,7 @@ export default {
     },
     async cancelBatch() {
       if (!this.batchJob?.id || !window.confirm(this.t('确定取消当前批量任务吗？'))) return
-      try { const data = await this.$api.request(`/api/api-explanations/batches/${encodeURIComponent(this.batchJob.id)}/cancel`, { method: 'POST' }); this.batchJob = data?.batch || data } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('取消任务失败') }
+      try { const data = await this.$api.request(`/api/api-explanations/batches/${encodeURIComponent(this.batchJob.id)}/cancel`, { method: 'POST' }); this.batchJob = data?.batch || data; if (this.batchActive) this.scheduleBatchPoll() } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('取消任务失败') }
     },
     async retryBatch() {
       if (!this.batchJob?.id) return
@@ -1250,6 +1251,8 @@ td code { color: #666; word-break: break-all; }
 .prompt-history-item small, .batch-item small { color: #999; }
 .batch-heading > strong { color: #388ac2; font-size: 20px; }
 .batch-counts { margin: 8px 0; color: #666; font-size: 11px; }
+.batch-cancelling { color: #8a6500; font-size: 11px; }
+.batch-cancel-hint { margin: 7px 0 0; color: #8a6500; font-size: 11px; }
 .batch-item code { min-width: 210px; }
 .api-explanation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .api-explanation-heading h4 { margin-bottom: 3px; font-size: 13px; color: #333; }

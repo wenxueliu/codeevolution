@@ -696,6 +696,13 @@ class ExplanationSnapshotStore:
             updated = self.connection.execute("SELECT * FROM api_explanation_batch_items WHERE id=?", (item_id,)).fetchone()
         return self._batch_item(updated)
 
+    def is_batch_cancel_requested(self, batch_id: str) -> bool:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT cancel_requested FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)
+            ).fetchone()
+        return bool(row and row["cancel_requested"])
+
     def cancel_batch(self, batch_id: str) -> dict[str, Any]:
         with self._lock, self.connection:
             row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
@@ -709,6 +716,21 @@ class ExplanationSnapshotStore:
                 "UPDATE api_explanation_batch_items SET status='cancelled',completed_at=? WHERE batch_id=? AND status='queued'",
                 (now, batch_id),
             )
+            # A running endpoint owns a candidate explanation snapshot.  Mark
+            # it cancelled as well so the generation service stops at its next
+            # persisted safe point instead of starting another model call.
+            running_snapshots = self.connection.execute(
+                """SELECT explanation_snapshot_id FROM api_explanation_batch_items
+                   WHERE batch_id=? AND status='running' AND explanation_snapshot_id IS NOT NULL""",
+                (batch_id,),
+            ).fetchall()
+            for snapshot in running_snapshots:
+                self.connection.execute(
+                    """UPDATE explanation_snapshots
+                       SET status='cancelled', completed_at=?
+                       WHERE id=? AND status IN ('pending','running','validating')""",
+                    (now, snapshot["explanation_snapshot_id"]),
+                )
             self._refresh_batch_locked(batch_id)
             row = self.connection.execute("SELECT * FROM api_explanation_batch_jobs WHERE id=?", (batch_id,)).fetchone()
         return self._batch(row)

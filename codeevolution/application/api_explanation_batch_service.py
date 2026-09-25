@@ -157,12 +157,21 @@ class ApiExplanationBatchService:
         try:
             service = self.generation_factory()
             snapshot_id, frozen = service.prepare(spec)
+            # Register the candidate before entering the model call.  This
+            # lets a concurrent batch cancellation mark the snapshot itself
+            # cancelled and lets the generation service stop at a safe point.
+            self.store.update_batch_item(
+                item["id"], "running", explanation_snapshot_id=snapshot_id
+            )
+            if self.store.is_batch_cancel_requested(item["batch_id"]):
+                self.store.cancel(snapshot_id)
             logger.info(
                 "api explanation batch item prepared batch_id=%s item_id=%s snapshot_id=%s nodes=%s edges=%s",
                 job.get("id"), item.get("id"), snapshot_id, len(frozen.get("nodes", {})),
                 len(frozen.get("edges", [])),
             )
-            service.generate(snapshot_id, frozen)
+            if not self.store.is_batch_cancel_requested(item["batch_id"]):
+                service.generate(snapshot_id, frozen)
             generated = self.store.get_snapshot(snapshot_id)
             logger.info(
                 "api explanation batch item generation returned batch_id=%s item_id=%s snapshot_id=%s status=%s error=%s",
@@ -170,6 +179,11 @@ class ApiExplanationBatchService:
                 generated.status if generated else "missing",
                 (generated.error if generated else "snapshot not found") or "",
             )
+            if self.store.is_batch_cancel_requested(item["batch_id"]):
+                self.store.update_batch_item(
+                    item["id"], "cancelled", error_message="批量任务已取消"
+                )
+                return
             if generated and generated.status in {"completed", "partial"}:
                 self.store.update_batch_item(item["id"], "completed", explanation_snapshot_id=snapshot_id)
                 if self.reference_store and job["repository_snapshot_id"] and hasattr(self.reference_store, "make_snapshot_reference_permanent"):
@@ -184,7 +198,12 @@ class ApiExplanationBatchService:
                 "api explanation batch item failed batch_id=%s item_id=%s snapshot_id=%s handler=%s",
                 job.get("id"), item.get("id"), snapshot_id, item.get("handler"),
             )
-            self._failed_or_retry(item, str(error)[:1000])
+            if self.store.is_batch_cancel_requested(item["batch_id"]):
+                self.store.update_batch_item(
+                    item["id"], "cancelled", error_message="批量任务已取消"
+                )
+            else:
+                self._failed_or_retry(item, str(error)[:1000])
 
     def _failed_or_retry(self, item: dict, error: str) -> None:
         transient = any(marker in error.lower() for marker in TRANSIENT_MARKERS)

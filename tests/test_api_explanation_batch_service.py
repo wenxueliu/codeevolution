@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from codeevolution.application.api_explanation_batch_service import ApiExplanationBatchService
 from codeevolution.api import create_app
+from codeevolution.domain.explanation import ExplanationSnapshot
 from codeevolution.infrastructure.explanation_snapshot_store import ExplanationSnapshotStore
 
 
@@ -103,4 +104,43 @@ def test_reused_explanations_count_as_a_completed_batch(tmp_path):
 
     assert batch["status"] == "completed"
     assert batch["progress"]["skipped"] == 1
+    store.close()
+
+
+def test_cancel_batch_api_marks_running_candidate_and_queued_items(tmp_path):
+    store = ExplanationSnapshotStore(tmp_path / "api.db")
+    batch = store.create_batch(
+        "snapshot-1", "prompt-1", "digest-1",
+        [
+            {"endpoint_key": "GET|/running|running", "method": "GET", "path": "/running", "handler": "running"},
+            {"endpoint_key": "GET|/queued|queued", "method": "GET", "path": "/queued", "handler": "queued"},
+        ],
+    )
+    running_item = store.claim_batch_items(batch["id"], 1)[0]
+    candidate = ExplanationSnapshot(
+        id="candidate-running", repo_name="shop", member_name="", api_key="GET|/running|running",
+        method="GET", path="/running", handler="running", entry_node_key="shop::running",
+        source_revision="rev", source_digest="source", graph_digest="graph",
+        model_id="test-model", prompt_version="v1", schema_version="v1", status="running",
+    )
+    store.create_snapshot(candidate)
+    store.update_batch_item(running_item["id"], "running", explanation_snapshot_id=candidate.id)
+
+    class Scheduler:
+        service = type("Service", (), {"store": store})()
+
+        def submit(self, _batch_id):
+            pass
+
+    with TestClient(create_app({"api_explanation_batch_scheduler": Scheduler()})) as client:
+        response = client.post(f"/api/api-explanations/batches/{batch['id']}/cancel")
+
+    assert response.status_code == 200
+    cancelled = response.json()["batch"]
+    assert cancelled["cancel_requested"] is True
+    assert cancelled["status"] == "running"
+    assert cancelled["progress"]["cancelled"] == 1
+    assert cancelled["progress"]["running"] == 1
+    assert store.get_snapshot(candidate.id).status == "cancelled"
+    assert {item["status"] for item in store.get_batch(batch["id"])["items"]} == {"running", "cancelled"}
     store.close()

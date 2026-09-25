@@ -604,6 +604,38 @@ describe('repository and knowledge pages', () => {
     expect(panel.find('.explanation-error').text()).toContain('prompt endpoint unavailable')
   })
 
+  it('shows cancellation progress and keeps polling an active API explanation batch', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const batch = {
+      id: 'batch-1', status: 'running', prompt_profile_id: '',
+      cancel_requested: false,
+      progress: { total: 2, completed: 0, failed: 0, skipped: 0, running: 1, cancelled: 0, percent: 0 },
+      items: [{ id: 'item-1', method: 'GET', path: '/orders', status: 'running' }],
+    }
+    const cancelledBatch = {
+      ...batch, cancel_requested: true,
+      progress: { ...batch.progress, cancelled: 1, percent: 50 },
+    }
+    const { wrapper, api } = mountPage(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 2, endpoints: [] } },
+      '/api/api-explanation-prompts': { current: null, profiles: [], default_guidance: '默认', defaults: {} },
+      '/api/api-explanations/batches': { batches: [batch] },
+      '/api/api-explanations/batches/batch-1/cancel': { batch: cancelledBatch },
+    }, { repoName: 'mall' })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="api-explanation-batch"]').text()).toContain('取消任务')
+    await wrapper.find('[data-testid="api-explanation-batch"] button').trigger('click')
+    await flushPromises()
+
+    expect(confirm).toHaveBeenCalled()
+    expect(api.request).toHaveBeenCalledWith('/api/api-explanations/batches/batch-1/cancel', { method: 'POST' })
+    expect(wrapper.find('[data-testid="api-explanation-batch"]').text()).toContain('取消中')
+    expect(wrapper.find('[data-testid="api-explanation-batch"] button').exists()).toBe(false)
+    wrapper.vm.clearBatchPoll()
+    wrapper.unmount()
+  })
+
   it('enlarges and zooms the sequence diagram for each API endpoint', async () => {
     mermaidRun.mockClear()
     const endpoints = [
