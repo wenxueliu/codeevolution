@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
+import time
 import uuid
 from dataclasses import asdict
 
@@ -21,6 +23,7 @@ from ..domain.explanation import (
 PROMPT_VERSION = "api-explanation-v2"
 SCHEMA_VERSION = "api-explanation-v2"
 CHUNKER_VERSION = "semantic-lines-v1"
+logger = logging.getLogger(__name__)
 
 
 def _digest(*values) -> str:
@@ -66,17 +69,37 @@ class ExplanationGenerationService:
                 prompt_digest=prompt_digest,
             )
         )
+        logger.info(
+            "api explanation snapshot prepared snapshot_id=%s endpoint=%s %s handler=%s nodes=%s edges=%s",
+            snapshot_id, spec.get("method"), spec.get("path"), spec.get("handler"),
+            len(frozen.get("nodes", {})), len(frozen.get("edges", [])),
+        )
         return snapshot_id, frozen
 
     def generate(self, snapshot_id: str, frozen: dict) -> None:
         """Populate and publish a prepared candidate; safe to run in a worker thread."""
+        started = time.monotonic()
+        logger.info(
+            "api explanation snapshot generation started snapshot_id=%s endpoint=%s %s handler=%s",
+            snapshot_id, frozen.get("_generation_spec", {}).get("method"),
+            frozen.get("_generation_spec", {}).get("path"),
+            frozen.get("_generation_spec", {}).get("handler"),
+        )
         try:
             self.store.update_snapshot(snapshot_id, "running")
             self._generate(snapshot_id, frozen)
         except Exception as error:
+            logger.exception("api explanation snapshot generation failed snapshot_id=%s", snapshot_id)
             current = self.store.get_snapshot(snapshot_id)
             if current and current.status not in {"completed", "partial", "failed", "cancelled"}:
                 self.store.update_snapshot(snapshot_id, "failed", error=str(error)[:1000])
+        finally:
+            current = self.store.get_snapshot(snapshot_id)
+            logger.info(
+                "api explanation snapshot generation finished snapshot_id=%s status=%s duration_seconds=%.2f error=%s",
+                snapshot_id, current.status if current else "missing", time.monotonic() - started,
+                (current.error if current else "snapshot not found") or "",
+            )
 
     def _generate(self, snapshot_id: str, frozen: dict) -> None:
         nodes: dict[str, dict] = frozen["nodes"]
@@ -86,6 +109,10 @@ class ExplanationGenerationService:
             edges,
             truncated=frozen.get("truncated", False),
             truncation_reasons=("call graph limit reached",) if frozen.get("truncated") else (),
+        )
+        logger.info(
+            "api explanation generation plan snapshot_id=%s nodes=%s edges=%s ordered_nodes=%s truncated=%s",
+            snapshot_id, len(nodes), len(edges), len(plan.node_order), frozen.get("truncated", False),
         )
         current = self.store.get_current(frozen["repo"], frozen["member"], frozen["api_key"])
         reusable = {
@@ -153,10 +180,27 @@ class ExplanationGenerationService:
                     statuses[node_id] = "partial"
                 else:
                     chunk_rows = []
-                    for chunk in chunking.chunks:
-                        explanation = self._semantic_call(
-                            self.semantic.explain_chunk, node, asdict(chunk), guidance=prompt_text,
-                            templates=prompt_templates,
+                    for chunk_index, chunk in enumerate(chunking.chunks, start=1):
+                        call_started = time.monotonic()
+                        logger.info(
+                            "api explanation LLM call started snapshot_id=%s stage=chunk node=%s chunk=%s/%s",
+                            snapshot_id, node["node_key"], chunk_index, len(chunking.chunks),
+                        )
+                        try:
+                            explanation = self._semantic_call(
+                                self.semantic.explain_chunk, node, asdict(chunk), guidance=prompt_text,
+                                templates=prompt_templates,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "api explanation LLM call failed snapshot_id=%s stage=chunk node=%s chunk=%s/%s",
+                                snapshot_id, node["node_key"], chunk_index, len(chunking.chunks),
+                            )
+                            raise
+                        logger.info(
+                            "api explanation LLM call finished snapshot_id=%s stage=chunk node=%s chunk=%s/%s duration_seconds=%.2f",
+                            snapshot_id, node["node_key"], chunk_index, len(chunking.chunks),
+                            time.monotonic() - call_started,
                         )
                         model_calls += 1
                         chunk_rows.append(
@@ -166,9 +210,25 @@ class ExplanationGenerationService:
                                 "status": "completed",
                             }
                         )
-                    local_by_id[node_id] = self._semantic_call(
-                        self.semantic.synthesize_local, node, chunk_rows, guidance=prompt_text,
-                        templates=prompt_templates,
+                    call_started = time.monotonic()
+                    logger.info(
+                        "api explanation LLM call started snapshot_id=%s stage=synthesis node=%s",
+                        snapshot_id, node["node_key"],
+                    )
+                    try:
+                        local_by_id[node_id] = self._semantic_call(
+                            self.semantic.synthesize_local, node, chunk_rows, guidance=prompt_text,
+                            templates=prompt_templates,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "api explanation LLM call failed snapshot_id=%s stage=synthesis node=%s",
+                            snapshot_id, node["node_key"],
+                        )
+                        raise
+                    logger.info(
+                        "api explanation LLM call finished snapshot_id=%s stage=synthesis node=%s duration_seconds=%.2f",
+                        snapshot_id, node["node_key"], time.monotonic() - call_started,
                     )
                     if len(chunk_rows) > 1:
                         model_calls += 1
@@ -238,9 +298,25 @@ class ExplanationGenerationService:
             if previous and previous.aggregate_digest == aggregate_digest:
                 aggregate = previous.aggregate_explanation
             else:
-                aggregate = self._semantic_call(
-                    self.semantic.aggregate_node, node, local_by_id[node_id], child_rows, guidance=prompt_text,
-                    templates=prompt_templates,
+                call_started = time.monotonic()
+                logger.info(
+                    "api explanation LLM call started snapshot_id=%s stage=aggregate node=%s children=%s",
+                    snapshot_id, node["node_key"], len(child_rows),
+                )
+                try:
+                    aggregate = self._semantic_call(
+                        self.semantic.aggregate_node, node, local_by_id[node_id], child_rows, guidance=prompt_text,
+                        templates=prompt_templates,
+                    )
+                except Exception:
+                    logger.exception(
+                        "api explanation LLM call failed snapshot_id=%s stage=aggregate node=%s children=%s",
+                        snapshot_id, node["node_key"], len(child_rows),
+                    )
+                    raise
+                logger.info(
+                    "api explanation LLM call finished snapshot_id=%s stage=aggregate node=%s children=%s duration_seconds=%.2f",
+                    snapshot_id, node["node_key"], len(child_rows), time.monotonic() - call_started,
                 )
                 if child_rows:
                     model_calls += 1
@@ -306,6 +382,10 @@ class ExplanationGenerationService:
             "shared_nodes": len(plan.shared_nodes),
             "components": len(plan.components),
         }
+        logger.info(
+            "api explanation validation finished snapshot_id=%s status=%s publishable=%s model_calls=%s issues=%s",
+            snapshot_id, coverage.status, coverage.publishable, model_calls, len(coverage.issues),
+        )
         if not coverage.publishable:
             self.store.update_snapshot(
                 snapshot_id,

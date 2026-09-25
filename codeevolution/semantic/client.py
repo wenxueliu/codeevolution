@@ -1,11 +1,14 @@
 """LLM transport port and OpenAI adapter."""
 
 import json
+import logging
+import time
 from typing import Protocol
 
 # Which (api_base, model) endpoints accept the `thinking` request param.
 # None = unknown, True = supported, False = rejected (fall back to plain calls).
 _THINKING_SUPPORT: dict[tuple[str | None, str], bool] = {}
+logger = logging.getLogger(__name__)
 
 
 class LLMClient(Protocol):
@@ -29,6 +32,13 @@ class OpenAILLMClient:
         self.config = config
 
     def complete(self, prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str | None:
+        started = time.monotonic()
+        model = self.config.get("model", "")
+        api_base = self.config.get("api_base", "")
+        logger.info(
+            "LLM request started model=%s api_base=%s prompt_chars=%s max_tokens=%s",
+            model, api_base, len(prompt), max_tokens,
+        )
         try:
             from openai import OpenAI
         except ImportError:
@@ -48,6 +58,10 @@ class OpenAILLMClient:
             # 无 tokenizer，按"约 2 字符 ≈ 1 token"保守估算（中文 ~1 字符/token、英文 ~3-4 字符/token）。
             context_window = _int_or_none(self.config.get("context_window"))
             if context_window and (len(prompt) + 1) // 2 + budget > context_window:
+                logger.warning(
+                    "LLM request rejected before transport model=%s reason=context_window prompt_chars=%s budget=%s context_window=%s",
+                    model, len(prompt), budget, context_window,
+                )
                 return json.dumps(
                     {
                         "error": (
@@ -88,10 +102,23 @@ class OpenAILLMClient:
                         return response.choices[0].message.content
                     except Exception:
                         # Endpoint rejected the param (or failed with it); retry plain.
+                        logger.warning(
+                            "LLM request with thinking flag failed; retrying plain request model=%s api_base=%s",
+                            model, api_base, exc_info=True,
+                        )
                         _THINKING_SUPPORT[endpoint] = False
             response = client.chat.completions.create(**kwargs)
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+            logger.info(
+                "LLM request finished model=%s api_base=%s response_chars=%s duration_seconds=%.2f",
+                model, api_base, len(content or ""), time.monotonic() - started,
+            )
+            return content
         except Exception as error:
+            logger.exception(
+                "LLM request failed model=%s api_base=%s duration_seconds=%.2f",
+                model, api_base, time.monotonic() - started,
+            )
             return json.dumps({"error": str(error)})
         finally:
             if http_client is not None:

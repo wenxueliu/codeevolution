@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Thread
@@ -13,11 +14,12 @@ from ..semantic.explanation_templates import (
     prompt_digest,
 )
 
-
 TRANSIENT_MARKERS = (
     "timeout", "timed out", "超时", "rate limit", "限流", "429", "temporarily",
     "temporary", "connection", "network", "503", "502",
 )
+
+logger = logging.getLogger(__name__)
 
 
 def endpoint_key(endpoint: dict) -> str:
@@ -86,8 +88,13 @@ class ApiExplanationBatchService:
     def run_job(self, batch_id: str, submit_item) -> None:
         try:
             job = self.store.start_batch(batch_id)
+            logger.info(
+                "api explanation batch started batch_id=%s status=%s total=%s concurrency=%s",
+                batch_id, job["status"], job.get("total_count"), job.get("concurrency"),
+            )
             while job["status"] in {"queued", "running"}:
                 if job["cancel_requested"]:
+                    logger.info("api explanation batch cancellation observed batch_id=%s", batch_id)
                     self.store.cancel_batch(batch_id)
                     return
                 claimed = self.store.claim_batch_items(batch_id, job["concurrency"])
@@ -98,14 +105,26 @@ class ApiExplanationBatchService:
                     time.sleep(0.05)
                     job = latest
                     continue
+                logger.info(
+                    "api explanation batch items claimed batch_id=%s count=%s handlers=%s",
+                    batch_id, len(claimed), ",".join(item.get("handler", "") for item in claimed),
+                )
                 futures = [submit_item(self._run_item, item, job) for item in claimed]
                 for future in as_completed(futures):
                     future.result()
                 job = self.store.get_batch(batch_id)
                 if job is None:
                     return
+                logger.info(
+                    "api explanation batch progress batch_id=%s status=%s completed=%s failed=%s skipped=%s running=%s queued=%s",
+                    batch_id, job["status"], job.get("completed_count"), job.get("failed_count"),
+                    job.get("skipped_count"), job.get("running_count"),
+                    sum(item.get("status") == "queued" for item in job.get("items", [])),
+                )
+            logger.info("api explanation batch finished batch_id=%s status=%s", batch_id, job["status"])
         except Exception as error:
             # Keep the job queryable even when initialization itself fails.
+            logger.exception("api explanation batch coordinator failed batch_id=%s", batch_id)
             current = self.store.get_batch(batch_id)
             if current and current["status"] in {"queued", "running"}:
                 self.store.fail_batch(batch_id, str(error)[:1000])
@@ -129,11 +148,28 @@ class ApiExplanationBatchService:
             spec.update({"_prompt_text": guidance, "_prompt_version": "system-default",
                          "_prompt_digest": prompt_digest(guidance, templates),
                          "_prompt_templates": templates})
+        snapshot_id = None
+        logger.info(
+            "api explanation batch item started batch_id=%s item_id=%s endpoint=%s %s handler=%s attempt=%s",
+            job.get("id"), item.get("id"), item.get("method"), item.get("path"),
+            item.get("handler"), item.get("attempt_count"),
+        )
         try:
             service = self.generation_factory()
             snapshot_id, frozen = service.prepare(spec)
+            logger.info(
+                "api explanation batch item prepared batch_id=%s item_id=%s snapshot_id=%s nodes=%s edges=%s",
+                job.get("id"), item.get("id"), snapshot_id, len(frozen.get("nodes", {})),
+                len(frozen.get("edges", [])),
+            )
             service.generate(snapshot_id, frozen)
             generated = self.store.get_snapshot(snapshot_id)
+            logger.info(
+                "api explanation batch item generation returned batch_id=%s item_id=%s snapshot_id=%s status=%s error=%s",
+                job.get("id"), item.get("id"), snapshot_id,
+                generated.status if generated else "missing",
+                (generated.error if generated else "snapshot not found") or "",
+            )
             if generated and generated.status in {"completed", "partial"}:
                 self.store.update_batch_item(item["id"], "completed", explanation_snapshot_id=snapshot_id)
                 if self.reference_store and job["repository_snapshot_id"] and hasattr(self.reference_store, "make_snapshot_reference_permanent"):
@@ -144,15 +180,27 @@ class ApiExplanationBatchService:
             error = (generated.error if generated else "explanation snapshot was not created") or "generation failed"
             self._failed_or_retry(item, error)
         except Exception as error:
+            logger.exception(
+                "api explanation batch item failed batch_id=%s item_id=%s snapshot_id=%s handler=%s",
+                job.get("id"), item.get("id"), snapshot_id, item.get("handler"),
+            )
             self._failed_or_retry(item, str(error)[:1000])
 
     def _failed_or_retry(self, item: dict, error: str) -> None:
         transient = any(marker in error.lower() for marker in TRANSIENT_MARKERS)
         attempts = int(item.get("attempt_count") or 0)
         if transient and attempts < 3:
+            logger.warning(
+                "api explanation batch item transient failure item_id=%s attempt=%s retrying error=%s",
+                item.get("id"), attempts, error,
+            )
             self.store.update_batch_item(item["id"], "queued", error_message=error)
             time.sleep(2 if attempts == 1 else 5)
         else:
+            logger.error(
+                "api explanation batch item terminal failure item_id=%s attempt=%s error=%s",
+                item.get("id"), attempts, error,
+            )
             self.store.update_batch_item(item["id"], "failed", error_message=error)
 
     def _resolve_profile(self, snapshot_id: str, profile_id: str) -> dict | None:
