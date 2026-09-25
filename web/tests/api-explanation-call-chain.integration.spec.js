@@ -91,12 +91,15 @@ describe('API explanation call-chain rail', () => {
       snapshot_id: 'repo-snapshot', node_id: 'fn-root', view_id: '',
     })
 
+    expect(tree.find('.ct-call-chain .ct-column-title').text()).toContain('后端调用链')
+    expect(tree.find('.ct-details').find('.ct-rail').exists()).toBe(true)
+    expect(tree.find('.ct-details').find('.ct-source-rail').exists()).toBe(true)
     const divider = tree.find('[data-testid="call-chain-divider-0"]')
-    expect(tree.findAll('.ct-divider')).toHaveLength(2)
-    const split = tree.find('.ct-split')
-    const beforeResize = split.attributes('style')
+    expect(tree.findAll('.ct-divider')).toHaveLength(1)
+    const details = tree.find('.ct-details')
+    const beforeResize = details.attributes('style')
     await divider.trigger('keydown.right')
-    expect(split.attributes('style')).not.toBe(beforeResize)
+    expect(details.attributes('style')).not.toBe(beforeResize)
 
     await wrapper.find('.nrr-api-mode .primary').trigger('click')
     expect(api.request).toHaveBeenCalledWith('/api/api-explanations/generate', expect.objectContaining({ method: 'POST' }))
