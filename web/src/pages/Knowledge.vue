@@ -28,7 +28,7 @@
 
     <div v-if="snapshotId" class="page-header">
       <div>
-        <h1>{{ t('知识中心') }}</h1>
+        <h1>{{ repoName || t('知识中心') }}</h1>
         <p>{{ t('基于不可变 Repository Snapshot 推导。') }} <code v-if="snapshotId">{{ snapshotId }}</code><span v-if="loadedAt"> · {{ loadedAt }} · {{ loadDuration }} ms</span></p>
       </div>
       <div class="actions">

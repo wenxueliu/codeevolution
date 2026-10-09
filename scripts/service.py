@@ -202,8 +202,13 @@ def port_is_available(host: str, port: int) -> bool:
         with socket.socket(family, socktype, proto) as probe:
             if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            # SO_REUSEADDR weakens the occupied-port check on Windows and is
-            # unnecessary for a short-lived probe on either platform.
+            else:
+                # A freshly stopped server leaves TIME-WAIT sockets on the
+                # port; without SO_REUSEADDR the probe bind fails with
+                # EADDRINUSE even though no process is listening. SO_REUSEADDR
+                # still conflicts with an active listener, so real occupancy is
+                # detected. Windows keeps SO_EXCLUSIVEADDRUSE semantics.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(sockaddr)
             except OSError:

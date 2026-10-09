@@ -636,6 +636,22 @@ describe('repository and knowledge pages', () => {
     wrapper.unmount()
   })
 
+  it('shows the selected service name as the knowledge page heading', async () => {
+    const { wrapper } = mountPage(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 0, endpoints: [] } },
+    }, { repoName: 'order-service' })
+    await flushPromises()
+
+    expect(wrapper.find('.page-header h1').text()).toBe('order-service')
+  })
+
+  it('falls back to the knowledge title when no service is selected', async () => {
+    const { wrapper } = mountPage(Knowledge, {}, { repoName: '' }, { query: { snapshot_id: 'test-snapshot' } })
+    await flushPromises()
+
+    expect(wrapper.find('.page-header h1').text()).toBe('知识中心')
+  })
+
   it('shows per-endpoint explanation status and a batch summary on the knowledge page', async () => {
     const endpoints = [
       { method: 'GET', path: '/a', handler: 'HandlerA', api_key: 'GET|/a|HandlerA' },
