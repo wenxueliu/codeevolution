@@ -119,6 +119,7 @@ def test_openapi_path_snapshot():
         "/api/api-explanations/snapshots/{snapshot_id}/cancel",
         "/api/api-explanations/snapshots/{snapshot_id}/nodes/{node_key}",
         "/api/api-explanations/snapshots/{snapshot_id}/nodes/{node_key}/chunks",
+        "/api/api-explanations/statuses",
         "/api/audit-logs",
         "/api/business-rules",
         "/api/business-rules/generate",

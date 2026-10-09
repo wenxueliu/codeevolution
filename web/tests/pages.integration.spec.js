@@ -636,6 +636,31 @@ describe('repository and knowledge pages', () => {
     wrapper.unmount()
   })
 
+  it('shows per-endpoint explanation status and a batch summary on the knowledge page', async () => {
+    const endpoints = [
+      { method: 'GET', path: '/a', handler: 'HandlerA', api_key: 'GET|/a|HandlerA' },
+      { method: 'GET', path: '/b', handler: 'HandlerB', api_key: 'GET|/b|HandlerB' },
+      { method: 'GET', path: '/c', handler: 'HandlerC', api_key: 'GET|/c|HandlerC' },
+    ]
+    const { wrapper, api } = mountPage(Knowledge, {
+      '/api/knowledge': { api_contract: { endpoint_count: 3, endpoints } },
+      '/api/api-explanations/statuses': {
+        repository_snapshot_id: 'test-snapshot',
+        summary: { explained: 1, stale: 1, pending: 1, running: 0 },
+        endpoints: [
+          { api_key: 'GET|/a|HandlerA', status: 'explained' },
+          { api_key: 'GET|/b|HandlerB', status: 'stale' },
+          { api_key: 'GET|/c|HandlerC', status: 'pending' },
+        ],
+      },
+    }, { repoName: 'mall' })
+    await flushPromises()
+
+    expect(api.get).toHaveBeenCalledWith('/api/api-explanations/statuses', { repository_snapshot_id: 'test-snapshot' })
+    expect(wrapper.find('[data-testid="explanation-status-summary"]').text()).toBe('已解释 1 · 待刷新 1 · 待解释 1')
+    expect(wrapper.findAll('tbody td .explanation-status').map(node => node.text())).toEqual(['已解释', '待刷新', '待解释'])
+  })
+
   it('enlarges and zooms the sequence diagram for each API endpoint', async () => {
     mermaidRun.mockClear()
     const endpoints = [

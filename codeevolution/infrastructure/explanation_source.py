@@ -182,61 +182,81 @@ class SnapshotExplanationSource:
         if not snapshot_id:
             raise ValueError("repository_snapshot_id is required")
         with self.snapshot_queries.open(snapshot_id) as handle:
-            reader, source = handle.graph, handle.sources
-            root_node = None
-            if spec.get("file") and spec.get("line"):
-                root_node = reader.handler_for_route(spec["file"], int(spec["line"]))
-            if root_node is None and spec.get("handler"):
-                root_node = reader.function_node(spec["handler"])
-            if root_node is None:
-                raise ValueError("API handler could not be resolved in snapshot")
-            nodes: dict[str, dict] = {}
-            edges: list[dict] = []
-            queue, visited, unresolved, truncated = [str(root_node["id"])], set(), 0, False
-            while queue:
-                node_id = queue.pop(0)
-                if node_id in visited:
-                    continue
-                if len(visited) >= MAX_EXPLANATION_NODES:
-                    truncated = True
-                    break
-                visited.add(node_id)
-                fn = reader.get_function_by_id(node_id)
-                if fn is None or fn.kind not in {"function", "method"}:
+            return self._load_with_handle(handle, spec, snapshot_id)
+
+    def load_many(self, snapshot_id: str, specs):
+        """Resolve many endpoint specs against one open snapshot handle.
+
+        Opening the immutable snapshot is the expensive part; callers that need
+        digests for a whole endpoint list should iterate this generator instead
+        of calling :meth:`load` once per endpoint.  A spec whose handler cannot
+        be resolved yields ``None`` rather than aborting the batch.
+        """
+        if not snapshot_id:
+            raise ValueError("repository_snapshot_id is required")
+        with self.snapshot_queries.open(snapshot_id) as handle:
+            for spec in specs:
+                try:
+                    yield self._load_with_handle(handle, spec, snapshot_id)
+                except Exception:
+                    yield None
+
+    def _load_with_handle(self, handle, spec: dict, snapshot_id: str) -> dict:
+        reader, source = handle.graph, handle.sources
+        root_node = None
+        if spec.get("file") and spec.get("line"):
+            root_node = reader.handler_for_route(spec["file"], int(spec["line"]))
+        if root_node is None and spec.get("handler"):
+            root_node = reader.function_node(spec["handler"])
+        if root_node is None:
+            raise ValueError("API handler could not be resolved in snapshot")
+        nodes: dict[str, dict] = {}
+        edges: list[dict] = []
+        queue, visited, unresolved, truncated = [str(root_node["id"])], set(), 0, False
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in visited:
+                continue
+            if len(visited) >= MAX_EXPLANATION_NODES:
+                truncated = True
+                break
+            visited.add(node_id)
+            fn = reader.get_function_by_id(node_id)
+            if fn is None or fn.kind not in {"function", "method"}:
+                unresolved += 1
+                continue
+            text = source.snippet(fn.file_path, fn.start_line, fn.end_line) or ""
+            nodes[node_id] = {
+                "id": node_id, "node_key": f"{snapshot_id}::{fn.node_id}", "name": fn.name,
+                "qualified_name": fn.qualified_name, "signature": fn.signature or "",
+                "file": fn.file_path, "line_start": fn.start_line, "line_end": fn.end_line,
+                "language": fn.language, "source": text,
+                "source_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            }
+            callees = reader.get_callee_rows(node_id, MAX_CALLEES_PER_NODE + 1)
+            if len(callees) > MAX_CALLEES_PER_NODE:
+                truncated = True
+            for callee in callees[:MAX_CALLEES_PER_NODE]:
+                target_id = str(callee.get("id") or "")
+                target = reader.get_function_by_id(target_id) if target_id else None
+                if target is None or target.kind not in {"function", "method"}:
                     unresolved += 1
                     continue
-                text = source.snippet(fn.file_path, fn.start_line, fn.end_line) or ""
-                nodes[node_id] = {
-                    "id": node_id, "node_key": f"{snapshot_id}::{fn.node_id}", "name": fn.name,
-                    "qualified_name": fn.qualified_name, "signature": fn.signature or "",
-                    "file": fn.file_path, "line_start": fn.start_line, "line_end": fn.end_line,
-                    "language": fn.language, "source": text,
-                    "source_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                }
-                callees = reader.get_callee_rows(node_id, MAX_CALLEES_PER_NODE + 1)
-                if len(callees) > MAX_CALLEES_PER_NODE:
-                    truncated = True
-                for callee in callees[:MAX_CALLEES_PER_NODE]:
-                    target_id = str(callee.get("id") or "")
-                    target = reader.get_function_by_id(target_id) if target_id else None
-                    if target is None or target.kind not in {"function", "method"}:
-                        unresolved += 1
-                        continue
-                    edges.append({"source": node_id, "target": target_id, "call_line": callee.get("call_line"),
-                                  "call_site": {"file": fn.file_path, "line": callee.get("call_line")}})
-                    if target_id not in visited:
-                        queue.append(target_id)
-            edges = [edge for edge in edges if edge["source"] in nodes and edge["target"] in nodes]
-            source_digest = RepositoryExplanationSource._digest(
-                [(key, node["source_hash"]) for key, node in sorted(nodes.items())]
-            )
-            graph_digest = RepositoryExplanationSource._digest(
-                [(edge["source"], edge["target"], edge.get("call_line")) for edge in edges]
-            )
-            return {"repo": handle.snapshot.member_id, "member": handle.snapshot.member_id,
-                    "repository_snapshot_id": snapshot_id,
-                    "api_key": api_key(spec["method"], spec["path"], spec["handler"]),
-                    "entry_id": str(root_node["id"]), "entry_node_key": nodes[str(root_node["id"])]["node_key"],
-                    "nodes": nodes, "edges": edges, "source_revision": snapshot_id,
-                    "source_digest": source_digest, "graph_digest": graph_digest,
-                    "truncated": truncated, "unresolved_external_nodes": unresolved}
+                edges.append({"source": node_id, "target": target_id, "call_line": callee.get("call_line"),
+                              "call_site": {"file": fn.file_path, "line": callee.get("call_line")}})
+                if target_id not in visited:
+                    queue.append(target_id)
+        edges = [edge for edge in edges if edge["source"] in nodes and edge["target"] in nodes]
+        source_digest = RepositoryExplanationSource._digest(
+            [(key, node["source_hash"]) for key, node in sorted(nodes.items())]
+        )
+        graph_digest = RepositoryExplanationSource._digest(
+            [(edge["source"], edge["target"], edge.get("call_line")) for edge in edges]
+        )
+        return {"repo": handle.snapshot.member_id, "member": handle.snapshot.member_id,
+                "repository_snapshot_id": snapshot_id,
+                "api_key": api_key(spec["method"], spec["path"], spec["handler"]),
+                "entry_id": str(root_node["id"]), "entry_node_key": nodes[str(root_node["id"])]["node_key"],
+                "nodes": nodes, "edges": edges, "source_revision": snapshot_id,
+                "source_digest": source_digest, "graph_digest": graph_digest,
+                "truncated": truncated, "unresolved_external_nodes": unresolved}

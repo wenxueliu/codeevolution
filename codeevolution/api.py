@@ -2267,6 +2267,42 @@ def current_api_explanation(
     }
 
 
+@app.get("/api/api-explanations/statuses")
+def api_explanation_statuses(repository_snapshot_id: str = Query(..., min_length=1)):
+    """Batch explanation status for every endpoint of a snapshot.
+
+    Resolves all endpoints in one pass so the web table can mark each row as
+    待解释 (pending) / 已解释 (explained) / 待刷新 (stale) without a per-row query.
+    """
+    from .application.api_explanation_status_service import ApiExplanationStatusService
+
+    queries = get_snapshot_query_service()
+    try:
+        with queries.open(repository_snapshot_id) as handle:
+            member_id = handle.snapshot.member_id
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
+    try:
+        report = queries.knowledge(repository_snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
+
+    endpoints = report.get("api_contract", {}).get("endpoints", [])
+    source_loader = _request_dependencies.get().get("explanation_source_loader")
+    if source_loader is None:
+        from .infrastructure.explanation_source import SnapshotExplanationSource
+
+        source_loader = SnapshotExplanationSource(queries)
+    service = ApiExplanationStatusService(get_explanation_snapshot_store())
+    return service.statuses(
+        repository_snapshot_id, endpoints, member_id=member_id, source_loader=source_loader,
+    )
+
+
 @app.get("/api/api-explanations/snapshots")
 def list_api_explanation_snapshots(
     repo: str = Query(""), member: str = Query(""), api_key: str = Query(...),

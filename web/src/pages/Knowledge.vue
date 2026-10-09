@@ -123,16 +123,18 @@
             <label>{{ t('HTTP 方法') }}<select v-model="endpointMethod" @change="endpointPage = 1"><option value="">{{ t('全部方法') }}</option><option v-for="method in endpointMethods" :key="method">{{ method }}</option></select></label>
             <label>{{ t('服务') }}<select v-model="endpointService" data-testid="endpoint-service-filter" @change="endpointPage = 1"><option value="">{{ t('全部服务') }}</option><option v-for="service in endpointServices" :key="service">{{ service }}</option></select></label>
             <span>{{ t('共 {count} 条', { count: filteredEndpoints.length }) }}</span>
+            <span class="explanation-status-summary" data-testid="explanation-status-summary" :class="{ loading: explanationStatusLoading }">{{ t('已解释 {explained} · 待刷新 {stale} · 待解释 {pending}', explanationStatusSummary) }}</span>
           </div>
-          <div class="table-wrap"><table><thead><tr><th>{{ t('方法') }}</th><th>{{ t('路径') }}</th><th>{{ t('处理函数') }}</th><th>{{ t('请求/应答') }}</th><th>{{ t('前端调用') }}</th></tr></thead><tbody>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('方法') }}</th><th>{{ t('路径') }}</th><th>{{ t('处理函数') }}</th><th>{{ t('请求/应答') }}</th><th>{{ t('前端调用') }}</th><th>{{ t('解释状态') }}</th></tr></thead><tbody>
             <template v-for="(item, index) in visibleEndpoints" :key="`${item.repository || ''}-${item.method}-${item.path}-${index}`">
               <tr class="clickable" :class="{ expanded: expandedKeys.has(endpointKey(item, index)) }" tabindex="0" @click="toggleEndpoint(item, index)" @keydown.enter="toggleEndpoint(item, index)">
                 <td><span class="method">{{ item.method }}</span></td><td><code>{{ item.path }}</code></td><td>{{ item.handler || '-' }}</td>
                 <td>{{ item.request_body?.type || t('无请求体') }} → {{ item.response_body?.type || item.return_type || t('未知') }}</td>
                 <td>{{ item.frontend_callers?.length || 0 }} {{ t('处') }}</td>
+                <td><span class="explanation-status" :class="'explanation-' + endpointStatusFor(item)">{{ endpointStatusText(endpointStatusFor(item)) }}</span></td>
               </tr>
               <tr v-if="expandedKeys.has(endpointKey(item, index))" class="expand-detail">
-                <td colspan="5">
+                <td colspan="6">
                   <div class="contract-grid">
                     <div><h4>{{ t('请求头') }}</h4><pre>{{ formatJson(item.request_headers || []) }}</pre></div>
                     <div><h4>{{ t('路径/查询参数') }}</h4><pre>{{ formatJson({ path: item.path_params || [], query: item.query_params || [] }) }}</pre></div>
@@ -464,6 +466,9 @@ export default {
       sequenceZoomScale: 1,
       apiExplanations: {},
       explanationPollTimers: {},
+      explanationStatuses: {},
+      explanationStatusSummary: { explained: 0, stale: 0, pending: 0, running: 0 },
+      explanationStatusLoading: false,
       promptText: DEFAULT_ENDPOINT_GUIDANCE, promptDefaults: { ...DEFAULT_PROMPT_TEMPLATES }, promptTemplates: { ...DEFAULT_PROMPT_TEMPLATES }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
       batchJob: null, batchPollTimer: null,
       endpointCustomPrompts: {}, endpointPromptEditor: null,
@@ -608,7 +613,7 @@ export default {
       }
       await this.$runAsync(async () => {
         this.report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: includeLlm, complete: true })
-        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus(), this.loadTerms()])
+        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus(), this.loadTerms(), this.loadExplanationStatuses()])
         for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
         this.explanationPollTimers = {}
         this.apiExplanations = {}
@@ -695,13 +700,30 @@ export default {
         if (this.batchActive) this.scheduleBatchPoll(); else this.clearBatchPoll()
       } catch (err) { /* Batch history is optional for older servers. */ }
     },
+    async loadExplanationStatuses() {
+      if (!this.snapshotId) return
+      this.explanationStatuses = {}
+      this.explanationStatusSummary = { explained: 0, stale: 0, pending: 0, running: 0 }
+      this.explanationStatusLoading = true
+      try {
+        const data = await this.$api.get('/api/api-explanations/statuses', { repository_snapshot_id: this.snapshotId })
+        const map = {}
+        for (const item of data?.endpoints || []) if (item?.api_key) map[item.api_key] = item
+        this.explanationStatuses = map
+        this.explanationStatusSummary = data?.summary || { explained: 0, stale: 0, pending: 0, running: 0 }
+      } catch (err) {
+        /* Status projection is optional; keep the table usable if it fails. */
+      } finally { this.explanationStatusLoading = false }
+    },
     scheduleBatchPoll() { this.clearBatchPoll(); this.batchPollTimer = setTimeout(() => this.refreshBatchStatus(), 1200) },
     clearBatchPoll() { if (this.batchPollTimer) clearTimeout(this.batchPollTimer); this.batchPollTimer = null },
     async refreshBatchStatus() {
       this.batchPollTimer = null
       if (!this.batchJob?.id) return
+      const wasActive = this.batchActive
       try { const data = await this.$api.get(`/api/api-explanations/batches/${encodeURIComponent(this.batchJob.id)}`); this.batchJob = data?.batch || data } catch (err) { /* retry below */ }
       if (this.batchActive) this.scheduleBatchPoll()
+      else if (wasActive) await this.loadExplanationStatuses()
     },
     async cancelBatch() {
       if (!this.batchJob?.id || !window.confirm(this.t('确定取消当前批量任务吗？'))) return
@@ -762,6 +784,8 @@ export default {
     endpointKey(item, index) { return `${item.method || ''}-${item.path || ''}-${index}` },
     explanationKey(item) { return [this.repoName || '', item.repository || '', item.method || '', item.path || '', item.handler || ''].join('||') },
     apiKey(item) { return item.api_key || [String(item.method || '').toUpperCase(), item.path || '', item.handler || ''].join('|') },
+    endpointStatusFor(item) { return this.explanationStatuses[this.apiKey(item)]?.status || 'pending' },
+    endpointStatusText(status) { return this.t(({ explained: '已解释', stale: '待刷新', pending: '待解释', running: '生成中' })[status] || status || '') },
     explanationState(item) {
       return this.apiExplanations[this.explanationKey(item)] || { loading: false, running: false, current: null, snapshots: [], showSnapshots: false, deleting: '', error: '' }
     },
@@ -798,6 +822,7 @@ export default {
     unwrapSnapshots(data) { return Array.isArray(data) ? data : (data?.snapshots || []) },
     async loadEndpointExplanation(item, { quiet = false } = {}) {
       if (!quiet) this.setExplanationState(item, { loading: true, error: '' })
+      const wasRunning = this.explanationState(item).running
       try {
         const query = this.explanationQuery(item)
         const [currentData, snapshotsData] = await Promise.all([
@@ -812,6 +837,7 @@ export default {
         const current = this.unwrapCurrent(currentData)
         this.setExplanationState(item, { current, snapshots, running, status: running ? 'running' : (current?.freshness === 'outdated' ? 'stale' : (current?.status || (current ? 'completed' : 'missing'))), loading: false, error: '' })
         if (running) this.scheduleExplanationPoll(item)
+        else if (wasRunning) await this.loadExplanationStatuses()
       } catch (err) {
         const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('读取解释失败')
         this.setExplanationState(item, { loading: false, error: detail })
@@ -898,6 +924,7 @@ export default {
         const suffix = isCurrent ? '?confirm_current=true' : ''
         await this.$api.delete(`/api/api-explanations/snapshots/${encodeURIComponent(snapshot.id)}${suffix}`)
         await this.loadEndpointExplanation(item, { quiet: true })
+        await this.loadExplanationStatuses()
       } catch (err) {
         const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('删除快照失败')
         this.setExplanationState(item, { error: detail })
@@ -1261,6 +1288,9 @@ td code { color: #666; word-break: break-all; }
 .explanation-running, .explanation-pending { background: #e3f0fc; color: #2a6496; }
 .explanation-completed { background: #eaf8f0; color: #23764a; }
 .explanation-partial, .explanation-stale { background: #fff3d6; color: #8a6500; }
+.explanation-explained { background: #eaf8f0; color: #23764a; }
+.table-tools .explanation-status-summary { margin-left: 14px; color: #555; }
+.table-tools .explanation-status-summary.loading { opacity: .55; }
 .explanation-failed { background: #ffeaea; color: #b8324a; }
 .explanation-progress { margin: 9px 0; padding: 8px 10px; border-radius: 5px; background: #eef7ff; color: #2a6496; font-size: 11px; }
 .explanation-error { margin: 9px 0; color: #b8324a; font-size: 11px; }
