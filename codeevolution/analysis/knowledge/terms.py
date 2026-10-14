@@ -19,18 +19,34 @@ _GENERIC_TYPE_NAMES = {
     "page", "set", "string", "tuple", "void",
 }
 _TECHNICAL_TOKENS = {
-    "adapter", "base", "client", "config", "configuration", "controller", "dao",
-    "dto", "handler", "impl", "mapper", "middleware", "model", "po", "repository",
-    "request", "response", "service", "test", "util", "utils", "vo", "worker",
+    "adapter", "api", "base", "client", "config", "configuration", "controller",
+    "dao", "dto", "handler", "impl", "mapper", "middleware", "model", "po",
+    "repository", "request", "response", "service", "snapshot", "test", "util",
+    "utils", "vo", "worker",
 }
 _TECHNICAL_RESOURCES = {"admin", "docs", "health", "metrics", "openapi", "swagger"}
 # Generic data-operation verbs: names carrying these prefixes are operations on
-# terms (e.g. GetUserList, CreateOrder), not terms themselves.
+# terms (e.g. GetUserList, CreateOrder), not terms themselves.  CRUD-led names
+# merge onto the noun they operate on; control/compute verbs reject outright.
 _CRUD_VERBS = {
     "get", "query", "list", "find", "search", "fetch", "load", "read", "scan",
     "add", "create", "insert", "save", "store", "register", "new", "set", "put",
     "update", "modify", "edit", "change", "batch", "bulk",
     "delete", "remove", "del", "drop", "page", "count", "exists", "check",
+}
+# Control/compute verbs: compounds led or tailed by one of these (ViewReport,
+# GraphView, CancelAnalysisRun, TaskRun) are operations on terms or UI
+# artifacts, never terms — the candidate is dropped instead of merged.
+_OPERATION_VERBS = {
+    "view", "preview", "show", "display", "render", "open", "close", "toggle",
+    "call", "invoke", "execute", "run", "start", "stop", "cancel", "pause",
+    "resume", "abort", "retry", "restart", "kill", "terminate",
+    "refresh", "reload", "pin", "unpin", "export", "import", "upload",
+    "download", "sync",
+    "generate", "collect", "scavenge", "serve", "retire", "deploy",
+    "analyze", "analyse", "analysis", "compute", "calculate", "parse",
+    "resolve", "validate", "verify", "compare", "align", "process",
+    "handle", "perform", "apply", "trigger", "submit", "dispatch", "do",
 }
 # Generic query/view nouns that carry no domain meaning when appended to a term.
 _GENERIC_NOUNS = {
@@ -49,6 +65,9 @@ def _tokens(value: str) -> list[str]:
 def _singular(token: str) -> str:
     if len(token) > 4 and token.endswith("ies"):
         return token[:-3] + "y"
+    # -sis nouns (analysis, basis, ...) are already singular.
+    if token.endswith("sis"):
+        return token
     if len(token) > 3 and token.endswith("ses"):
         return token[:-2]
     if len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us")):
@@ -225,6 +244,7 @@ class TermRecognizer:
             tokens = _tokens(handler)
             if (
                 not tokens or tokens[0] in _CRUD_VERBS or tokens[0] in _GENERIC_NOUNS
+                or tokens[0] in _OPERATION_VERBS or tokens[-1] in _OPERATION_VERBS
                 or self._is_technical(handler)
             ):
                 continue
@@ -304,6 +324,11 @@ class TermRecognizer:
         selected: set[str], clean_names: dict[tuple[str, str], bool] | None = None,
     ) -> TermCandidate | None:
         if term_type not in selected:
+            return None
+        tokens = _tokens(raw_name)
+        # Operation-verb compounds (ViewReport, GraphView, TaskRun) are
+        # operations on terms rather than terms: reject them outright.
+        if tokens and (tokens[0] in _OPERATION_VERBS or tokens[-1] in _OPERATION_VERBS):
             return None
         normalized = normalize_term(raw_name)
         # Canonical name comes from the stripped noun phrase so operation

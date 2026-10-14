@@ -73,6 +73,45 @@ def test_data_operation_names_do_not_become_terms():
     assert "CreateUserRequest" in user["aliases"]
 
 
+def test_operation_verb_compounds_do_not_become_terms():
+    facts = {
+        "api_contract": {"endpoints": [
+            {"method": "POST", "path": "/api/view-report", "handler": "reports::view_report", "node_id": "fn-1"},
+            {"method": "POST", "path": "/api/cancel-analysis-run", "handler": "runs::cancel_analysis_run", "node_id": "fn-2"},
+            {"method": "POST", "path": "/api/stop-recording", "handler": "rec::stop_ui_recording", "node_id": "fn-3"},
+            {"method": "POST", "path": "/api/run-recording", "handler": "rec::run_ui_recording", "node_id": "fn-4"},
+            {"method": "POST", "path": "/api/task-run", "handler": "tasks::task_run", "node_id": "fn-5"},
+            {"method": "POST", "path": "/api/reports", "handler": "reports::publish_report", "node_id": "fn-6"},
+        ]},
+        "core_entities": [
+            {"node_id": "t1", "name": "GraphView", "file_path": "src/web.py", "kind": "class", "score": 30, "fields": []},
+            {"node_id": "t2", "name": "AnalysisRun", "file_path": "src/run.py", "kind": "class", "score": 30, "fields": []},
+            {"node_id": "t3", "name": "TaskAnalysisStatus", "file_path": "src/run.py", "kind": "class", "score": 20, "fields": []},
+            {"node_id": "t4", "name": "Report", "file_path": "src/domain.py", "kind": "class", "score": 30, "fields": [{"name": "id"}]},
+        ],
+    }
+    report = TermRecognizer().extract("snapshot-1", "ops", facts)
+
+    names = {(item["term_type"], item["canonical_name"]) for item in report["terms"]}
+    # verb-led compounds are operations on terms, not terms
+    assert ("action", "ViewReport") not in names
+    assert ("action", "CancelAnalysisRun") not in names
+    assert ("action", "StopUiRecording") not in names
+    assert ("action", "RunUiRecording") not in names
+    assert ("resource", "ViewReport") not in names
+    assert ("resource", "CancelAnalysisRun") not in names
+    # noun+verb compounds are operations too
+    assert ("action", "TaskRun") not in names
+    assert ("entity", "GraphView") not in names
+    assert ("entity", "AnalysisRun") not in names
+    assert ("resource", "TaskRun") not in names
+    # domain nouns and non-operation domain verbs survive untouched
+    assert ("entity", "Report") in names
+    assert ("action", "PublishReport") in names
+    # -sis nouns stay intact through singularization
+    assert ("entity", "TaskAnalysisStatus") in names
+
+
 def test_technical_wrapper_does_not_hide_a_real_entity():
     facts = {"api_contract": {"endpoints": []}, "core_entities": [
         {"node_id": "dto", "name": "OrderDTO", "file_path": "src/api.py", "kind": "class", "score": 20, "fields": []},
