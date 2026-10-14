@@ -24,7 +24,20 @@ _TECHNICAL_TOKENS = {
     "request", "response", "service", "test", "util", "utils", "vo", "worker",
 }
 _TECHNICAL_RESOURCES = {"admin", "docs", "health", "metrics", "openapi", "swagger"}
-_METHOD_ACTIONS = {"POST": "Create", "PUT": "Update", "PATCH": "Update", "DELETE": "Delete", "GET": "Get"}
+# Generic data-operation verbs: names carrying these prefixes are operations on
+# terms (e.g. GetUserList, CreateOrder), not terms themselves.
+_CRUD_VERBS = {
+    "get", "query", "list", "find", "search", "fetch", "load", "read", "scan",
+    "add", "create", "insert", "save", "store", "register", "new", "set", "put",
+    "update", "modify", "edit", "change", "batch", "bulk",
+    "delete", "remove", "del", "drop", "page", "count", "exists", "check",
+}
+# Generic query/view nouns that carry no domain meaning when appended to a term.
+_GENERIC_NOUNS = {
+    "list", "data", "info", "page", "all", "by", "result", "results", "param",
+    "params", "parameter", "parameters", "filter", "filters", "criteria",
+    "condition", "conditions", "query",
+}
 
 
 def _tokens(value: str) -> list[str]:
@@ -38,16 +51,25 @@ def _singular(token: str) -> str:
         return token[:-3] + "y"
     if len(token) > 3 and token.endswith("ses"):
         return token[:-2]
-    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+    if len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us")):
         return token[:-1]
     return token
 
 
-def normalize_term(value: str) -> str:
-    parts = [_singular(item) for item in _tokens(value)]
+def _domain_parts(parts: list[str]) -> list[str]:
+    """Strip operation ingredients: trailing technical wrappers, leading CRUD
+    verbs and trailing generic query nouns leave the domain noun phrase."""
     while parts and parts[-1] in _TECHNICAL_TOKENS:
         parts.pop()
-    return "_".join(parts)
+    while parts and parts[0] in _CRUD_VERBS:
+        parts.pop(0)
+    while parts and parts[-1] in _GENERIC_NOUNS:
+        parts.pop()
+    return parts
+
+
+def normalize_term(value: str) -> str:
+    return "_".join(_domain_parts([_singular(item) for item in _tokens(value)]))
 
 
 def display_name(value: str) -> str:
@@ -98,6 +120,7 @@ class TermRecognizer:
         selected = set(term_types or {"resource", "entity", "action"})
         bounded_context = repository_id
         buckets: dict[tuple[str, str], TermCandidate] = {}
+        clean_names: dict[tuple[str, str], bool] = {}
         entity_by_normalized: dict[str, TermCandidate] = {}
         endpoints = ((facts.get("api_contract") or {}).get("endpoints") or [])
         entities = facts.get("core_entities") or []
@@ -105,12 +128,15 @@ class TermRecognizer:
         for item in entities:
             if not isinstance(item, dict) or not item.get("name"):
                 continue
+            raw_name = str(item["name"])
             candidate = self._candidate(
                 buckets, repository_id, snapshot_id, bounded_context,
-                "entity", str(item["name"]), selected,
+                "entity", raw_name, selected, clean_names,
             )
             if candidate is None:
                 continue
+            if raw_name != candidate.canonical_name:
+                candidate.aliases.append(raw_name)
             candidate.domain_score = min(1.0, max(0.0, float(item.get("score") or 0) / 40.0))
             candidate.mentions.append({
                 "node_id": item.get("node_id"), "symbol_name": item.get("name"),
@@ -138,6 +164,7 @@ class TermRecognizer:
                 ))
             entity_by_normalized[normalize_term(str(item["name"]))] = candidate
 
+        action_sources: list[tuple[str, dict[str, Any]]] = []
         for endpoint in endpoints:
             if not isinstance(endpoint, dict):
                 continue
@@ -147,7 +174,7 @@ class TermRecognizer:
             if resource and "resource" in selected and resource.lower() not in _TECHNICAL_RESOURCES:
                 candidate = self._candidate(
                     buckets, repository_id, snapshot_id, bounded_context,
-                    "resource", resource, selected,
+                    "resource", resource, selected, clean_names,
                 )
                 if candidate:
                     candidate.mentions.append({
@@ -168,34 +195,8 @@ class TermRecognizer:
 
             if "action" in selected:
                 handler = str(endpoint.get("handler") or "").split("::")[-1].split(".")[-1]
-                action = display_name(handler) if handler else ""
-                if not action and resource and method in _METHOD_ACTIONS:
-                    action = _METHOD_ACTIONS[method] + display_name(resource)
-                if action and not self._is_technical(action):
-                    candidate = self._candidate(
-                        buckets, repository_id, snapshot_id, bounded_context,
-                        "action", action, selected,
-                    )
-                    if candidate:
-                        candidate.mentions.append({
-                            "node_id": endpoint.get("node_id"), "symbol_name": handler,
-                            "qualified_name": endpoint.get("handler", ""),
-                            "file_path": endpoint.get("file", ""), "start_line": endpoint.get("line", 0),
-                            "mention_kind": "api_handler",
-                        })
-                        candidate.evidence.append(TermEvidence(
-                            "api_handler", handler or f"{method} {path}", 0.42,
-                            {"file_path": endpoint.get("file", ""), "line": endpoint.get("line", 0)},
-                            "api_handler", endpoint.get("node_id"),
-                        ))
-                        candidate.evidence.append(TermEvidence(
-                            "api_method", method, 0.18, {}, "api_method", endpoint.get("node_id")
-                        ))
-                        candidate.evidence.append(TermEvidence(
-                            "api_route", f"{method} {path}", 0.25,
-                            {"file_path": endpoint.get("file", ""), "line": endpoint.get("line", 0)},
-                            "action_api_route", endpoint.get("node_id"),
-                        ))
+                if handler:
+                    action_sources.append((handler, endpoint))
 
             for model in self._endpoint_models(endpoint):
                 entity = entity_by_normalized.get(normalize_term(model))
@@ -214,6 +215,52 @@ class TermRecognizer:
                     ))
                     entity.aliases.append(model)
 
+        # Data operations (GetUserList / CreateOrder / QueryUser) are operations
+        # on terms rather than terms: only handlers led by a domain verb become
+        # action terms, and each is linked back to the noun it operates on.
+        noun_keys = set(entity_by_normalized)
+        noun_keys.update(normalized for term_type, normalized in buckets if term_type == "resource")
+        applies_to: list[tuple[TermCandidate, str]] = []
+        for handler, endpoint in action_sources:
+            tokens = _tokens(handler)
+            if (
+                not tokens or tokens[0] in _CRUD_VERBS or tokens[0] in _GENERIC_NOUNS
+                or self._is_technical(handler)
+            ):
+                continue
+            if normalize_term(handler) in noun_keys:
+                continue
+            candidate = self._candidate(
+                buckets, repository_id, snapshot_id, bounded_context,
+                "action", handler, selected, clean_names,
+            )
+            if candidate is None:
+                continue
+            candidate.mentions.append({
+                "node_id": endpoint.get("node_id"), "symbol_name": handler,
+                "qualified_name": endpoint.get("handler", ""),
+                "file_path": endpoint.get("file", ""), "start_line": endpoint.get("line", 0),
+                "mention_kind": "api_handler",
+            })
+            candidate.evidence.append(TermEvidence(
+                "api_handler", handler, 0.42,
+                {"file_path": endpoint.get("file", ""), "line": endpoint.get("line", 0)},
+                "api_handler", endpoint.get("node_id"),
+            ))
+            candidate.evidence.append(TermEvidence(
+                "api_method", str(endpoint.get("method") or "").upper(), 0.18, {}, "api_method", endpoint.get("node_id")
+            ))
+            candidate.evidence.append(TermEvidence(
+                "api_route", f"{str(endpoint.get('method') or '').upper()} {endpoint.get('path') or '/'}", 0.25,
+                {"file_path": endpoint.get("file", ""), "line": endpoint.get("line", 0)},
+                "action_api_route", endpoint.get("node_id"),
+            ))
+            residue = [_singular(token) for token in tokens[1:]]
+            while residue and residue[-1] in _GENERIC_NOUNS:
+                residue.pop()
+            if residue:
+                applies_to.append((candidate, "_".join(residue)))
+
         all_candidates = []
         for candidate in buckets.values():
             for index, evidence in enumerate(candidate.evidence):
@@ -227,7 +274,7 @@ class TermRecognizer:
         serialized = [item.to_dict() | {"rank": index} for index, item in enumerate(all_candidates, 1)]
         default_terms = [item for item in serialized if item["status"] == "accepted"]
         candidates = [item for item in serialized if item["status"] != "accepted"]
-        relations = self._resource_entity_relations(all_candidates)
+        relations = self._resource_entity_relations(all_candidates, applies_to)
         return {
             "schema_version": "terms/v1",
             "snapshot_id": snapshot_id,
@@ -254,12 +301,14 @@ class TermRecognizer:
     def _candidate(
         self, buckets: dict[tuple[str, str], TermCandidate], repository_id: str,
         snapshot_id: str, bounded_context: str, term_type: str, raw_name: str,
-        selected: set[str],
+        selected: set[str], clean_names: dict[tuple[str, str], bool] | None = None,
     ) -> TermCandidate | None:
         if term_type not in selected:
             return None
         normalized = normalize_term(raw_name)
-        canonical = display_name(raw_name)
+        # Canonical name comes from the stripped noun phrase so operation
+        # wrappers (e.g. CreateUserRequest) collapse onto the real term.
+        canonical = display_name(" ".join(normalized.split("_")))
         if not normalized or not canonical:
             return None
         key = (term_type, normalized)
@@ -270,7 +319,13 @@ class TermRecognizer:
                 canonical_name=canonical, normalized_name=normalized,
                 term_type=term_type, bounded_context=bounded_context,
             )
-        if self._is_technical(raw_name):
+        # A technical wrapper (e.g. CreateUserRequest) must not poison a bucket
+        # that has already seen a clean domain name: flag only when every
+        # source name for the term is technical.
+        clean = not self._is_technical(raw_name)
+        if clean_names is not None:
+            clean_names[key] = clean_names.get(key, False) or clean
+        if clean_names is not None and not clean_names[key]:
             buckets[key].risk_flags.append("technical_source")
         else:
             buckets[key].risk_flags = [flag for flag in buckets[key].risk_flags if flag != "technical_source"]
@@ -303,9 +358,13 @@ class TermRecognizer:
             candidate.risk_flags.append("inferred_action")
 
     @staticmethod
-    def _resource_entity_relations(candidates: list[TermCandidate]) -> list[TermRelation]:
+    def _resource_entity_relations(
+        candidates: list[TermCandidate],
+        applies_to: list[tuple[TermCandidate, str]] = (),
+    ) -> list[TermRelation]:
         resources = {item.normalized_name: item for item in candidates if item.term_type == "resource"}
         entities = {item.normalized_name: item for item in candidates if item.term_type == "entity"}
+        nouns = {**resources, **entities}
         relations = []
         for normalized, resource in resources.items():
             entity = entities.get(normalized)
@@ -315,5 +374,14 @@ class TermRecognizer:
                 resource.id, entity.id, "exposes", min(resource.confidence_score, entity.confidence_score),
                 "accepted" if resource.status == entity.status == "accepted" else "candidate",
                 {"name_similarity": 1.0, "api_entity_evidence": 1.0},
+            ))
+        for action, residue_key in applies_to:
+            target = nouns.get(residue_key)
+            if target is None or target.id == action.id:
+                continue
+            relations.append(TermRelation(
+                action.id, target.id, "applies_to", min(action.confidence_score, target.confidence_score),
+                "accepted" if action.status == target.status == "accepted" else "candidate",
+                {"operation_residue": 1.0},
             ))
         return relations

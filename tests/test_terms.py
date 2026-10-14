@@ -9,12 +9,18 @@ from codeevolution.infrastructure.term_store import TermStore
 
 FACTS = {
     "api_contract": {
-        "endpoints": [{
-            "method": "POST", "path": "/api/orders", "handler": "orders::create_order",
-            "node_id": "fn-create", "file": "orders/api.py", "line": 10,
-            "request_body": {"type": "OrderRequest", "model": {"name": "Order"}},
-            "response_body": {"type": "OrderResponse", "model": {"name": "Order"}},
-        }],
+        "endpoints": [
+            {
+                "method": "POST", "path": "/api/orders", "handler": "orders::create_order",
+                "node_id": "fn-create", "file": "orders/api.py", "line": 10,
+                "request_body": {"type": "OrderRequest", "model": {"name": "Order"}},
+                "response_body": {"type": "OrderResponse", "model": {"name": "Order"}},
+            },
+            {
+                "method": "POST", "path": "/api/orders/{id}/approval", "handler": "orders::approve_order",
+                "node_id": "fn-approve", "file": "orders/api.py", "line": 20,
+            },
+        ],
     },
     "core_entities": [{
         "node_id": "type-order", "name": "Order", "qualified_name": "domain::Order",
@@ -34,8 +40,37 @@ def test_recognizer_prefers_api_and_entity_anchors_and_ranks_terms():
     assert terms[("entity", "Order")]["status"] == "accepted"
     assert terms[("resource", "Order")]["status"] == "accepted"
     assert terms[("resource", "Order")]["evidence_ids"]
-    assert terms[("action", "CreateOrder")]["status"] == "accepted"
-    assert any(item["relationship"] == "exposes" for item in report["relations"])
+    assert ("action", "CreateOrder") not in terms
+    assert terms[("action", "ApproveOrder")]["status"] == "accepted"
+    relations = {(item["relationship"]): item for item in report["relations"]}
+    assert "exposes" in relations
+    assert relations["applies_to"]["source_term_id"] == terms[("action", "ApproveOrder")]["id"]
+
+
+def test_data_operation_names_do_not_become_terms():
+    facts = {
+        "api_contract": {"endpoints": [
+            {"method": "GET", "path": "/api/get_user_list", "handler": "users::get_user_list", "node_id": "fn-1"},
+            {"method": "POST", "path": "/api/users", "handler": "users::create_user", "node_id": "fn-2",
+             "request_body": {"type": "CreateUserRequest"}},
+        ]},
+        "core_entities": [
+            {"node_id": "t1", "name": "User", "file_path": "src/domain.py", "kind": "class", "score": 30,
+             "fields": [{"name": "id"}]},
+            {"node_id": "t2", "name": "CreateUserRequest", "file_path": "src/dto.py", "kind": "class", "score": 10,
+             "fields": []},
+        ],
+    }
+    report = TermRecognizer().extract("snapshot-1", "users", facts)
+
+    names = {(item["term_type"], item["canonical_name"]) for item in report["terms"]}
+    assert ("action", "GetUserList") not in names
+    assert ("action", "CreateUser") not in names
+    assert ("entity", "CreateUser") not in names
+    assert ("resource", "GetUserList") not in names
+    assert ("resource", "User") in names
+    user = next(item for item in report["terms"] if item["term_type"] == "entity" and item["canonical_name"] == "User")
+    assert "CreateUserRequest" in user["aliases"]
 
 
 def test_technical_wrapper_does_not_hide_a_real_entity():
