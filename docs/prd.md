@@ -1,9 +1,11 @@
 # CodeEvolution 产品需求文档（PRD）
 
-> 文档版本：0.1（代码基线版）  
+> 文档版本：0.2（代码基线版）  
 > 状态：Draft  
 > 目标仓库：`services/codehistory`  
-> 编写依据：当前源码、Web 页面、API 合约、测试和既有设计文档
+> 更新日期：2026-10-14  
+> 编写依据：当前源码、Web 页面、API 合约、测试和既有设计文档  
+> 页面级 UI/UX 设计：[`ui-ux-design.md`](ui-ux-design.md)
 
 ## 1. 产品摘要
 
@@ -19,7 +21,7 @@ CodeEvolution 是一个本地优先的代码仓功能演进分析与业务知识
 
 | 问题 | 具体表现 | CodeEvolution 的解决方式 |
 |---|---|---|
-| 代码与业务语言断裂 | 产品、测试和新成员难以从 API/函数名理解业务流程 | 从 API、调用链和源码生成业务描述、规则、错误目录和状态机 |
+| 代码与业务语言断裂 | 产品、测试和新成员难以从 API/函数名理解业务流程 | 识别证据可追溯的业务术语，并从 API、调用链和源码生成业务描述、规则、错误目录和状态机 |
 | 单仓视角不足 | 服务依赖、消息链路和共享资源分散在多个仓库 | 将多个 Repository Member 固定到同一个 Graph View，生成带证据的拓扑 |
 | 变更影响不可见 | 开发者不知道上游、下游和潜在受影响的入口 | 通过调用图、影响分析和流程追踪查询传播路径 |
 | 分析结果不可信或不可复现 | 实时读取现场代码导致结果随时间漂移 | 显式 Analysis Run，冻结源码和 CodeGraph，发布不可变 Snapshot |
@@ -40,7 +42,7 @@ CodeEvolution 是一个本地优先的代码仓功能演进分析与业务知识
 1. 用户能在一次明确的分析操作后获得可信、可定位的单仓知识快照。
 2. 用户能从一个 API 入口展开调用树，并定位到快照内的源码证据。
 3. 架构师和开发者能在固定的多仓快照组合上查看拓扑、上游/下游影响和流程。
-4. 产品经理、测试和开发能在结构化事实之上获取可审阅的业务解释。
+4. 产品经理、测试和开发能在结构化事实之上获得证据可追溯的业务术语和可审阅的业务解释。
 5. 失败、取消、部分成功和现场代码变化都能被看见、解释和恢复。
 6. 结果能被问答、审计、UI 测试和后续重新分析复用。
 
@@ -100,6 +102,8 @@ flowchart LR
 | Topology Artifact | 针对 Graph View 显式生成的拓扑分析结果 | 服务边、证据、覆盖、候选和资源依赖 |
 | 代码事实 | 来自冻结 CodeGraph/源码的节点、边、文件和行号 | 可定位、可审计 |
 | 语义推断 | LLM 生成的业务摘要、规则、错误或状态解释 | 需要标注模型、覆盖率并允许失败 |
+| 业务术语（Term） | 从 API 契约与核心实体事实中识别的资源/实体/动作等领域名词 | 证据可追溯、可人工审核的统一业务语言 |
+| 术语对齐（Term Alignment） | 跨服务已接纳术语的同名/相关匹配 | 多仓微服务统一语汇的依据 |
 
 ### 5.2 不变量
 
@@ -125,6 +129,7 @@ flowchart LR
     H --> D
     F --> I[创建 Graph View]
     F --> J[Knowledge：13 维结构化知识]
+    J --> R[Terms：术语识别与审核]
     J --> K[API 契约 → 调用树 → 源码证据]
     K --> L[LLM 业务解释/规则]
     I --> M[Topology Artifact]
@@ -150,11 +155,14 @@ flowchart LR
 | FR-05 | P0 | 从 API 入口查看调用链 | 用户可筛选 API、展开节点、查看调用位置和时序图；节点展开使用 Snapshot 内的 CodeGraph ID | 已实现：`/api/call-tree/children`、`CallChainTree.vue` |
 | FR-06 | P0 | 固定多个仓库的 Graph View | 能按成员当前 Snapshot 创建 View；View 显示成员、digest 和可用性；固定后可复查/导出 | 已实现 API：`/api/graph-views*`；Web 已支持创建/查看，固定操作入口仍需补齐：`Snapshots.vue`、`GraphView.vue` |
 | FR-07 | P0 | 生成拓扑并查询影响/流程 | 拓扑需显式创建 Artifact Job；完成后展示服务边、通信类型、证据、覆盖、候选和资源依赖；Impact/Flow 以同一 View 查询 | 已实现：`GraphArtifactService`、`/api/graph-views/{id}/impact|flow` |
-| FR-08 | P1 | 用 LLM 生成可审阅的语义解释 | 未配置 LLM 时结构知识仍可用；配置后能生成业务描述/规则/错误/状态或 API 功能解释；显示状态、覆盖率、失败原因和模型信息 | 已实现：`LLMSettings.vue`、Semantic 模块、API Explanation 相关路由 |
+| FR-08 | P1 | 用 LLM 生成可审阅的语义解释 | 未配置 LLM 时结构知识仍可用；配置后能生成业务描述/规则/错误/状态或 API 功能解释；API 解释支持单条与批量任务（进度、失败重试、取消可见）、每端点解释状态与可编辑提示词模板；显示状态、覆盖率、失败原因和模型信息 | 已实现：`LLMSettings.vue`、Semantic 模块、`/api/api-explanations/*`（generate/batches/statuses/prompts/snapshots）、[批量解释设计](api-explanation-batch-design.md) |
 | FR-09 | P0 | 提供安全的代码问答与审计 | 用户可询问符号、调用方、历史或统计；答案显示执行操作；每次成功/失败记录问题、操作、结果数和耗时 | 已实现：`SnapshotChatService`、`/api/chat`、`/api/audit-logs` |
 | FR-10 | P1 | 将用户旅程转为 UI 测试 | 可登记目标 origin，录制点击/输入/路由/网络请求；支持可见文本、URL、响应、fixture、上传和拖拽检查点；可回放并查看失败截图 | 已实现：`RepositoryAssistant.vue`、`UiRecordingService`、WebBridge 适配器 |
 | FR-11 | P0 | 明确现场代码与快照的关系 | 检查结果区分 unchanged、source_changed、unparsed、check_failed；现场变化不能静默替换 current Snapshot | 已实现：`/api/repository-members/check`、输入 digest 校验 |
-| FR-12 | P1 | 保持历史结果和引用安全 | Snapshot 可标记 label/note/pinned；被 View/解释引用时不能无提示删除；删除需明确确认；旧结果仍可读取直到被清理 | 已实现：Snapshot metadata、retention/reference 机制；Web UI 仍需持续完善入口 |
+| FR-12 | P1 | 保持历史结果和引用安全 | Snapshot 可标记 label/note/pinned；被 View/解释引用时不能无提示删除；删除需明确确认（提供 deletion-preview）；旧结果仍可读取直到被保留策略清理 | 已实现：Snapshot metadata、retention/reference 机制、`/api/snapshot-retention/scavenge`；Web UI 仍需持续完善入口 |
+| FR-13 | P0 | 识别证据可追溯的业务术语 | 从 API 契约与核心实体事实生成术语候选（resource/entity/action 等）；数据操作名（Get/Add/Query/Create 等前缀）不作为术语；领域动作（如 ApproveOrder）通过 applies_to 关联到所操作的名词；候选带证据链与风险标记；人工可接纳/排除/重命名/重分类/补别名；已拒绝术语可恢复 | 已实现：`/api/terms*`、`analysis/knowledge/terms.py`、[术语识别设计](term-recognition-design.md)、`Terms.vue` |
+| FR-14 | P1 | 跨服务术语对齐 | 基于 Graph View 对齐各服务已接纳术语，排除技术服务并说明原因；同名/相关给出候选，人工审核 accept/reject 后生效；支持导出对齐结果 | 已实现：`/api/terms/align*`（`term-alignment/v1`）、`Terms.vue` |
+| FR-15 | P0 | 界面中英双语 | 默认简体中文，可切换英文并持久化到浏览器；核心页面文案全部经 `t()` 翻译，无中英混排硬编码；语言切换保持路由、上下文和进行中任务不变 | 已实现：`web/src/i18n.js`、顶栏语言按钮、`web/tests/i18n.spec.js` |
 
 ## 8. 页面与交互需求
 
@@ -176,8 +184,12 @@ flowchart LR
 ### 8.3 Knowledge：单仓知识中心
 
 - 页面标题必须明确当前 Snapshot ID；不能只显示成员名。
+- 无仓上下文时呈现项目目录态，引导用户从 Snapshots 进入。
 - Phase 1/2 结构知识默认可用；Phase 3/LLM 能力显式提示配置与潜在费用。
+- 概要卡展示端点/术语/模块/核心实体/测试覆盖/分层违规计数；知识分区按阶段分组，可逐个展开。
 - API 契约支持搜索、HTTP 方法筛选、服务筛选、分页、调用树和时序图。
+- API 解释支持提示词模板编辑（系统默认/local/synthesis/aggregate 与端点级覆盖）、单条生成、批量任务卡（进度、完成/失败/跳过/取消计数、取消与失败重试）和每端点解释状态徽章。
+- 术语分区展示按可信度排序的术语与状态徽章，与 Terms 页共享同一套状态语义。
 - 结构化报告和语义解释在视觉和文案上区分；语义失败不影响结构化知识浏览。
 
 ### 8.4 Graph View：跨仓架构工作台
@@ -193,6 +205,13 @@ flowchart LR
 - 展开答案时显示受控操作名称和结果；不要显示或接受任意 SQL。
 - LLM 设置支持 model、API Base、API Key、上下文窗口和输出 token；API Key 不回显。
 - UI 测试录制必须经过 origin 白名单；密码/Token 等敏感输入只记录 `<redacted>`；回放失败需要给出错误和截图线索。
+
+### 8.6 Terms：术语识别与审核
+
+- 上半区为跨服务术语对齐：展示推荐服务对（排除技术服务并说明原因）、对齐候选与人工审核动作，依赖已选 Graph View。
+- 下半区为单仓术语：支持重新识别、人工补充术语（规范名/类型/定义/作者）、按状态/类型/关键词筛选和按可信度排序。
+- 每条术语可展开证据链（证据类型、证据值、文件与行号）；行级操作只暴露接纳/排除/恢复，重命名等进阶操作走 API。
+- 数据操作名（Get/Add/Query/Create 等前缀）不进入术语列表；领域动作通过 applies_to 关系体现其作用的名词。
 
 ## 9. 质量与非功能需求
 
@@ -223,6 +242,14 @@ flowchart LR
 - 拓扑缓存命中时，Impact/Flow 查询目标在 2 秒内返回。
 - 页面不得因为普通读取隐式运行全量分析或拓扑构建。
 - 大仓库和并行分析受并发、磁盘预留和单任务超时保护。
+
+### 9.5 国际化
+
+- 支持简体中文（默认）与英文；语言选择保存在浏览器 localStorage，顶栏按钮切换。
+- 用户可见文案必须经过 `web/src/i18n.js` 的 `t()` 翻译；新增文案同时补齐 zh/en 词条，禁止中英混排硬编码。
+- 动态数量、名称和状态使用 `{count}`、`{name}` 等占位符，不允许字符串拼接绕过翻译。
+- 仓库名、路径、符号名、模型名、错误详情和知识内容属于业务数据，原样展示；状态码/阶段码由前端统一映射为当前语言。
+- 语言切换保持路由、Snapshot/View 上下文和进行中的异步任务不变，只重新渲染文案。
 
 ## 10. 数据与状态要求
 
@@ -298,7 +325,7 @@ flowchart LR
 |---|---|---|
 | MVP | 从仓库到可信代码证据 | Scope/Member、Analysis Run、Snapshot、13 维结构化知识、API 调用树、错误恢复 |
 | V1 | 从单仓理解到跨仓决策 | Graph View、Topology Artifact、Impact、Flow、固定 View 导出、历史引用保护 |
-| V1.1 | 从事实到语义 | LLM 设置、API 功能解释、业务规则、节点解释、语义产物覆盖与审计 |
+| V1.1 | 从事实到语义 | LLM 设置、API 功能解释（单条/批量/提示词模板）、业务规则、节点解释、业务术语识别与审核、语义产物覆盖与审计 |
 | V2 | 从分析到验证 | UI 录制/回放、更多检查点、跨 Snapshot diff、趋势、报告和团队协作 |
 
 ## 14. 实现依据
@@ -310,4 +337,7 @@ flowchart LR
 - [代码仓用户旅程](user-journey.md)：现有角色旅程与异常旅程。
 - [正式用户旅程图](user-journey-map.md)：本 PRD 对应的阶段、触点和核心场景地图。
 - [UI 自动化用例](ui-automation-cases.md)：Web 页面和回放能力的可验证场景。
+- [术语识别设计](term-recognition-design.md)：证据驱动术语识别、规范化与跨服务对齐。
+- [API 解释快照设计](api-explanation-snapshot-design.md) / [API 解释批量设计](api-explanation-batch-design.md)：API 功能解释、提示词模板与批量任务。
+- [UI/UX 设计](ui-ux-design.md)：Web 控制台页面级 UI/UX 设计。
 - [API 入口](../codeevolution/api.py)、[知识中心](../web/src/pages/Knowledge.vue)、[Snapshots 页面](../web/src/pages/Snapshots.vue)、[Graph View 页面](../web/src/pages/GraphView.vue)。
