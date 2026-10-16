@@ -42,12 +42,26 @@ _OPERATION_VERBS = {
     "call", "invoke", "execute", "run", "start", "stop", "cancel", "pause",
     "resume", "abort", "retry", "restart", "kill", "terminate",
     "refresh", "reload", "pin", "unpin", "export", "import", "upload",
-    "download", "sync",
+    "download", "sync", "enable", "disable",
     "generate", "collect", "scavenge", "serve", "retire", "deploy",
     "analyze", "analyse", "analysis", "compute", "calculate", "parse",
     "resolve", "validate", "verify", "compare", "align", "process",
     "handle", "perform", "apply", "trigger", "submit", "dispatch", "do",
 }
+# Abstract structural vocabulary: too generic to be a domain term on its own or
+# as the head/tail of a compound (File, Entity, FileName, Location).
+_ABSTRACT_NOUNS = {
+    "file", "path", "folder", "directory", "node", "item", "entry", "value",
+    "field", "name", "type", "kind", "entity", "object", "target", "source",
+    "dest", "destination", "location", "context", "option", "options", "flag",
+    "key", "error", "record", "content", "detail", "details", "summary",
+    "manager", "helper", "common", "main", "core", "global", "default",
+    "spec", "meta", "misc", "temp", "tmp",
+}
+# When the same normalized name is extracted as several term types, keep one
+# entry: domain objects outrank their API resources and actions.
+_TYPE_PRIORITY = {"entity": 0, "value_object": 1, "state": 2, "event": 3,
+                  "resource": 4, "action": 5}
 # Generic query/view nouns that carry no domain meaning when appended to a term.
 _GENERIC_NOUNS = {
     "list", "data", "info", "page", "all", "by", "result", "results", "param",
@@ -245,6 +259,7 @@ class TermRecognizer:
             if (
                 not tokens or tokens[0] in _CRUD_VERBS or tokens[0] in _GENERIC_NOUNS
                 or tokens[0] in _OPERATION_VERBS or tokens[-1] in _OPERATION_VERBS
+                or tokens[0] in _ABSTRACT_NOUNS or tokens[-1] in _ABSTRACT_NOUNS
                 or self._is_technical(handler)
             ):
                 continue
@@ -281,14 +296,45 @@ class TermRecognizer:
             if residue:
                 applies_to.append((candidate, "_".join(residue)))
 
-        all_candidates = []
+        # The same name often surfaces as both an API resource and a domain
+        # entity (or an action): deduplicate into one entry per normalized
+        # name, keeping the strongest type and merging all its evidence.
+        def merge(grouping: dict[str, list[TermCandidate]]) -> list[TermCandidate]:
+            merged: list[TermCandidate] = []
+            for entries in grouping.values():
+                entries.sort(key=lambda item: _TYPE_PRIORITY.get(item.term_type, 9))
+                primary = entries[0]
+                any_clean = False
+                for other in entries:
+                    any_clean = any_clean or clean_names.get((other.term_type, other.normalized_name), False)
+                    if other is primary:
+                        continue
+                    primary.mentions.extend(other.mentions)
+                    primary.evidence.extend(other.evidence)
+                    primary.aliases.extend(other.aliases)
+                    primary.domain_score = max(primary.domain_score, other.domain_score)
+                if any_clean:
+                    primary.risk_flags = [flag for flag in primary.risk_flags if flag != "technical_source"]
+                merged.append(primary)
+            return merged
+
+        by_normalized: dict[str, list[TermCandidate]] = {}
         for candidate in buckets.values():
+            by_normalized.setdefault(candidate.normalized_name, []).append(candidate)
+        # A second pass by display name catches wrappers that normalize
+        # differently but collapse onto the same visible term
+        # (ApiExplanation vs ExplanationSnapshot -> Explanation).
+        by_canonical: dict[str, list[TermCandidate]] = {}
+        for candidate in merge(by_normalized):
+            by_canonical.setdefault(candidate.canonical_name, []).append(candidate)
+        # A term without any evidence has no traceable source: drop it.
+        all_candidates = [item for item in merge(by_canonical) if item.evidence]
+        for candidate in all_candidates:
             for index, evidence in enumerate(candidate.evidence):
                 evidence.id = "ev-" + hashlib.sha256(
                     f"{candidate.id}|{index}|{evidence.evidence_type}|{evidence.evidence_value}".encode("utf-8")
                 ).hexdigest()[:24]
             self._finalize(candidate)
-            all_candidates.append(candidate)
         all_candidates.sort(key=lambda item: (-item.confidence_score, item.term_type, item.id))
 
         serialized = [item.to_dict() | {"rank": index} for index, item in enumerate(all_candidates, 1)]
@@ -327,8 +373,13 @@ class TermRecognizer:
             return None
         tokens = _tokens(raw_name)
         # Operation-verb compounds (ViewReport, GraphView, TaskRun) are
-        # operations on terms rather than terms: reject them outright.
-        if tokens and (tokens[0] in _OPERATION_VERBS or tokens[-1] in _OPERATION_VERBS):
+        # operations on terms rather than terms, and abstract structural
+        # vocabulary (File, Entity, FileName) is too generic to be one:
+        # reject both outright.
+        if tokens and (
+            tokens[0] in _OPERATION_VERBS or tokens[-1] in _OPERATION_VERBS
+            or tokens[0] in _ABSTRACT_NOUNS or tokens[-1] in _ABSTRACT_NOUNS
+        ):
             return None
         normalized = normalize_term(raw_name)
         # Canonical name comes from the stripped noun phrase so operation
@@ -358,6 +409,8 @@ class TermRecognizer:
 
     def _finalize(self, candidate: TermCandidate) -> None:
         evidence_types = {item.evidence_type for item in candidate.evidence}
+        # Source doubles as the evidence-chain summary, e.g. "rule:api_route+entity_definition".
+        candidate.source = "rule:" + "+".join(sorted(evidence_types))
         candidate.confidence_score = min(
             1.0,
             max(0.0, sum(item.weight for item in candidate.evidence) + min(candidate.domain_score * 0.12, 0.12)),

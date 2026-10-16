@@ -37,13 +37,16 @@ def test_recognizer_prefers_api_and_entity_anchors_and_ranks_terms():
     assert report["schema_version"] == "terms/v1"
     assert report["default_terms"][0]["confidence_score"] >= report["default_terms"][1]["confidence_score"]
     terms = {(item["term_type"], item["canonical_name"]): item for item in report["terms"]}
+    # the API resource and the domain entity dedupe into one entry
     assert terms[("entity", "Order")]["status"] == "accepted"
-    assert terms[("resource", "Order")]["status"] == "accepted"
-    assert terms[("resource", "Order")]["evidence_ids"]
+    assert ("resource", "Order") not in terms
+    evidence_types = {item["evidence_type"] for item in terms[("entity", "Order")]["evidence"]}
+    assert {"api_route", "entity_definition"} <= evidence_types
+    assert terms[("entity", "Order")]["source"].startswith("rule:")
     assert ("action", "CreateOrder") not in terms
     assert terms[("action", "ApproveOrder")]["status"] == "accepted"
     relations = {(item["relationship"]): item for item in report["relations"]}
-    assert "exposes" in relations
+    assert "exposes" not in relations
     assert relations["applies_to"]["source_term_id"] == terms[("action", "ApproveOrder")]["id"]
 
 
@@ -68,7 +71,9 @@ def test_data_operation_names_do_not_become_terms():
     assert ("action", "CreateUser") not in names
     assert ("entity", "CreateUser") not in names
     assert ("resource", "GetUserList") not in names
-    assert ("resource", "User") in names
+    # the /api/users resource dedupes into the User entity entry
+    assert ("resource", "User") not in names
+    assert ("entity", "User") in names
     user = next(item for item in report["terms"] if item["term_type"] == "entity" and item["canonical_name"] == "User")
     assert "CreateUserRequest" in user["aliases"]
 
@@ -110,6 +115,38 @@ def test_operation_verb_compounds_do_not_become_terms():
     assert ("action", "PublishReport") in names
     # -sis nouns stay intact through singularization
     assert ("entity", "TaskAnalysisStatus") in names
+
+
+def test_terms_dedupe_across_types_and_drop_abstract_words():
+    facts = {
+        "api_contract": {"endpoints": [
+            {"method": "GET", "path": "/api/files", "handler": "files::list_files", "node_id": "fn-1"},
+            {"method": "POST", "path": "/api/orders", "handler": "orders::enable_order", "node_id": "fn-2"},
+        ]},
+        "core_entities": [
+            {"node_id": "t1", "name": "File", "file_path": "src/fs.py", "kind": "class", "score": 30, "fields": []},
+            {"node_id": "t2", "name": "Order", "file_path": "src/domain.py", "kind": "class", "score": 30,
+             "fields": [{"name": "id"}]},
+        ],
+    }
+    report = TermRecognizer().extract("snapshot-1", "dedup", facts)
+
+    names = {(item["term_type"], item["canonical_name"]) for item in report["terms"]}
+    # abstract structural words are not terms, even with API + entity anchors
+    assert ("entity", "File") not in names
+    assert ("resource", "File") not in names
+    assert ("action", "ListFile") not in names
+    # operation verbs keep being rejected
+    assert ("action", "EnableOrder") not in names
+    # one deduplicated entry carries the merged evidence chain of both anchors
+    orders = [item for item in report["terms"] if item["canonical_name"] == "Order"]
+    assert len(orders) == 1
+    order = orders[0]
+    assert order["term_type"] == "entity"
+    kinds = {item["evidence_type"] for item in order["evidence"]}
+    assert {"api_route", "entity_definition"} <= kinds
+    assert all(item.get("node_id") or item.get("source_location") for item in order["evidence"])
+    assert order["source"] == "rule:" + "+".join(sorted(kinds))
 
 
 def test_technical_wrapper_does_not_hide_a_real_entity():
