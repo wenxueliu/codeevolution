@@ -42,7 +42,7 @@
 
       <section class="toolbar">
         <label>{{ t('状态') }}<select v-model="filters.status" @change="load"><option value="">{{ t('全部') }}</option><option value="accepted">accepted</option><option value="needs_review">needs_review</option><option value="candidate">candidate</option><option value="rejected">rejected</option></select></label>
-        <label>{{ t('类型') }}<select v-model="filters.type" @change="load"><option value="">{{ t('全部') }}</option><option value="entity">entity</option><option value="resource">resource</option><option value="action">action</option><option value="value_object">value_object</option><option value="state">state</option><option value="event">event</option></select></label>
+        <label>{{ t('类型') }}<select v-model="filters.type" @change="load"><option value="">{{ t('全部') }}</option><option value="entity">entity</option><option value="resource">resource</option><option value="page">page</option><option value="action">action</option><option value="value_object">value_object</option><option value="state">state</option><option value="event">event</option></select></label>
         <label class="search">{{ t('搜索术语') }}<input v-model.trim="filters.name" @input="debouncedLoad" /></label>
       </section>
 

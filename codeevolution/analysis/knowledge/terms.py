@@ -23,6 +23,9 @@ _TECHNICAL_TOKENS = {
     "dao", "dto", "handler", "impl", "mapper", "middleware", "model", "po",
     "repository", "request", "response", "service", "snapshot", "test", "util",
     "utils", "vo", "worker",
+    # frontend chrome and framework plumbing around pages, not business terms
+    "layout", "breadcrumb", "sidebar", "navbar", "header", "footer", "menu",
+    "router", "prop", "props", "emit", "emits",
 }
 _TECHNICAL_RESOURCES = {"admin", "docs", "health", "metrics", "openapi", "swagger"}
 # Generic data-operation verbs: names carrying these prefixes are operations on
@@ -42,7 +45,7 @@ _OPERATION_VERBS = {
     "call", "invoke", "execute", "run", "start", "stop", "cancel", "pause",
     "resume", "abort", "retry", "restart", "kill", "terminate",
     "refresh", "reload", "pin", "unpin", "export", "import", "upload",
-    "download", "sync", "enable", "disable",
+    "download", "sync", "enable", "disable", "use",
     "generate", "collect", "scavenge", "serve", "retire", "deploy",
     "analyze", "analyse", "analysis", "compute", "calculate", "parse",
     "resolve", "validate", "verify", "compare", "align", "process",
@@ -61,7 +64,7 @@ _ABSTRACT_NOUNS = {
 # When the same normalized name is extracted as several term types, keep one
 # entry: domain objects outrank their API resources and actions.
 _TYPE_PRIORITY = {"entity": 0, "value_object": 1, "state": 2, "event": 3,
-                  "resource": 4, "action": 5}
+                  "resource": 4, "page": 5, "action": 6}
 # Generic query/view nouns that carry no domain meaning when appended to a term.
 _GENERIC_NOUNS = {
     "list", "data", "info", "page", "all", "by", "result", "results", "param",
@@ -150,13 +153,44 @@ class TermRecognizer:
         facts: dict[str, Any],
         term_types: Iterable[str] | None = None,
     ) -> dict[str, Any]:
-        selected = set(term_types or {"resource", "entity", "action"})
+        selected = set(term_types or {"resource", "entity", "action", "page"})
         bounded_context = repository_id
         buckets: dict[tuple[str, str], TermCandidate] = {}
         clean_names: dict[tuple[str, str], bool] = {}
         entity_by_normalized: dict[str, TermCandidate] = {}
         endpoints = ((facts.get("api_contract") or {}).get("endpoints") or [])
         entities = facts.get("core_entities") or []
+        pages = ((facts.get("frontend_pages") or {}).get("pages") or [])
+
+        # Frontend pages (router entries, views/ or pages/ components) are
+        # business surfaces: their names become page terms and the route
+        # meta title is kept as a human-readable alias.
+        for page in pages:
+            if not isinstance(page, dict) or not page.get("name"):
+                continue
+            candidate = self._candidate(
+                buckets, repository_id, snapshot_id, bounded_context,
+                "page", str(page["name"]), selected, clean_names,
+            )
+            if candidate is None:
+                continue
+            if page.get("title"):
+                candidate.aliases.append(str(page["title"]))
+            candidate.mentions.append({
+                "node_id": None, "symbol_name": page["name"],
+                "qualified_name": page.get("route") or page["name"],
+                "file_path": page.get("file", ""), "start_line": 0,
+                "mention_kind": "frontend_page",
+            })
+            candidate.evidence.append(TermEvidence(
+                "frontend_page", str(page.get("route") or page["name"]), 0.45,
+                {"file_path": page.get("file", ""), "line": 0},
+                "frontend_page",
+            ))
+            if page.get("title"):
+                candidate.evidence.append(TermEvidence(
+                    "page_title", str(page["title"]), 0.18, {}, "frontend_page_title",
+                ))
 
         for item in entities:
             if not isinstance(item, dict) or not item.get("name"):
@@ -416,7 +450,7 @@ class TermRecognizer:
             max(0.0, sum(item.weight for item in candidate.evidence) + min(candidate.domain_score * 0.12, 0.12)),
         )
         technical = "technical_source" in candidate.risk_flags
-        has_anchor = bool(evidence_types & {"api_route", "entity_definition", "api_handler"})
+        has_anchor = bool(evidence_types & {"api_route", "entity_definition", "api_handler", "frontend_page"})
         has_corroboration = len(evidence_types - {"api_route", "entity_definition", "api_handler"}) > 0
         if technical:
             candidate.status = "rejected"

@@ -14,3 +14,4 @@ web/coverage/
 data/
 web/src/auto-imports.d.ts
 web/src/components.d.ts
+.env

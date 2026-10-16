@@ -67,6 +67,10 @@ class SnapshotQueryService:
             # call_chain already records the entry CodeGraph id, so project it
             # at the read boundary without mutating the historical facts.
             facts = _project_api_node_ids(facts)
+            # Snapshots published before frontend-page extraction have no
+            # page facts; project them from the bundle's frozen sources so
+            # every consumer (terms included) sees the same page set.
+            facts = self._with_frontend_pages(handle, facts)
             if section is None:
                 # API contracts were historically persisted with only the
                 # first 100 endpoints.  Keep the normal knowledge boundary
@@ -81,6 +85,20 @@ class SnapshotQueryService:
             if key == "api_contract":
                 return {key: self._complete_api_contract(handle, facts)}
             return {key: facts[key]}
+
+    def _with_frontend_pages(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
+        existing = facts.get("frontend_pages")
+        if isinstance(existing, dict) and existing.get("pages"):
+            return facts
+        from codeevolution.analysis.knowledge.frontend_pages import FrontendPageExtractor
+
+        try:
+            pages = FrontendPageExtractor(handle.sources).extract()
+        except Exception:
+            return facts
+        if not pages:
+            return facts
+        return {**facts, "frontend_pages": {"page_count": len(pages), "pages": pages}}
 
     def api_contract(self, snapshot_id: str) -> dict:
         """Return the complete API contract, including legacy-truncated facts.

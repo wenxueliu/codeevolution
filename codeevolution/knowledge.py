@@ -10,6 +10,7 @@ from .analysis.knowledge.authorization import AuthorizationExtractor
 from .analysis.knowledge.config_usage import ConfigUsageExtractor
 from .analysis.knowledge.core_entities import CoreEntityExtractor
 from .analysis.knowledge.dependencies import DependencyExtractor
+from .analysis.knowledge.frontend_pages import FrontendPageExtractor
 from .analysis.knowledge.heatmap import HeatmapExtractor
 from .analysis.knowledge.layer_rules import LayerRuleExtractor
 from .analysis.knowledge.module_topology import ModuleTopologyExtractor
@@ -43,6 +44,7 @@ class KnowledgeExtractor:
         self._config = ConfigUsageExtractor(reader, self.source_provider)
         self._dependencies = DependencyExtractor(reader)
         self._authorization = AuthorizationExtractor(reader)
+        self._pages = FrontendPageExtractor(self.source_provider)
         self._heatmap = HeatmapExtractor(reader, self._get_call_graph, self._layers.classify_file)
         self._semantic = SemanticExtractor(
             reader, self.source_provider, self.extract_core_entities, self._layers.classify_file
@@ -74,6 +76,9 @@ class KnowledgeExtractor:
 
     def extract_authorization_model(self) -> list[dict]:
         return self._authorization.extract()
+
+    def extract_frontend_pages(self) -> list[dict]:
+        return self._pages.extract()
 
     def extract_heat_map(self) -> list[dict]:
         return self._heatmap.extract()
@@ -194,6 +199,10 @@ class KnowledgeExtractor:
             ),
             "authorization_model": self._serialize_auth_model(self.extract_authorization_model()),
             "heat_map": self._serialize_heat_map(self.extract_heat_map()),
+            "frontend_pages": {
+                "page_count": len(pages := self.extract_frontend_pages()),
+                "pages": pages,
+            },
             "business_descriptions": self.extract_business_descriptions(limit=15)
             if include_llm
             else disabled,

@@ -405,7 +405,7 @@ function snapshotIdFromRoute(route) {
 
 const SECTIONS = [
   ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
-  ['terms', '术语识别', '阶段1', '从 API 契约和实体定义生成按可信度排序的业务术语'],
+  ['terms', '术语识别', '阶段1', '从 API 契约、实体定义和前端页面生成按可信度排序的业务术语'],
   ['module_topology', '模块拓扑', '阶段1', '模块聚类、依赖关系与耦合度'],
   ['core_entities', '核心实体', '阶段1', '按字段、类型关系与领域语义识别核心领域对象'],
   ['test_coverage', '测试缺口', '阶段1', '生产函数覆盖率与未覆盖列表'],
@@ -558,7 +558,7 @@ export default {
   methods: {
     t,
     termTypeLabel(type) {
-      const labels = { entity: '实体', value_object: '值对象', state: '状态', event: '事件', action: '动作' }
+      const labels = { entity: '实体', value_object: '值对象', state: '状态', event: '事件', action: '动作', page: '页面' }
       return labels[type] ? this.t(labels[type]) : type || '-'
     },
     termConfidenceBandLabel(band) {

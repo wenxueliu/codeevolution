@@ -1522,7 +1522,7 @@ def _term_snapshot_context(snapshot_id: str) -> tuple[dict, str]:
 def extract_terms(request: TermExtractionRequest):
     """Extract and persist ranked terms from one immutable repository snapshot."""
     facts, repository_id = _term_snapshot_context(request.snapshot_id)
-    allowed = {"resource", "entity", "value_object", "state", "event", "action", "technical"}
+    allowed = {"resource", "entity", "value_object", "state", "event", "action", "technical", "page"}
     if any(item not in allowed for item in request.types):
         raise HTTPException(422, "unsupported term type")
     return get_term_service().extract(request.snapshot_id, repository_id, facts, request.types or None)

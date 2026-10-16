@@ -149,6 +149,46 @@ def test_terms_dedupe_across_types_and_drop_abstract_words():
     assert order["source"] == "rule:" + "+".join(sorted(kinds))
 
 
+def test_frontend_pages_become_page_terms_with_titles():
+    from codeevolution.analysis.knowledge.frontend_pages import FrontendPageExtractor
+
+    class _Source:
+        def list_files(self, categories=None, globs=None):
+            return [
+                {"path": "web/src/router/index.js"},
+                {"path": "web/src/views/order/OrderList.vue"},
+                {"path": "web/src/components/Table.vue"},
+            ]
+
+        def read_text(self, path):
+            if path.endswith("router/index.js"):
+                return (
+                    "const routes = [{ path: '/orders', name: 'OrderManagement',"
+                    " component: () => import('@/views/order/OrderList.vue'),"
+                    " meta: { title: '订单管理' } },"
+                    " { path: '/layout', name: 'MainLayout' }]"
+                )
+            return "<template><div/></template>"
+
+    pages = FrontendPageExtractor(_Source()).extract()
+    names = {page["name"]: page for page in pages}
+    assert names["OrderManagement"]["title"] == "订单管理"
+    assert names["OrderManagement"]["route"] == "/orders"
+    assert names["OrderList"]["file"] == "web/src/views/order/OrderList.vue"
+    # layout chrome never becomes a page
+    assert "MainLayout" not in names
+    assert "Table" not in names
+
+    facts = {"frontend_pages": {"page_count": len(pages), "pages": pages}}
+    report = TermRecognizer().extract("snapshot-1", "web", facts)
+    page_terms = {item["canonical_name"]: item for item in report["terms"] if item["term_type"] == "page"}
+    assert "OrderManagement" in page_terms
+    assert "订单管理" in page_terms["OrderManagement"]["aliases"]
+    kinds = {item["evidence_type"] for item in page_terms["OrderManagement"]["evidence"]}
+    assert {"frontend_page", "page_title"} <= kinds
+    assert page_terms["OrderManagement"]["source"] == "rule:frontend_page+page_title"
+
+
 def test_technical_wrapper_does_not_hide_a_real_entity():
     facts = {"api_contract": {"endpoints": []}, "core_entities": [
         {"node_id": "dto", "name": "OrderDTO", "file_path": "src/api.py", "kind": "class", "score": 20, "fields": []},
