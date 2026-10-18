@@ -268,7 +268,7 @@
 
         <template v-else-if="activeSection === 'module_topology'">
           <div class="metrics"><div class="metric">{{ activeData.module_count || 0 }} <small>{{ t('个模块') }}</small></div><div class="metric">{{ activeData.coupling_score ?? '-' }} <small>{{ t('耦合度') }}</small></div></div>
-          <div class="card-grid"><div class="detail-card" v-for="item in activeData.modules || []" :key="item.id"><h3>{{ item.name }}</h3><p>{{ item.file_count }} {{ t('个文件') }} · {{ item.primary_language || t('未知语言') }}</p><code>{{ item.id }}</code></div></div>
+          <div class="card-grid"><div class="detail-card" v-for="item in activeData.modules || []" :key="item.id" :style="{ marginLeft: (item.depth || 0) * 12 + 'px' }"><h3>{{ item.segment || item.name }}</h3><p>{{ item.file_count }} {{ t('个文件') }} · {{ item.primary_language || t('未知语言') }}</p><code>{{ item.name }}</code></div></div>
         </template>
 
         <template v-else-if="activeSection === 'core_entities'">

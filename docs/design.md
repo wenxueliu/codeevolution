@@ -30,7 +30,7 @@ CodeEvolution 做两件事：
 知识 = 从 CodeGraph 知识图谱中推导的结构化信息
 
 三层递进:
-  Phase 1: 纯图计算（PageRank/Louvain/BFS）→ 9 维
+  Phase 1: 纯图计算 + 路径骨架（PageRank/BFS/构建清单）→ 9 维
   Phase 2: 图 + 规则引擎（模式匹配）→ 4 维
   Phase 3: 图 + LLM 语义理解（litellm）→ 4 维
 
@@ -135,7 +135,7 @@ codeevolution/
 | # | 维度 | 输入 | 算法 |
 |---|------|------|------|
 | 1 | API 契约 | route nodes + handler functions | HTTP decorator 匹配 + 签名提取 |
-| 2 | 模块拓扑 | imports/calls edges | Louvain 社区检测 |
+| 2 | 模块拓扑 | imports/calls edges + 构建清单/目录布局 | 路径骨架 + 图耦合（依赖/耦合度/内聚度） |
 | 3 | 核心实体 | calls edges | PageRank 中心度 |
 | 4 | 测试缺口 | test files + calls edges | 测试→生产 调用差集 |
 | 5 | 分层违规 | file_path + calls edges | 目录命名约定检查 |

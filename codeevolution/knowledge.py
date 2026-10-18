@@ -138,7 +138,21 @@ class KnowledgeExtractor:
                 "module_count": len(modules.modules),
                 "coupling_score": modules.coupling_score,
                 "modules": [
-                    {key: module[key] for key in ("id", "name", "file_count", "primary_language")}
+                    {
+                        key: module[key]
+                        for key in (
+                            "id",
+                            "name",
+                            "segment",
+                            "path",
+                            "parent_id",
+                            "depth",
+                            "file_count",
+                            "total_file_count",
+                            "primary_language",
+                            "cohesion",
+                        )
+                    }
                     for module in modules.modules
                 ],
                 "dependencies": modules.dependency_graph,

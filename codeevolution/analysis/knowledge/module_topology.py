@@ -1,14 +1,29 @@
-"""Module-topology extraction independent from the legacy facade."""
+"""Module topology: a deterministic path skeleton annotated with coupling.
+
+Two different questions need two different signals, and conflating them was
+the core mistake of the previous implementation:
+
+* **"Which files form a module?"** is a *structural* question. Build manifests
+  (``pom.xml``/``package.json``/``go.mod``/...) plus the directory layout answer
+  it exactly and reproducibly for any well-designed repository.
+* **"How do modules depend on each other?"** is a *coupling* question. Only the
+  import/call graph can answer it.
+
+So the skeleton (modules, parents, names, depth) is derived from paths, while
+the edges, ``coupling_score`` and the per-module ``cohesion`` come from the
+graph. A module with low cohesion is precisely where the layout and the real
+coupling disagree, and that disagreement is surfaced as a metric instead of
+being smuggled into a module name (the old ``mixed:a+b+c`` labels).
+"""
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 import networkx as nx
-from networkx.algorithms.community import louvain_communities
 
 from ...domain.knowledge import ModuleTopology
 
@@ -18,57 +33,158 @@ class _QuerySource(Protocol):
     def cross_file_call_edges(self) -> list[dict[str, Any]]: ...
 
 
+# Files that mark a module root in their ecosystem's build system.
+_MANIFEST_NAMES = frozenset(
+    {
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "package.json",
+        "go.mod",
+        "cargo.toml",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "pubspec.yaml",
+        "build.sbt",
+        "composer.json",
+        "gemfile",
+        "mix.exs",
+        "cmakelists.txt",
+    }
+)
+_MANIFEST_SUFFIXES = (".csproj", ".sln", ".gemspec", ".podspec")
+
+# Directories holding vendored, generated or build output rather than modules.
+_NON_SOURCE_DIRS = frozenset(
+    {
+        "node_modules",
+        "dist",
+        "build",
+        "out",
+        "target",
+        "vendor",
+        "third_party",
+        "thirdparty",
+        "external",
+        "public",
+        "static",
+        "site-packages",
+        "bower_components",
+        "jspm_packages",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "coverage",
+        ".git",
+        ".idea",
+        ".vscode",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+    }
+)
+
+# File kinds that never define a code module.
+_NON_SOURCE_SUFFIXES = (
+    ".md",
+    ".rst",
+    ".txt",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".toml",
+    ".ini",
+    ".properties",
+    ".csv",
+    ".tsv",
+    ".lock",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".map",
+    ".d.ts",
+    ".min.js",
+    ".min.css",
+)
+
+_NON_SOURCE_LANGUAGES = frozenset(
+    {
+        "xml",
+        "yaml",
+        "yml",
+        "json",
+        "toml",
+        "ini",
+        "properties",
+        "markdown",
+        "md",
+        "csv",
+        "text",
+        "txt",
+        "plaintext",
+        "dockerfile",
+        "makefile",
+        "lock",
+        "svg",
+    }
+)
+
+# Container directories that carry no module meaning once the module root is
+# known: the Java/Kotlin/Maven source root, and the ubiquitous ``src``/``lib``.
+_CONTAINER_PARTS = frozenset(
+    {"src", "main", "test", "tests", "java", "kotlin", "resources", "source", "sources"}
+)
+
+_REPO_ROOT = PurePosixPath(".")
+_ROOT_ID = "."
+
+
 class ModuleTopologyExtractor:
-    """Detect modules and their dependencies from imports and calls."""
+    """Derive a module tree from the layout, then annotate it with coupling."""
+
+    # How many path levels below a module root become separate sub-modules.
+    MAX_SUB_DEPTH = 2
 
     def __init__(self, source: _QuerySource | Callable[[], ModuleTopology]):
         self._source = source
 
-    def extract(self, resolution: float = 0.8) -> ModuleTopology:
+    def extract(self, resolution: float = 0.8, max_sub_depth: int | None = None) -> ModuleTopology:
+        """Build the module topology.
+
+        ``resolution`` is accepted for backward compatibility with the former
+        Louvain clustering and no longer affects the result.
+        """
         if callable(self._source) and not hasattr(self._source, "module_import_edges"):
             return self._source()
 
+        output_depth = self.MAX_SUB_DEPTH if max_sub_depth is None else max_sub_depth
         graph = self.build_graph()
-        if graph.number_of_edges() == 0:
+        records = self._file_records()
+        all_paths = [path for path, _ in records] or [str(node) for node in graph.nodes()]
+        if not all_paths:
             return ModuleTopology()
 
-        communities = louvain_communities(graph, resolution=resolution, seed=42)
-        modules = []
-        file_to_module: dict[str, int] = {}
-        for index, community in enumerate(communities):
-            files = sorted(community)
-            language_counts: dict[str, int] = defaultdict(int)
-            for file_path in files:
-                file_to_module[file_path] = index
-                language_counts[Path(file_path).suffix.lower()] += 1
-            primary_language = (
-                max(language_counts, key=language_counts.get) if language_counts else ""
-            )
-            modules.append(
-                {
-                    "id": f"mod-{index + 1}",
-                    "files": files,
-                    "file_count": len(files),
-                    "primary_language": primary_language,
-                    "name": self.module_name(files),
-                }
-            )
-        self._dedupe_names(modules)
+        source_records = self._source_records(records, all_paths)
+        modules, meta, leaf_of = self._layout(source_records, all_paths, output_depth)
+        if not modules:
+            return ModuleTopology()
 
-        dependencies: dict[str, set[str]] = defaultdict(set)
-        inter_module_edges = 0
-        for source, target in graph.edges():
-            source_module = file_to_module.get(source)
-            target_module = file_to_module.get(target)
-            if source_module is not None and target_module is not None and source_module != target_module:
-                dependencies[f"mod-{source_module + 1}"].add(f"mod-{target_module + 1}")
-                inter_module_edges += 1
-
+        self._annotate_coupling(modules, meta, leaf_of, graph)
+        modules.sort(key=lambda module: (module["depth"], module["id"]))
         return ModuleTopology(
-            modules=sorted(modules, key=lambda module: -module["file_count"]),
-            dependency_graph={key: sorted(value) for key, value in dependencies.items()},
-            coupling_score=round(inter_module_edges / max(graph.number_of_edges(), 1), 4),
+            modules=modules,
+            dependency_graph=meta["_dependencies"],
+            coupling_score=meta["_coupling"],
         )
+
+    # ------------------------------------------------------------------ graph
 
     def build_graph(self) -> nx.Graph:
         graph = nx.Graph()
@@ -90,130 +206,298 @@ class ModuleTopologyExtractor:
             else:
                 graph.add_edge(source, target, weight=weight)
 
+    # ------------------------------------------------------------- file input
+
+    def _file_records(self) -> list[tuple[str, str]]:
+        getter = getattr(self._source, "file_records", None)
+        if not callable(getter):
+            return []
+        rows = getter() or []
+        return [
+            (str(row.get("path") or row.get("file_path") or ""), str(row.get("language") or ""))
+            for row in rows
+        ]
+
+    def _source_records(
+        self, records: list[tuple[str, str]], all_paths: list[str]
+    ) -> list[tuple[str, str]]:
+        candidates = [
+            (path, language) for path, language in records if self.is_source_file(path, language)
+        ]
+        if candidates:
+            return candidates
+        return [(path, self._language_of(path)) for path in all_paths if self.is_source_file(path)]
+
+    @classmethod
+    def is_source_file(cls, path: str, language: str = "") -> bool:
+        lowered = path.lower()
+        if any(lowered.endswith(suffix) for suffix in _NON_SOURCE_SUFFIXES):
+            return False
+        parts = PurePosixPath(lowered).parts
+        if any(part in _NON_SOURCE_DIRS for part in parts[:-1]):
+            return False
+        if any(part.startswith(".") for part in parts[:-1]):
+            return False
+        if language and language.strip().lower() in _NON_SOURCE_LANGUAGES:
+            return False
+        return True
+
+    @staticmethod
+    def _language_of(path: str) -> str:
+        return PurePosixPath(path).suffix.lstrip(".").lower()
+
+    # ------------------------------------------------------------ path layout
+
+    @classmethod
+    def module_roots(cls, paths: list[str]) -> list[PurePosixPath]:
+        """Directories that declare themselves a build unit.
+
+        Only the *innermost* declarations count, so a Maven aggregator root is
+        replaced by its child modules while a single-module project keeps its
+        own root.
+        """
+        found: set[PurePosixPath] = set()
+        for path in paths:
+            name = PurePosixPath(path).name.lower()
+            if name in _MANIFEST_NAMES or name.endswith(_MANIFEST_SUFFIXES):
+                found.add(PurePosixPath(path).parent)
+        if not found:
+            return [_REPO_ROOT]
+        leaves = sorted(
+            (
+                candidate
+                for candidate in found
+                if not any(
+                    other != candidate and other != _REPO_ROOT and other.is_relative_to(candidate)
+                    for other in found
+                )
+            ),
+            key=lambda candidate: candidate.as_posix(),
+        )
+        return leaves or [_REPO_ROOT]
+
+    @classmethod
+    def _normalise(cls, parts: tuple[str, ...]) -> tuple[str, ...]:
+        """Drop the leading container run (``src/main/java`` and friends).
+
+        A file sitting directly in a container directory (``src/App.vue``)
+        keeps its segment instead of collapsing onto the repo root.
+        """
+        index = 0
+        while index < len(parts) and parts[index].lower() in _CONTAINER_PARTS:
+            index += 1
+        stripped = parts[index:]
+        return stripped or parts
+
+    @staticmethod
+    def _common_prefix(sequences: list[tuple[str, ...]]) -> tuple[str, ...]:
+        if not sequences:
+            return ()
+        length = min(len(sequence) for sequence in sequences)
+        prefix: list[str] = []
+        for index in range(length):
+            segment = sequences[0][index]
+            if not all(sequence[index] == segment for sequence in sequences):
+                break
+            prefix.append(segment)
+        return tuple(prefix)
+
+    def _layout(
+        self, source_records: list[tuple[str, str]], all_paths: list[str], output_depth: int
+    ) -> tuple[list[dict], dict, dict[str, str]]:
+        roots = self.module_roots(all_paths)
+        ordered_roots = sorted(roots, key=lambda root: len(root.parts), reverse=True)
+
+        entries: list[tuple[str, str, PurePosixPath, tuple[str, ...]]] = []
+        for path, language in source_records:
+            pure = PurePosixPath(path)
+            root = next(
+                (
+                    candidate
+                    for candidate in ordered_roots
+                    if candidate == _REPO_ROOT or pure.is_relative_to(candidate)
+                ),
+                _REPO_ROOT,
+            )
+            relative = pure if root == _REPO_ROOT else pure.relative_to(root)
+            entries.append((path, language, root, self._normalise(relative.parent.parts)))
+
+        common = self._common_prefix([segments for _, _, _, segments in entries if segments])
+
+        owner: dict[str, list[str]] = defaultdict(list)
+        languages: dict[str, Counter[str]] = defaultdict(Counter)
+        leaf_of: dict[str, str] = {}
+        for path, language, root, segments in entries:
+            tail = segments[len(common) :]
+            module_id = self._module_id(root, tail[:output_depth])
+            owner[module_id].append(path)
+            languages[module_id][language or self._language_of(path)] += 1
+            leaf_of[path] = module_id
+
+        meta: dict[str, Any] = {"_dependencies": {}, "_coupling": 0.0}
+        for module_id in list(owner):
+            self._ensure_ancestors(meta, module_id)
+        meta.setdefault(_ROOT_ID, self._module_meta(_ROOT_ID))
+
+        modules = []
+        for module_id, node in meta.items():
+            if module_id.startswith("_"):
+                continue
+            node["files"] = sorted(owner.get(module_id, []))
+            node["file_count"] = len(node["files"])
+            node["total_file_count"] = self._subtree_file_count(module_id, owner)
+            node["primary_language"] = self._primary_language(module_id, languages)
+            modules.append(node)
+        return modules, meta, leaf_of
+
+    @staticmethod
+    def _module_id(root: PurePosixPath, segments: tuple[str, ...]) -> str:
+        prefix = "" if root == _REPO_ROOT else root.as_posix()
+        parts = [part for part in (prefix, *segments) if part]
+        return "/".join(parts) or _ROOT_ID
+
+    def _ensure_ancestors(self, meta: dict[str, Any], module_id: str) -> None:
+        parent = self._parent_id(module_id)
+        while parent is not None and parent not in meta:
+            meta[parent] = self._module_meta(parent)
+            parent = self._parent_id(parent)
+        if module_id not in meta:
+            meta[module_id] = self._module_meta(module_id)
+
+    @staticmethod
+    def _parent_id(module_id: str) -> str | None:
+        if module_id == _ROOT_ID:
+            return None
+        if "/" in module_id:
+            return module_id.rsplit("/", 1)[0]
+        return _ROOT_ID
+
+    @staticmethod
+    def _module_meta(module_id: str) -> dict:
+        return {
+            "id": module_id,
+            "name": "root" if module_id == _ROOT_ID else module_id,
+            "segment": "root" if module_id == _ROOT_ID else module_id.rsplit("/", 1)[-1],
+            "path": "" if module_id == _ROOT_ID else module_id,
+            "parent_id": ModuleTopologyExtractor._parent_id(module_id),
+            "depth": 0 if module_id == _ROOT_ID else module_id.count("/") + 1,
+            "files": [],
+            "file_count": 0,
+            "total_file_count": 0,
+            "primary_language": "",
+            "cohesion": 0.0,
+        }
+
+    @staticmethod
+    def _owns(module_id: str, key: str) -> bool:
+        """True when ``key`` is the module itself or one of its descendants."""
+        if key == module_id:
+            return True
+        if module_id == _ROOT_ID:
+            return True
+        return key.startswith(module_id + "/")
+
+    @classmethod
+    def _subtree_file_count(cls, module_id: str, owner: dict) -> int:
+        return sum(len(files) for key, files in owner.items() if cls._owns(module_id, key))
+
+    @classmethod
+    def _primary_language(cls, module_id: str, languages: dict) -> str:
+        merged: Counter[str] = Counter()
+        for key, counts in languages.items():
+            if cls._owns(module_id, key):
+                merged.update(counts)
+        if not merged:
+            return ""
+        return max(sorted(merged), key=lambda name: merged[name])
+
+    # -------------------------------------------------------------- coupling
+
+    def _annotate_coupling(
+        self, modules: list[dict], meta: dict, leaf_of: dict[str, str], graph: nx.Graph
+    ) -> None:
+        chains = self._ancestor_chains(meta)
+        scope_depth = self._coupling_depth(modules)
+        scope = {
+            module_id: chain[min(scope_depth, len(chain) - 1)]
+            for module_id, chain in chains.items()
+        }
+
+        internal: Counter[str] = Counter()
+        external: Counter[str] = Counter()
+        dependencies: dict[str, set[str]] = defaultdict(set)
+        crossing = contained = 0
+
+        for source, target in graph.edges():
+            source_id = leaf_of.get(source)
+            target_id = leaf_of.get(target)
+            if source_id is None or target_id is None:
+                continue
+
+            chain_source = chains[source_id]
+            chain_target = chains[target_id]
+            target_set = set(chain_target)
+            source_set = set(chain_source)
+            for module_id in chain_source:
+                if module_id in target_set:
+                    internal[module_id] += 1
+                else:
+                    external[module_id] += 1
+            for module_id in chain_target:
+                if module_id not in source_set:
+                    external[module_id] += 1
+
+            bucket_source = scope[source_id]
+            bucket_target = scope[target_id]
+            if bucket_source == bucket_target:
+                contained += 1
+            else:
+                crossing += 1
+                dependencies[bucket_source].add(bucket_target)
+                dependencies[bucket_target].add(bucket_source)
+
+        for module in modules:
+            reflected = internal[module["id"]] + external[module["id"]]
+            module["cohesion"] = round(internal[module["id"]] / reflected, 4) if reflected else 0.0
+
+        meta["_dependencies"] = {key: sorted(value) for key, value in dependencies.items()}
+        meta["_coupling"] = round(crossing / max(crossing + contained, 1), 4)
+
+    @staticmethod
+    def _coupling_depth(modules: list[dict]) -> int:
+        """Shallowest level that splits the repo into at least two modules.
+
+        Coupling is only meaningful between separate modules; measuring it at
+        the deepest level would count almost every edge as crossing.
+        """
+        counts = Counter(module["depth"] for module in modules)
+        if not counts:
+            return 0
+        for depth in sorted(counts):
+            if counts[depth] >= 2:
+                return depth
+        return max(counts)
+
+    @staticmethod
+    def _ancestor_chains(meta: dict) -> dict[str, list[str]]:
+        chains: dict[str, list[str]] = {}
+        for module_id in meta:
+            if module_id.startswith("_"):
+                continue
+            chain: list[str] = []
+            current: str | None = module_id
+            while current is not None and current not in chain:
+                chain.append(current)
+                current = meta.get(current, {}).get("parent_id")
+            chains[module_id] = list(reversed(chain))
+        return chains
+
+    # ------------------------------------------------------------- legacy API
+
     @staticmethod
     def common_prefix(paths: list[str]) -> str:
         if not paths:
             return ""
-        directories = [Path(path).parent.parts for path in paths]
-        prefix = []
-        for index in range(min(len(directory) for directory in directories)):
-            segment = directories[0][index]
-            if not all(directory[index] == segment for directory in directories):
-                break
-            prefix.append(segment)
+        directories = [PurePosixPath(path).parent.parts for path in paths]
+        prefix = ModuleTopologyExtractor._common_prefix(list(directories))
         return "/".join(prefix) if prefix else "root"
-
-    # Louvain clusters by coupling, so a community often spans several
-    # directories and a strict common prefix collapses to "root" — which
-    # collides across modules. Naming falls back to the directory that
-    # covers the most files, then to an explicit "mixed" label.
-    DOMINANT_DIR_MIN_COVERAGE = 0.5
-    MIXED_TOP_DIRS = 3
-
-    @classmethod
-    def module_name(cls, paths: list[str]) -> str:
-        if not paths:
-            return "root"
-        directories = [Path(path).parent for path in paths]
-        prefix = cls._common_directory_prefix(directories)
-        if prefix:
-            return prefix
-        dominant = cls._dominant_directory(directories)
-        if dominant:
-            return dominant
-        return cls._mixed_label(directories)
-
-    @staticmethod
-    def _common_directory_prefix(directories: list[Path]) -> str:
-        parts_list = [directory.parts for directory in directories]
-        prefix = []
-        for index in range(min(len(parts) for parts in parts_list)):
-            segment = parts_list[0][index]
-            if not all(parts[index] == segment for parts in parts_list):
-                break
-            prefix.append(segment)
-        return "/".join(prefix)
-
-    @classmethod
-    def _dominant_directory(cls, directories: list[Path]) -> str:
-        """Deepest ancestor directory covering >= half the community's files.
-
-        Preferring the *deepest* eligible directory (rather than the widest)
-        keeps different communities under the same parent distinguishable.
-        """
-        if not directories:
-            return ""
-        coverage: Counter[str] = Counter()
-        depth: dict[str, int] = {}
-        for directory in directories:
-            seen: set[str] = set()
-            for ancestor in [directory, *directory.parents]:
-                text = ancestor.as_posix()
-                if text == ".":
-                    # The repo root is an ancestor of everything; counting it
-                    # would always win, so it carries no naming signal.
-                    continue
-                if text in seen:
-                    continue
-                seen.add(text)
-                coverage[text] += 1
-                depth[text] = len(ancestor.parts)
-        if not coverage:
-            return ""
-        threshold = len(directories) * cls.DOMINANT_DIR_MIN_COVERAGE
-        candidates = [name for name, count in coverage.items() if count >= threshold]
-        if not candidates:
-            return ""
-        # Deeper path is more specific; then more files; then lexicographic
-        # order keeps it deterministic.
-        return max(candidates, key=lambda name: (depth[name], coverage[name], name))
-
-    @classmethod
-    def _mixed_label(cls, directories: list[Path]) -> str:
-        tops: Counter[str] = Counter()
-        for directory in directories:
-            first = directory.parts[0] if directory.parts else "."
-            tops["root" if first == "." else first] += 1
-        if set(tops) == {"root"}:
-            return "root"
-        top = sorted(tops.items(), key=lambda item: (-item[1], item[0]))
-        return "mixed:" + "+".join(name for name, _ in top[: cls.MIXED_TOP_DIRS])
-
-    @classmethod
-    def _dedupe_names(cls, modules: list[dict]) -> None:
-        """Disambiguate colliding module names.
-
-        First try a directory segment from the community that the name does
-        not already contain (``src`` vs ``src/views``); numeric suffixes are
-        the last resort. Modules are ordered by size, so larger communities
-        get first pick.
-        """
-        groups: dict[str, list[dict]] = defaultdict(list)
-        for module in modules:
-            groups[module["name"]].append(module)
-        for name, group in groups.items():
-            if len(group) > 1:
-                for module in group:
-                    segment = cls._discriminator(module["files"], name)
-                    if segment:
-                        module["name"] = f"{name}/{segment}"
-        seen: Counter[str] = Counter()
-        for module in modules:
-            name = module["name"]
-            seen[name] += 1
-            if seen[name] > 1:
-                module["name"] = f"{name}-{seen[name]}"
-
-    @staticmethod
-    def _discriminator(files: list[str], name: str) -> str:
-        """Most common directory segment of the community's files that the
-        name does not already mention."""
-        excluded = {part for chunk in name.replace(":", "/").split("+") for part in chunk.split("/")}
-        counts: Counter[str] = Counter()
-        for file_path in files:
-            for part in Path(file_path).parent.parts:
-                if part not in excluded:
-                    counts[part] += 1
-        if not counts:
-            return ""
-        return min(counts, key=lambda part: (-counts[part], part))
