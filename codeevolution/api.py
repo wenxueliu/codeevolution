@@ -686,9 +686,20 @@ def check_repository_members(request: RepositoryMembersCheckRequest):
             observed = WorkspaceInputScanner(member.registered_path).scan()
             evidence = store.get_evidence(current.evidence_digest)
             changed = evidence is None or observed.source_digest != evidence.source_digest
-            status = "source_changed" if changed else "unchanged"
+            # The analyzer digest is part of a snapshot's identity, so a report
+            # produced by older analyzer code is published but stale even when
+            # the workspace itself did not move.
+            from .application.repository_attempt_worker import ANALYZER_BUNDLE_DIGEST
+
+            drift = current.analyzer_bundle_digest != ANALYZER_BUNDLE_DIGEST
+            if changed:
+                status = "source_changed"
+            elif drift:
+                status = "analyzer_outdated"
+            else:
+                status = "unchanged"
             results.append({"member_id": member_id, "status": status, "source_changed": changed,
-                            "version_drift": False, "snapshot_id": current.id,
+                            "version_drift": drift, "snapshot_id": current.id,
                             "input_digest": observed.source_digest})
         except Exception as error:
             results.append({"member_id": member_id, "status": "check_failed",

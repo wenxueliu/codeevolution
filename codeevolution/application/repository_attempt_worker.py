@@ -79,7 +79,33 @@ class AttemptCancelledError(RuntimeError):
     pass
 
 
-ANALYZER_BUNDLE_DIGEST = f"codeevolution:{__version__}:repository-analysis-v2"
+def _analyzer_source_digest() -> str:
+    """Hash the analyzer sources so a code change invalidates cached reports.
+
+    ``publish_snapshot`` deduplicates on this digest, so tying it to a manually
+    bumped ``__version__`` meant an updated extractor silently reused every
+    existing snapshot and kept serving stale facts.  Hash the modules that
+    actually produce the report instead, and fall back to the version when the
+    sources are unreadable (frozen or zipped installs) rather than failing.
+    """
+    package = Path(__file__).resolve().parent.parent
+    targets = [package / "knowledge.py"]
+    analysis = package / "analysis"
+    if analysis.is_dir():
+        targets.extend(analysis.rglob("*.py"))
+    digest = hashlib.sha256()
+    for path in sorted(targets):
+        try:
+            digest.update(path.relative_to(package).as_posix().encode())
+            digest.update(path.read_bytes())
+        except OSError:
+            return __version__
+    return digest.hexdigest()
+
+
+ANALYZER_BUNDLE_DIGEST = (
+    f"codeevolution:{__version__}:repository-analysis-v3:{_analyzer_source_digest()}"
+)
 logger = logging.getLogger(__name__)
 
 
