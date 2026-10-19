@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .json_parser import complete_json
 from .explanation_templates import (
     DEFAULT_COMPLEXITY_INSTRUCTIONS,
     normalize_prompt_templates,
     render_prompt,
 )
+from .json_parser import complete_json
 
 FACT_FIELDS = (
     "business_flow",
