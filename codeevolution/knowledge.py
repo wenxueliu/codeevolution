@@ -151,6 +151,8 @@ class KnowledgeExtractor:
                             "total_file_count",
                             "primary_language",
                             "cohesion",
+                            "afferent",
+                            "efferent",
                         )
                     }
                     for module in modules.modules

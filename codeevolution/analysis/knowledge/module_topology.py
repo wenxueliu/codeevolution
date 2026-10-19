@@ -10,10 +10,13 @@ the core mistake of the previous implementation:
   import/call graph can answer it.
 
 So the skeleton (modules, parents, names, depth) is derived from paths, while
-the edges, ``coupling_score`` and the per-module ``cohesion`` come from the
-graph. A module with low cohesion is precisely where the layout and the real
-coupling disagree, and that disagreement is surfaced as a metric instead of
-being smuggled into a module name (the old ``mixed:a+b+c`` labels).
+the edges, ``coupling_score`` and the per-module coupling metrics come from the
+graph: ``dependency_graph`` keeps the edge direction (``A -> B`` means A imports
+or calls B), ``afferent``/``efferent`` count the modules pointing at and away
+from each module, and ``cohesion`` is the share of a module's edges that stay
+inside it. Low cohesion is precisely where the layout and the real coupling
+disagree, and that disagreement is surfaced as a metric instead of being
+smuggled into a module name (the old ``mixed:a+b+c`` labels).
 """
 
 from __future__ import annotations
@@ -165,7 +168,8 @@ class ModuleTopologyExtractor:
             return self._source()
 
         output_depth = self.MAX_SUB_DEPTH if max_sub_depth is None else max_sub_depth
-        graph = self.build_graph()
+        imports, calls = self._edge_rows()
+        graph = self._graph_from_rows(imports, calls)
         records = self._file_records()
         all_paths = [path for path, _ in records] or [str(node) for node in graph.nodes()]
         if not all_paths:
@@ -176,7 +180,7 @@ class ModuleTopologyExtractor:
         if not modules:
             return ModuleTopology()
 
-        self._annotate_coupling(modules, meta, leaf_of, graph)
+        self._annotate_coupling(modules, meta, leaf_of, imports, calls)
         modules.sort(key=lambda module: (module["depth"], module["id"]))
         return ModuleTopology(
             modules=modules,
@@ -186,13 +190,21 @@ class ModuleTopologyExtractor:
 
     # ------------------------------------------------------------------ graph
 
-    def build_graph(self) -> nx.Graph:
-        graph = nx.Graph()
-        imports = self._source.module_import_edges()  # type: ignore[union-attr]
-        self._add_edges(graph, imports, weight=2)
+    def _edge_rows(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Raw directed edge rows: ``f1`` depends on ``f2``."""
+        imports = self._source.module_import_edges() or []  # type: ignore[union-attr]
+        calls = self._source.cross_file_call_edges() or []  # type: ignore[union-attr]
+        return imports, calls
 
-        calls = self._source.cross_file_call_edges()  # type: ignore[union-attr]
-        self._add_edges(graph, calls, weight=1)
+    def build_graph(self) -> nx.Graph:
+        imports, calls = self._edge_rows()
+        return self._graph_from_rows(imports, calls)
+
+    @classmethod
+    def _graph_from_rows(cls, imports: list[dict], calls: list[dict]) -> nx.Graph:
+        graph = nx.Graph()
+        cls._add_edges(graph, imports, weight=2)
+        cls._add_edges(graph, calls, weight=1)
         return graph
 
     @staticmethod
@@ -414,7 +426,12 @@ class ModuleTopologyExtractor:
     # -------------------------------------------------------------- coupling
 
     def _annotate_coupling(
-        self, modules: list[dict], meta: dict, leaf_of: dict[str, str], graph: nx.Graph
+        self,
+        modules: list[dict],
+        meta: dict,
+        leaf_of: dict[str, str],
+        imports: list[dict],
+        calls: list[dict],
     ) -> None:
         chains = self._ancestor_chains(meta)
         scope_depth = self._coupling_depth(modules)
@@ -425,12 +442,14 @@ class ModuleTopologyExtractor:
 
         internal: Counter[str] = Counter()
         external: Counter[str] = Counter()
-        dependencies: dict[str, set[str]] = defaultdict(set)
-        crossing = contained = 0
+        depends_on: dict[str, set[str]] = defaultdict(set)
+        depended_on_by: dict[str, set[str]] = defaultdict(set)
+        seen_pairs: set[tuple[str, str]] = set()
+        crossing = 0
 
-        for source, target in graph.edges():
-            source_id = leaf_of.get(source)
-            target_id = leaf_of.get(target)
+        for row in (*imports, *calls):
+            source_id = leaf_of.get(row["f1"])
+            target_id = leaf_of.get(row["f2"])
             if source_id is None or target_id is None:
                 continue
 
@@ -447,21 +466,55 @@ class ModuleTopologyExtractor:
                 if module_id not in source_set:
                     external[module_id] += 1
 
+            if source_id == target_id:
+                continue
             bucket_source = scope[source_id]
             bucket_target = scope[target_id]
             if bucket_source == bucket_target:
-                contained += 1
-            else:
+                continue
+            pair = (
+                (bucket_source, bucket_target)
+                if bucket_source <= bucket_target
+                else (bucket_target, bucket_source)
+            )
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
                 crossing += 1
-                dependencies[bucket_source].add(bucket_target)
-                dependencies[bucket_target].add(bucket_source)
+            depends_on[bucket_source].add(bucket_target)
+            depended_on_by[bucket_target].add(bucket_source)
 
+        contained = self._contained_pairs(leaf_of, scope, seen_pairs, imports, calls)
         for module in modules:
-            reflected = internal[module["id"]] + external[module["id"]]
-            module["cohesion"] = round(internal[module["id"]] / reflected, 4) if reflected else 0.0
+            module_id = module["id"]
+            reflected = internal[module_id] + external[module_id]
+            module["cohesion"] = round(internal[module_id] / reflected, 4) if reflected else 0.0
+            module["efferent"] = len(depends_on.get(module_id, ()))
+            module["afferent"] = len(depended_on_by.get(module_id, ()))
 
-        meta["_dependencies"] = {key: sorted(value) for key, value in dependencies.items()}
+        meta["_dependencies"] = {key: sorted(value) for key, value in depends_on.items()}
         meta["_coupling"] = round(crossing / max(crossing + contained, 1), 4)
+
+    @staticmethod
+    def _contained_pairs(
+        leaf_of: dict[str, str],
+        scope: dict[str, str],
+        seen_pairs: set[tuple[str, str]],
+        imports: list[dict],
+        calls: list[dict],
+    ) -> int:
+        """Distinct file pairs whose two ends sit inside the same module."""
+        contained: set[tuple[str, str]] = set()
+        for row in (*imports, *calls):
+            source_id = leaf_of.get(row["f1"])
+            target_id = leaf_of.get(row["f2"])
+            if source_id is None or target_id is None or source_id == target_id:
+                continue
+            if scope[source_id] != scope[target_id]:
+                continue
+            pair = (source_id, target_id) if source_id <= target_id else (target_id, source_id)
+            if pair not in seen_pairs:
+                contained.add(pair)
+        return len(contained)
 
     @staticmethod
     def _coupling_depth(modules: list[dict]) -> int:
