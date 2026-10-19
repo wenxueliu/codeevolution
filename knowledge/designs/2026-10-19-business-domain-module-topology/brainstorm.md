@@ -1,0 +1,177 @@
+# 模块拓扑：按文件名划分业务模块（域 → 实体）
+
+- 日期：2026-10-19
+- 服务：`services/codehistory`（CodeEvolution）
+- 影响面：`codeevolution/analysis/knowledge/module_topology.py` + `Knowledge.vue`
+- 状态：待用户批准
+
+## 1. 背景与目标
+
+### 问题
+
+当前模块拓扑用**目录路径**建骨架，因此输出的模块是**架构分层**：
+
+```
+mall-admin/controller    mall-admin/service    mall-mbg/model    mall-mbg/mapper
+```
+
+而用户要的模块拓扑对应的是**业务分类**（商品 / 订单 / 用户 / 营销 / 内容）。
+
+根因：同一个业务实体的各个层被物理拆分到不同目录，路径丢失了业务归属。
+
+```
+com/macro/mall/controller/PmsProductController.java
+com/macro/mall/service/PmsProductService.java
+com/macro/mall/service/impl/PmsProductServiceImpl.java   ← 5 个目录
+com/macro/mall/dao/PmsProductDao.java                      8 个层
+com/macro/mall/mapper/PmsProductMapper.java
+com/macro/mall/dto/PmsProductParam.java
+com/macro/mall/model/PmsProduct.java
+```
+
+只有**文件名**（`PmsProduct*`）能把它们绑成一个业务实体。
+
+### 目标
+
+1. 模块拓扑改为**业务分类**：域 → 实体 的两层树。
+2. 架构分层降级为**模块内属性**，不再决定模块归属。
+3. 对文件名不含业务信号的仓库**自动回落**到现有路径骨架。
+4. 把「文件名与所在结构不一致」作为**发现项**暴露，而不是用来决定归属。
+
+### 依据（实测数据）
+
+`mall` 519 个源文件：
+
+| 轴 | 信号来源 | 证据 |
+|---|---|---|
+| 架构层 | 文件名**后缀** | `Mapper` 76、`Example` 76、`Service` 50、`Impl` 49、`Controller` 47、`Dao` 28 |
+| 业务域 | 文件名**前缀** | `Ums` 111、`Pms` 100、`Sms` 78、`Oms` 63、`Cms` 44 |
+
+- 5 个业务前缀覆盖 **396/519 = 76%** 源文件。
+- 共 **20 个域**，其中 **14 个域含 ≥2 个实体**，合计覆盖 **451/524 = 86%**。
+- 域 → 实体规模：`Ums` 30、`Pms` 27、`Oms` 19、`Sms` 16、`Cms` 12。
+- 无业务前缀的 103 个文件（`Jwt*`、`WebLog`、`Alipay`、`CommonResult`、`Api`）是横切基础设施。
+
+### 已证伪的假设（重要）
+
+用户假设「文件名和文件中的类/函数不一致」是可用的设计信号。实测：
+
+| 度量 | mall | codeos |
+|---|---|---|
+| 文件名 vs 文件内声明的类 | **0/516 不一致** | **0/50 不一致** |
+| 目录层 vs 文件名后缀层 | 76/524 不一致 | — |
+
+- 文件名与类名在两个 Java 仓库中 **100% 一致**，该信号为空。
+- 真正的「不一致」是**目录层 ≠ 文件名后缀层**（mall 76 例），且几乎全部是 MyBatis 生成的
+  `*Example.java` 放在 `model/` 下——机械原因，不是设计坏味。
+- 结论：该信号降级为**只读发现项 `layer_conflict`**，不参与模块归属。
+
+## 2. 范围
+
+**做**
+- 新增业务域/实体聚类，替代路径骨架作为默认模块树。
+- 分层改为模块内属性 `layers`。
+- 新增发现项 `layer_conflict`。
+- 保留路径骨架作为回落分支。
+- 前端展示域 → 实体嵌套。
+
+**不做**
+- 不改动图谱解析、导入/调用边抽取。
+- 不引入 LLM 语义判断（聚类完全确定性、可复现）。
+- 不翻译业务缩写（`Pms` 保持原样，含义由其子实体承载）。
+- 不改动 `knowledge_service.py` 的多仓合并形状。
+
+## 3. 备选方案与取舍
+
+| 方案 | 做法 | 优点 | 缺点 | 结论 |
+|---|---|---|---|---|
+| A. 文件名聚类替代路径 | 域 → 实体两层树，路径仅作回落 | 直接给出业务分类，解决根因 | 对无前缀仓库需回落逻辑 | **推荐** |
+| B. 路径骨架 + `domain` 标签 | 保持目录树，附加属性 | 改动最小 | 没解决「模块=架构层」的根因，用户已明确否决 | 否 |
+| C. 与图谱社区发现结合 | 用 Louvain 再聚 | 理论完备 | 不可复现、命名困难；本仓已删过该方案 | 否 |
+
+## 4. 推荐方案
+
+### 4.1 两个正交轴
+
+- **业务轴（模块树）**：`domain` → `entity`，来自文件名 token。
+- **架构轴（模块内属性）**：`layer`，来自文件名后缀，后缀未知时退回目录段。
+
+### 4.2 算法
+
+1. **源文件筛选**：复用现有过滤，额外排除 vendored/压缩/生成的前端资源
+   （`*.min.js`、`index.js`、`*.d.ts`、`plugin*`）与测试目录。
+2. **分词**：basename 按 CamelCase / 缩写 / 数字切分。
+3. **实体键**：从尾部剥掉已知分层 token，剩下即业务实体。
+   `PmsProductController` → `PmsProduct`；被剥掉的后缀给出 `layer`。
+4. **域键**：前导缩写段 `^[A-Z][a-z]{1,3}(?=[A-Z])` → `Pms`；无则空。
+5. **信号接受判据（按仓库）**：
+   源文件数 `>= 20` 且 前 5 大命名域覆盖 `>= 50%` 时采用业务聚类，
+   否则回落路径骨架。
+   - `mall` 76% → 采用；`codeos` 26% → 回落；`mall-admin-web` 6% → 回落。
+   - **回落不是失败**：已按业务组织的仓库，其目录本身就是业务域，路径骨架给出同样的答案。
+     因此该判据可以保守取值而不损失正确性。
+6. **建树**：`depth 0` 域（`Pms` / `shared`）→ `depth 1` 实体（`PmsProduct`）→ `depth 2` 层（可选）。
+7. **横切桶**：无域键，或实体键属于横切词表（`util`/`config`/`common`/`base`/`api`/`exception`/`constant`/`result`）的文件归入 `shared`。
+8. **耦合**：沿用现有有向边聚合，但在**实体层**计算——`PmsProduct → PmsCategory` 才是业务依赖。
+   `cohesion` = 实体内部边占比；`afferent`/`efferent` = 指向/被指向的实体数。
+
+### 4.3 报告形状
+
+```
+id, name, kind ("domain"|"entity"|"shared"|"layer"),
+parent_id, depth, file_count, total_file_count, path,
+layers {layer: count},
+cohesion, afferent, efferent, layer_conflict
+```
+
+- `version` 升为 `module-topology/v3`。
+- 已实现的读边界投影（`module-topology/v2` → v3）会自动让旧 snapshot 生效，无需重跑分析。
+- `path` 对实体模块取公共目录前缀，可能退化（如 `com/macro/mall`），故 `layers` 才是有效信息。
+
+### 4.4 数据流
+
+```
+冻结 CodeGraph ──> 源文件清单 ──> 文件名分词 ──> 实体键 / 域键
+                                          │
+                            信号接受判据 ──┴──> 接受：域→实体树
+                                          └──> 拒绝：现有路径骨架
+                                          │
+     导入/调用有向边 ──> 实体级耦合 ──────┴──> ModuleTopology
+```
+
+### 4.5 失败处理
+
+| 情况 | 处理 |
+|---|---|
+| 无源文件 / 无实体 | 返回空拓扑（现状） |
+| 实体键为空 | 归入 `shared` |
+| 后缀无法识别分层 | `layer` 退回目录段；仍无法判定则置空 |
+| 信号判据不通过 | 回落路径骨架（保留现有代码路径） |
+| 图谱边缺失 | 模块仍输出，耦合指标为 0 |
+
+## 5. 测试策略
+
+按项目约束：不做 UT，做 API 集成测试 + UI 自动化。
+
+- **API 集成**：`mall` 断言得到业务树且含 `Pms → PmsProduct`；`codeos` 断言回落到路径骨架；
+  断言 `version == module-topology/v3`、`layer_conflict` 存在。
+- **回归**：现有 `tests/` 全绿；旧 snapshot 读边界投影仍返回 v3。
+- **UI**：知识中心模块拓扑页渲染域 → 实体嵌套，中英文文案走 `i18n.js`。
+
+## 6. 开放问题（留给规划阶段）
+
+1. 80 个单文件实体是否折叠进域节点？（倾向：保留为叶实体，但 UI 默认折叠）
+2. 分层 `layer` 是否作为 `depth 2` 展开，还是作为实体卡片上的分布条？（倾向：分布条，避免树过深）
+3. `shared` 桶是否再按层细分？（倾向：细分，`shared/util`、`shared/config`）
+4. 横切词表是否需要可配置？
+
+## 7. 依赖与降级记录
+
+- `sw-grill-docs`：**SKIPPED**。本服务无 `knowledge/CONTEXT.md` 与 ADR 存储，
+  术语基线为 `docs/design.md`；已在验收前人工对照该文档，未发现冲突。
+- `sw-strategic-planner`：本变更为单服务单文件范围，未启用。
+
+## 8. 待批准的决策
+
+- 模块粒度：**两层树（域 → 实体）** —— 用户已选。
+- 其余均按第 4 节默认值执行，如无异议即进入实现。

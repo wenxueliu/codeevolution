@@ -21,6 +21,7 @@ smuggled into a module name (the old ``mixed:a+b+c`` labels).
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import PurePosixPath
@@ -147,11 +148,66 @@ _CONTAINER_PARTS = frozenset(
 
 _REPO_ROOT = PurePosixPath(".")
 _ROOT_ID = "."
+_SHARED_ID = "shared"
+_DOMAIN_DEPTH = 1
+_ENTITY_DEPTH = 2
 
 # Bumped whenever the layout or the coupling semantics change. Published reports
 # carry it and read-boundary projections compare against it, so an updated
 # extractor can supersede a stale topology without republishing a snapshot.
-MODULE_TOPOLOGY_VERSION = "module-topology/v2"
+MODULE_TOPOLOGY_VERSION = "module-topology/v3"
+
+# File-name suffixes and directory names that name an architectural layer
+# rather than a business entity.  ``impl``/``serviceimpl`` collapse onto the
+# service layer; ``param``/``result`` are the DTO family.
+_LAYER_SUFFIXES = {
+    "controller": "controller",
+    "serviceimpl": "service",
+    "service": "service",
+    "impl": "service",
+    "dao": "dao",
+    "mapper": "mapper",
+    "repository": "repository",
+    "example": "example",
+    "param": "dto",
+    "result": "dto",
+    "dto": "dto",
+    "vo": "vo",
+    "model": "model",
+    "entity": "model",
+    "config": "config",
+    "util": "util",
+    "utils": "util",
+    "helper": "util",
+    "exception": "exception",
+    "constant": "constant",
+    "converter": "converter",
+    "factory": "factory",
+    "component": "component",
+    "manager": "manager",
+    "handler": "handler",
+    "listener": "listener",
+    "interceptor": "interceptor",
+    "filter": "filter",
+    "client": "client",
+    "request": "request",
+    "response": "response",
+}
+
+# ``PmsProduct`` -> ``Pms``: the acronym mall and friends prefix a business
+# domain with.  A short capitalised run followed by another capital.
+_DOMAIN_PREFIX = re.compile(r"^[A-Z][a-z]{1,3}(?=[A-Z])")
+# CamelCase / acronym / digit split: ``PmsProductServiceImpl`` -> the four parts.
+_NAME_TOKENS = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
+
+# A repository only gets business-domain modules when file names actually carry
+# one.  Below these limits the file-name signal is noise and the path skeleton
+# is both safer and, for a repo already organised by business, identical.
+_BUSINESS_MIN_FILES = 20
+_BUSINESS_MIN_COVERAGE = 0.5
+_BUSINESS_TOP_DOMAINS = 5
+# A domain needs at least this many distinct entities to be worth a branch.
+_BUSINESS_MIN_ENTITIES = 2
 
 # The canonical per-module report shape, shared by analysis and by reads.
 _MODULE_FIELDS = (
@@ -159,11 +215,14 @@ _MODULE_FIELDS = (
     "name",
     "segment",
     "path",
+    "kind",
     "parent_id",
     "depth",
     "file_count",
     "total_file_count",
     "primary_language",
+    "layers",
+    "layer_conflict",
     "cohesion",
     "afferent",
     "efferent",
@@ -195,6 +254,11 @@ class ModuleTopologyExtractor:
 
         ``resolution`` is accepted for backward compatibility with the former
         Louvain clustering and no longer affects the result.
+
+        Two layouts are possible.  When file names carry a business domain the
+        topology is ``domain -> entity`` and the architectural layer becomes a
+        per-module attribute.  Otherwise the directory skeleton is used, which
+        is already the right answer for a repository organised by business.
         """
         if callable(self._source) and not hasattr(self._source, "module_import_edges"):
             return self._source()
@@ -208,11 +272,28 @@ class ModuleTopologyExtractor:
             return ModuleTopology()
 
         source_records = self._source_records(records, all_paths)
-        modules, meta, leaf_of = self._layout(source_records, all_paths, output_depth)
+        assignments = self._business_assignments(source_records)
+        scope_depth: int | None
+        group_depth: int | None
+        if self._accepts_business_layout(source_records, assignments):
+            modules, meta, leaf_of = self._business_layout(source_records, assignments)
+            # Dependencies between entities, coupling ratio between domains.
+            scope_depth, group_depth = _ENTITY_DEPTH, _DOMAIN_DEPTH
+        else:
+            modules, meta, leaf_of = self._layout(source_records, all_paths, output_depth)
+            scope_depth = group_depth = None
         if not modules:
             return ModuleTopology()
 
-        self._annotate_coupling(modules, meta, leaf_of, imports, calls)
+        self._annotate_coupling(
+            modules,
+            meta,
+            leaf_of,
+            imports,
+            calls,
+            scope_depth=scope_depth,
+            group_depth=group_depth,
+        )
         modules.sort(key=lambda module: (module["depth"], module["id"]))
         return ModuleTopology(
             modules=modules,
@@ -423,12 +504,15 @@ class ModuleTopologyExtractor:
             "name": "root" if module_id == _ROOT_ID else module_id,
             "segment": "root" if module_id == _ROOT_ID else module_id.rsplit("/", 1)[-1],
             "path": "" if module_id == _ROOT_ID else module_id,
+            "kind": "root" if module_id == _ROOT_ID else "module",
             "parent_id": ModuleTopologyExtractor._parent_id(module_id),
             "depth": 0 if module_id == _ROOT_ID else module_id.count("/") + 1,
             "files": [],
             "file_count": 0,
             "total_file_count": 0,
             "primary_language": "",
+            "layers": {},
+            "layer_conflict": 0,
             "cohesion": 0.0,
         }
 
@@ -455,6 +539,178 @@ class ModuleTopologyExtractor:
             return ""
         return max(sorted(merged), key=lambda name: merged[name])
 
+    # -------------------------------------------------------- business layout
+
+    @staticmethod
+    def _name_tokens(stem: str) -> list[str]:
+        return _NAME_TOKENS.findall(stem) or [stem]
+
+    @classmethod
+    def _split_name(cls, stem: str) -> tuple[str, str]:
+        """Split a file name into ``(layer, entity)``.
+
+        The trailing layer word is peeled off longest-match-first, so
+        ``PmsProductServiceImpl`` yields ``service`` and ``PmsProduct``.  The
+        remainder is the business entity -- the one thing a directory layout
+        cannot express, because every layer of an entity lives in its own
+        directory.
+        """
+        tokens = cls._name_tokens(stem)
+        for size in (3, 2, 1):
+            if len(tokens) <= size:
+                continue
+            candidate = "".join(tokens[-size:]).lower()
+            if candidate in _LAYER_SUFFIXES:
+                return _LAYER_SUFFIXES[candidate], "".join(tokens[:-size])
+        if len(tokens) == 1 and tokens[0].lower() in _LAYER_SUFFIXES:
+            return _LAYER_SUFFIXES[tokens[0].lower()], ""
+        return "", "".join(tokens)
+
+    @staticmethod
+    def _directory_layer(path: str) -> str:
+        for part in reversed(PurePosixPath(path).parent.parts):
+            layer = _LAYER_SUFFIXES.get(part.lower())
+            if layer is not None:
+                return layer
+        return ""
+
+    @staticmethod
+    def _domain_key(stem: str) -> str:
+        match = _DOMAIN_PREFIX.match(stem)
+        return match.group(0) if match else ""
+
+    @classmethod
+    def _business_assignments(
+        cls, source_records: list[tuple[str, str]]
+    ) -> list[tuple[str, str, str, str, str]]:
+        """Per file: ``(path, language, domain, entity, layer)``.
+
+        A domain needs ``_BUSINESS_MIN_ENTITIES`` distinct entities to earn a
+        branch; a one-entity acronym is not a business domain, so its files
+        join the shared bucket instead.  Layers come from the file name and
+        fall back to the directory.
+        """
+        rows = []
+        for path, language in source_records:
+            stem = PurePosixPath(path).stem
+            suffix_layer, entity = cls._split_name(stem)
+            rows.append(
+                (
+                    path,
+                    language,
+                    cls._domain_key(stem),
+                    entity,
+                    suffix_layer or cls._directory_layer(path),
+                )
+            )
+
+        entities: dict[str, set[str]] = defaultdict(set)
+        for _path, _language, domain, entity, _layer in rows:
+            if domain and entity:
+                entities[domain].add(entity)
+        return [
+            (
+                path,
+                language,
+                domain if len(entities.get(domain, ())) >= _BUSINESS_MIN_ENTITIES else "",
+                entity,
+                layer,
+            )
+            for path, language, domain, entity, layer in rows
+        ]
+
+    @staticmethod
+    def _accepts_business_layout(
+        source_records: list[tuple[str, str]],
+        assignments: list[tuple[str, str, str, str, str]],
+    ) -> bool:
+        """True when file names discriminate business domains strongly enough.
+
+        Coverage of the largest domains is what separates ``mall`` (76%: Ums /
+        Pms / Sms / Oms / Cms) from repositories whose names carry no domain at
+        all (``codeos`` 26%, ``mall-admin-web`` 6%).  Falling back is not a
+        failure: a repo already organised by business has business
+        directories, so the path skeleton returns the same tree.
+        """
+        if len(source_records) < _BUSINESS_MIN_FILES:
+            return False
+        counts = Counter(domain for _p, _l, domain, _e, _layer in assignments if domain)
+        if not counts:
+            return False
+        covered = sum(count for _domain, count in counts.most_common(_BUSINESS_TOP_DOMAINS))
+        return covered / len(source_records) >= _BUSINESS_MIN_COVERAGE
+
+    @staticmethod
+    def _business_module_id(domain: str, entity: str, layer: str, stem: str) -> str:
+        if domain and entity:
+            return f"{domain}/{entity}"
+        return f"{_SHARED_ID}/{entity or layer or stem}"
+
+    @staticmethod
+    def _business_kind(module_id: str, owned: bool) -> str:
+        if module_id == _ROOT_ID:
+            return "root"
+        if owned:
+            return "entity"
+        return "shared" if module_id == _SHARED_ID else "domain"
+
+    @classmethod
+    def _common_directory(cls, files: list[str]) -> str:
+        if not files:
+            return ""
+        directories = [PurePosixPath(path).parent.parts for path in files]
+        return "/".join(cls._common_prefix(directories))
+
+    def _business_layout(
+        self,
+        source_records: list[tuple[str, str]],
+        assignments: list[tuple[str, str, str, str, str]],
+    ) -> tuple[list[dict], dict, dict[str, str]]:
+        """Build the ``domain -> entity`` tree, keeping layers as an attribute."""
+        owner: dict[str, list[str]] = defaultdict(list)
+        languages: dict[str, Counter[str]] = defaultdict(Counter)
+        layers: dict[str, Counter[str]] = defaultdict(Counter)
+        conflicts: Counter[str] = Counter()
+        leaf_of: dict[str, str] = {}
+
+        for path, language, domain, entity, layer in assignments:
+            stem = PurePosixPath(path).stem
+            module_id = self._business_module_id(domain, entity, layer, stem)
+            leaf_of[path] = module_id
+            owner[module_id].append(path)
+            languages[module_id][language or self._language_of(path)] += 1
+            if layer:
+                layers[module_id][layer] += 1
+                directory = self._directory_layer(path)
+                if directory and directory != layer:
+                    conflicts[module_id] += 1
+
+        meta: dict[str, Any] = {"_dependencies": {}, "_coupling": 0.0}
+        for module_id in list(owner):
+            self._ensure_ancestors(meta, module_id)
+        meta.setdefault(_ROOT_ID, self._module_meta(_ROOT_ID))
+
+        for module_id, node in meta.items():
+            if module_id.startswith("_"):
+                continue
+            node["files"] = sorted(owner.get(module_id, []))
+            node["file_count"] = len(node["files"])
+            node["total_file_count"] = self._subtree_file_count(module_id, owner)
+            node["primary_language"] = self._primary_language(module_id, languages)
+            node["kind"] = self._business_kind(module_id, module_id in owner)
+            merged: Counter[str] = Counter()
+            for key, counts in layers.items():
+                if self._owns(module_id, key):
+                    merged.update(counts)
+            node["layers"] = dict(sorted(merged.items(), key=lambda item: (-item[1], item[0])))
+            node["layer_conflict"] = sum(
+                count for key, count in conflicts.items() if self._owns(module_id, key)
+            )
+            node["path"] = self._common_directory(node["files"]) if module_id in owner else ""
+
+        modules = [node for key, node in meta.items() if not key.startswith("_")]
+        return modules, meta, leaf_of
+
     # -------------------------------------------------------------- coupling
 
     def _annotate_coupling(
@@ -464,11 +720,29 @@ class ModuleTopologyExtractor:
         leaf_of: dict[str, str],
         imports: list[dict],
         calls: list[dict],
+        scope_depth: int | None = None,
+        group_depth: int | None = None,
     ) -> None:
+        """Annotate cohesion, module dependencies, and the coupling ratio.
+
+        Two scopes are needed once the topology has a real module tree.
+        Dependencies are reported between the *leaf* modules -- in a business
+        topology that is ``PmsProduct -> PmsCategory``, the useful level.  The
+        coupling ratio is measured one level up, between the groups: at the
+        leaf level every remaining edge crosses a boundary by construction, so
+        the ratio would always read 1.0.
+        """
         chains = self._ancestor_chains(meta)
-        scope_depth = self._coupling_depth(modules)
+        if scope_depth is None:
+            scope_depth = self._coupling_depth(modules)
+        if group_depth is None:
+            group_depth = self._coupling_depth(modules)
         scope = {
             module_id: chain[min(scope_depth, len(chain) - 1)]
+            for module_id, chain in chains.items()
+        }
+        group = {
+            module_id: chain[min(group_depth, len(chain) - 1)]
             for module_id, chain in chains.items()
         }
 
@@ -476,7 +750,9 @@ class ModuleTopologyExtractor:
         external: Counter[str] = Counter()
         depends_on: dict[str, set[str]] = defaultdict(set)
         depended_on_by: dict[str, set[str]] = defaultdict(set)
-        seen_pairs: set[tuple[str, str]] = set()
+        group_depends_on: dict[str, set[str]] = defaultdict(set)
+        group_depended_on_by: dict[str, set[str]] = defaultdict(set)
+        seen_group: set[tuple[str, str]] = set()
         crossing = 0
 
         for row in (*imports, *calls):
@@ -502,29 +778,65 @@ class ModuleTopologyExtractor:
                 continue
             bucket_source = scope[source_id]
             bucket_target = scope[target_id]
-            if bucket_source == bucket_target:
-                continue
-            pair = (
-                (bucket_source, bucket_target)
-                if bucket_source <= bucket_target
-                else (bucket_target, bucket_source)
-            )
-            if pair not in seen_pairs:
-                seen_pairs.add(pair)
-                crossing += 1
-            depends_on[bucket_source].add(bucket_target)
-            depended_on_by[bucket_target].add(bucket_source)
+            if bucket_source != bucket_target:
+                depends_on[bucket_source].add(bucket_target)
+                depended_on_by[bucket_target].add(bucket_source)
 
-        contained = self._contained_pairs(leaf_of, scope, seen_pairs, imports, calls)
+            group_source = group[source_id]
+            group_target = group[target_id]
+            if group_source == group_target:
+                continue
+            group_depends_on[group_source].add(group_target)
+            group_depended_on_by[group_target].add(group_source)
+            pair = (
+                (group_source, group_target)
+                if group_source <= group_target
+                else (group_target, group_source)
+            )
+            if pair not in seen_group:
+                seen_group.add(pair)
+                crossing += 1
+
+        contained = self._contained_pairs(leaf_of, group, seen_group, imports, calls)
         for module in modules:
             module_id = module["id"]
             reflected = internal[module_id] + external[module_id]
             module["cohesion"] = round(internal[module_id] / reflected, 4) if reflected else 0.0
-            module["efferent"] = len(depends_on.get(module_id, ()))
-            module["afferent"] = len(depended_on_by.get(module_id, ()))
+            # A module's relationships are counted at its own level: entities
+            # against entities, domains against domains.
+            outgoing = group_depends_on if module["depth"] == group_depth else depends_on
+            incoming = group_depended_on_by if module["depth"] == group_depth else depended_on_by
+            module["efferent"] = len(outgoing.get(module_id, ()))
+            module["afferent"] = len(incoming.get(module_id, ()))
 
-        meta["_dependencies"] = {key: sorted(value) for key, value in depends_on.items()}
+        combined: dict[str, set[str]] = defaultdict(set)
+        for graph in (group_depends_on, depends_on):
+            for key, value in graph.items():
+                combined[key].update(value)
+        meta["_dependencies"] = {key: sorted(value) for key, value in combined.items()}
         meta["_coupling"] = round(crossing / max(crossing + contained, 1), 4)
+
+    @staticmethod
+    def _contained_pairs(
+        leaf_of: dict[str, str],
+        group: dict[str, str],
+        seen_group: set[tuple[str, str]],
+        imports: list[dict],
+        calls: list[dict],
+    ) -> int:
+        """Distinct leaf pairs that share a group without being one module."""
+        contained: set[tuple[str, str]] = set()
+        for row in (*imports, *calls):
+            source_id = leaf_of.get(row["f1"])
+            target_id = leaf_of.get(row["f2"])
+            if source_id is None or target_id is None or source_id == target_id:
+                continue
+            if group[source_id] != group[target_id]:
+                continue
+            pair = (source_id, target_id) if source_id <= target_id else (target_id, source_id)
+            if pair not in seen_group:
+                contained.add(pair)
+        return len(contained)
 
     @staticmethod
     def _contained_pairs(

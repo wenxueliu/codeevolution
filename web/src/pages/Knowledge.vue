@@ -267,8 +267,24 @@
         </template>
 
         <template v-else-if="activeSection === 'module_topology'">
-          <div class="metrics"><div class="metric">{{ activeData.module_count || 0 }} <small>{{ t('个模块') }}</small></div><div class="metric">{{ activeData.coupling_score ?? '-' }} <small>{{ t('耦合度') }}</small></div></div>
-          <div class="card-grid"><div class="detail-card" v-for="item in activeData.modules || []" :key="item.id" :style="{ marginLeft: (item.depth || 0) * 12 + 'px' }"><h3>{{ item.segment || item.name }}</h3><p>{{ item.file_count }} {{ t('个文件') }} · {{ item.primary_language || t('未知语言') }}</p><code>{{ item.name }}</code></div></div>
+          <div class="metrics"><div class="metric" v-for="stat in moduleStats" :key="stat.key">{{ stat.value }} <small>{{ stat.label }}</small></div><div class="metric">{{ activeData.coupling_score ?? '-' }} <small>{{ t('耦合度') }}</small></div></div>
+          <div class="card-grid">
+            <div class="detail-card" v-for="item in activeData.modules || []" :key="item.id" :style="{ marginLeft: (item.depth || 0) * 12 + 'px' }">
+              <h3>
+                {{ item.segment || item.name }}
+                <span v-if="moduleKindLabel(item.kind)" class="kind-badge" :class="'kind-' + item.kind">{{ moduleKindLabel(item.kind) }}</span>
+              </h3>
+              <p>
+                {{ item.total_file_count ?? item.file_count }} {{ t('个文件') }} · {{ item.primary_language || t('未知语言') }}
+                <template v-if="item.kind !== 'root' && (item.afferent || item.efferent)"> · {{ t('被依赖 {afferent} · 依赖 {efferent}', { afferent: item.afferent ?? 0, efferent: item.efferent ?? 0 }) }}</template>
+              </p>
+              <div v-if="moduleLayers(item).length" class="layer-chips">
+                <span v-for="layer in moduleLayers(item)" :key="layer.name" class="layer-chip">{{ layer.name }} <small>{{ layer.count }}</small></span>
+              </div>
+              <p v-if="item.layer_conflict" class="layer-conflict">{{ t('{count} 个文件名与目录分层不一致', { count: item.layer_conflict }) }}</p>
+              <code v-if="item.path">{{ item.path }}</code>
+            </div>
+          </div>
         </template>
 
         <template v-else-if="activeSection === 'core_entities'">
@@ -406,7 +422,7 @@ function snapshotIdFromRoute(route) {
 const SECTIONS = [
   ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
   ['terms', '术语识别', '阶段1', '从 API 契约、实体定义和前端页面生成按可信度排序的业务术语'],
-  ['module_topology', '模块拓扑', '阶段1', '模块聚类、依赖关系与耦合度'],
+  ['module_topology', '模块拓扑', '阶段1', '业务域与实体划分、依赖关系与耦合度'],
   ['core_entities', '核心实体', '阶段1', '按字段、类型关系与领域语义识别核心领域对象'],
   ['test_coverage', '测试缺口', '阶段1', '生产函数覆盖率与未覆盖列表'],
   ['layer_violations', '分层违规', '阶段1', '跨层依赖和架构边界违规'],
@@ -480,6 +496,19 @@ export default {
     },
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.activeSection === 'terms' ? this.terms : (this.report?.[this.activeSection] ?? {}) },
+    moduleStats() {
+      const counts = {}
+      for (const module of this.activeData?.modules || []) {
+        const kind = module.kind || 'module'
+        counts[kind] = (counts[kind] || 0) + 1
+      }
+      const stats = []
+      if (counts.domain) stats.push({ key: 'domain', label: this.t('个业务域'), value: counts.domain })
+      if (counts.entity) stats.push({ key: 'entity', label: this.t('个实体'), value: counts.entity })
+      if (counts.shared) stats.push({ key: 'shared', label: this.t('个公共模块'), value: counts.shared })
+      if (!stats.length) stats.push({ key: 'module', label: this.t('个模块'), value: this.activeData?.module_count || 0 })
+      return stats
+    },
     llmJobActive() { return ['pending', 'running'].includes(this.llmJob?.status) },
     batchActive() { return ['queued', 'running'].includes(this.batchJob?.status) },
     llmProgress() {
@@ -780,6 +809,13 @@ export default {
       }
     },
     isDisabled(value) { return Boolean(value && !Array.isArray(value) && value.note) },
+    moduleKindLabel(kind) {
+      const labels = { domain: '业务域', entity: '实体', shared: '公共', root: '根模块' }
+      return labels[kind] ? this.t(labels[kind]) : ''
+    },
+    moduleLayers(item) {
+      return Object.entries(item.layers || {}).map(([name, count]) => ({ name, count }))
+    },
     formatJson(value) { return JSON.stringify(value, null, 2) },
     endpointKey(item, index) { return `${item.method || ''}-${item.path || ''}-${index}` },
     explanationKey(item) { return [this.repoName || '', item.repository || '', item.method || '', item.path || '', item.handler || ''].join('||') },
@@ -1187,6 +1223,14 @@ button:disabled { opacity: .55; cursor: wait; }
 .detail-card { border: 1px solid #eee; padding: 13px; border-radius: 6px; }
 .detail-card h3 { font-size: 14px; margin-bottom: 5px; }
 .detail-card p, .detail-card code { color: #888; font-size: 11px; }
+.kind-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #eef1f6; color: #55637a; font-size: 9px; font-weight: 500; vertical-align: middle; }
+.kind-badge.kind-domain { background: #fff0f2; color: #c82d48; }
+.kind-badge.kind-entity { background: #eef7f0; color: #2f7a4d; }
+.kind-badge.kind-shared { background: #f4f0fb; color: #6a4ea8; }
+.layer-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.layer-chip { padding: 1px 6px; border-radius: 8px; border: 1px solid #e5e8ee; color: #667085; font-size: 10px; }
+.layer-chip small { color: #9aa3b2; }
+.layer-conflict { color: #b7791f; font-size: 10px; margin-top: 4px; }
 .table-wrap { overflow-x: auto; }
 .table-tools { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .terms-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 12px; background: #f8f9fc; border-radius: 6px; color: #667085; font-size: 13px; }
