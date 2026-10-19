@@ -71,6 +71,10 @@ class SnapshotQueryService:
             # page facts; project them from the bundle's frozen sources so
             # every consumer (terms included) sees the same page set.
             facts = self._with_frontend_pages(handle, facts)
+            # Module topology is a pure function of the frozen CodeGraph, so an
+            # extractor that changed after this snapshot was published can be
+            # projected at the read boundary rather than republishing facts.
+            facts = self._with_module_topology(handle, facts)
             if section is None:
                 # API contracts were historically persisted with only the
                 # first 100 endpoints.  Keep the normal knowledge boundary
@@ -99,6 +103,31 @@ class SnapshotQueryService:
         if not pages:
             return facts
         return {**facts, "frontend_pages": {"page_count": len(pages), "pages": pages}}
+
+    def _with_module_topology(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
+        """Serve the current module topology for an older snapshot's report.
+
+        The layout and its coupling derive only from the frozen CodeGraph, so
+        the current extractor can answer for a snapshot published by an earlier
+        one without touching the immutable facts.  A report already carrying
+        the current ``MODULE_TOPOLOGY_VERSION`` is returned untouched.
+        """
+        from codeevolution.analysis.knowledge.module_topology import (
+            MODULE_TOPOLOGY_VERSION,
+            ModuleTopologyExtractor,
+            serialize_module_topology,
+        )
+
+        existing = facts.get("module_topology")
+        if isinstance(existing, dict) and existing.get("version") == MODULE_TOPOLOGY_VERSION:
+            return facts
+        try:
+            topology = ModuleTopologyExtractor(handle.graph).extract()
+        except Exception:
+            return facts
+        if not topology.modules:
+            return facts
+        return {**facts, "module_topology": serialize_module_topology(topology)}
 
     def api_contract(self, snapshot_id: str) -> dict:
         """Return the complete API contract, including legacy-truncated facts.

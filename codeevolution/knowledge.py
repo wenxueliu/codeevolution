@@ -13,7 +13,10 @@ from .analysis.knowledge.dependencies import DependencyExtractor
 from .analysis.knowledge.frontend_pages import FrontendPageExtractor
 from .analysis.knowledge.heatmap import HeatmapExtractor
 from .analysis.knowledge.layer_rules import LayerRuleExtractor
-from .analysis.knowledge.module_topology import ModuleTopologyExtractor
+from .analysis.knowledge.module_topology import (
+    ModuleTopologyExtractor,
+    serialize_module_topology,
+)
 from .analysis.knowledge.semantic import SemanticExtractor
 from .analysis.knowledge.test_gaps import TestGapExtractor
 from .codegraph_reader import CodeGraphReader, FunctionDef
@@ -134,31 +137,7 @@ class KnowledgeExtractor:
                     for name, items in api.resource_groups.items()
                 },
             },
-            "module_topology": {
-                "module_count": len(modules.modules),
-                "coupling_score": modules.coupling_score,
-                "modules": [
-                    {
-                        key: module[key]
-                        for key in (
-                            "id",
-                            "name",
-                            "segment",
-                            "path",
-                            "parent_id",
-                            "depth",
-                            "file_count",
-                            "total_file_count",
-                            "primary_language",
-                            "cohesion",
-                            "afferent",
-                            "efferent",
-                        )
-                    }
-                    for module in modules.modules
-                ],
-                "dependencies": modules.dependency_graph,
-            },
+            "module_topology": serialize_module_topology(modules),
             "core_entities": [
                 {
                     "name": item.name,

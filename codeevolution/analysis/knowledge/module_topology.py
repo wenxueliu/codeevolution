@@ -148,6 +148,38 @@ _CONTAINER_PARTS = frozenset(
 _REPO_ROOT = PurePosixPath(".")
 _ROOT_ID = "."
 
+# Bumped whenever the layout or the coupling semantics change. Published reports
+# carry it and read-boundary projections compare against it, so an updated
+# extractor can supersede a stale topology without republishing a snapshot.
+MODULE_TOPOLOGY_VERSION = "module-topology/v2"
+
+# The canonical per-module report shape, shared by analysis and by reads.
+_MODULE_FIELDS = (
+    "id",
+    "name",
+    "segment",
+    "path",
+    "parent_id",
+    "depth",
+    "file_count",
+    "total_file_count",
+    "primary_language",
+    "cohesion",
+    "afferent",
+    "efferent",
+)
+
+
+def serialize_module_topology(topology: ModuleTopology) -> dict[str, Any]:
+    """Render a ``ModuleTopology`` as the stored and served report shape."""
+    return {
+        "version": MODULE_TOPOLOGY_VERSION,
+        "module_count": len(topology.modules),
+        "coupling_score": topology.coupling_score,
+        "modules": [{key: module[key] for key in _MODULE_FIELDS} for module in topology.modules],
+        "dependencies": topology.dependency_graph,
+    }
+
 
 class ModuleTopologyExtractor:
     """Derive a module tree from the layout, then annotate it with coupling."""
