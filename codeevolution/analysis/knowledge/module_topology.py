@@ -91,6 +91,31 @@ _NON_SOURCE_DIRS = frozenset(
     }
 )
 
+_TEST_DIRS = frozenset(
+    {
+        "test",
+        "tests",
+        "__tests__",
+        "testing",
+        "testdata",
+        "test-data",
+        "spec",
+        "specs",
+        "cypress",
+        "playwright",
+        "__mocks__",
+        "mocks",
+        "fixtures",
+    }
+)
+
+# Case-sensitive on purpose: ``FooIT.java`` is a test, ``Await.java`` is not.
+_TEST_FILE_PATTERN = re.compile(
+    r"^(?:test_.*\.py|conftest\.py|.*_test\.(?:py|go|rs|rb|exs|js|ts)|"
+    r".*\.(?:spec|test)\.(?:js|mjs|cjs|jsx|ts|tsx|vue)|"
+    r".*(?:Test|Tests|IT|Spec|TestCase)\.(?:java|kt|scala|cs|php))$"
+)
+
 # File kinds that never define a code module.
 _NON_SOURCE_SUFFIXES = (
     ".md",
@@ -375,11 +400,30 @@ class ModuleTopologyExtractor:
         self, records: list[tuple[str, str]], all_paths: list[str]
     ) -> list[tuple[str, str]]:
         candidates = [
-            (path, language) for path, language in records if self.is_source_file(path, language)
+            (path, language)
+            for path, language in records
+            if self.is_source_file(path, language) and not self.is_test_path(path)
         ]
         if candidates:
             return candidates
-        return [(path, self._language_of(path)) for path in all_paths if self.is_source_file(path)]
+        return [
+            (path, self._language_of(path))
+            for path in all_paths
+            if self.is_source_file(path) and not self.is_test_path(path)
+        ]
+
+    @staticmethod
+    def is_test_path(path: str) -> bool:
+        """True for files that only exercise code rather than implement it.
+
+        Tests are excluded from the module topology: they mirror production
+        modules instead of forming business capabilities, and counting them
+        doubles the tree while hiding which file actually implements what.
+        """
+        parts = PurePosixPath(path).parts
+        if any(part.lower() in _TEST_DIRS for part in parts[:-1]):
+            return True
+        return bool(_TEST_FILE_PATTERN.match(parts[-1]) if parts else False)
 
     @classmethod
     def is_source_file(cls, path: str, language: str = "") -> bool:

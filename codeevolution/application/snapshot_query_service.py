@@ -142,10 +142,33 @@ class SnapshotQueryService:
                 "model": record.get("model", ""),
                 "prompt_version": record.get("prompt_version", ""),
                 "created_at": record.get("created_at", ""),
-                "stats": (taxonomy or {}).get("stats", {}),
+                "stats": self._taxonomy_stats((taxonomy or {}).get("stats"), serialized["modules"]),
                 "issues": (taxonomy or {}).get("issues", []),
             }
         return {**facts, "module_topology": serialized}
+
+    @staticmethod
+    def _taxonomy_stats(stored: dict | None, modules: list[dict]) -> dict:
+        """Recount a stored taxonomy against the modules actually served.
+
+        The stored numbers describe the file inventory at classification time.
+        The topology filter (tests, generated files) can change since then, so
+        the counters are recomputed instead of reporting a total the tree no
+        longer contains.
+        """
+        stats = dict(stored or {})
+        total = sum(len(module.get("files") or []) for module in modules)
+        unclassified = sum(
+            len(module.get("files") or [])
+            for module in modules
+            if module["id"].startswith("shared/unclassified")
+        )
+        stats["file_count"] = total
+        stats["assigned_count"] = total - unclassified
+        stats["unclassified_count"] = unclassified
+        stats["domain_count"] = sum(1 for module in modules if module["kind"] == "domain")
+        stats["entity_count"] = sum(1 for module in modules if module["kind"] == "entity")
+        return stats
 
     def module_evidence(self, snapshot_id: str, module_id: str) -> dict:
         """Files and declared symbols behind one module.
@@ -206,6 +229,10 @@ class SnapshotQueryService:
             path = str(row.get("file_path") or "")
             name = str(row.get("name") or "")
             if not path or not name:
+                continue
+            if name.startswith("_"):
+                # Private helpers are implementation detail, not the public
+                # surface a reviewer uses to recognise what the module does.
                 continue
             if kind == "method":
                 methods[path] = methods.get(path, 0) + 1

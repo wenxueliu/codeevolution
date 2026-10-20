@@ -289,3 +289,42 @@ GET /api/module-evidence?snapshot_id=...&module_id=...
   文件下直接列出类/函数（如 `codegraph_capture.py` 的 `CodeGraphCapture` 与 7 个函数）。
 - `harness_framework`：路径模式同样按顶层目录 → 子目录 → 文件 → 符号展开。
 - `/api/module-evidence` 实测 70–180ms；后端 297 passed，前端 60 passed。
+
+---
+
+## 11. 追加：只看实现，只看公开面
+
+### 11.1 排除测试代码
+
+`codehistory` 208 个源文件里有 59 个是测试（`tests/` 80 个文件里 79 个是代码）。
+测试镜像生产模块，不构成业务能力，却让树几乎翻倍，还把"这个实体到底由哪个文件实现"
+稀释成"可能是一堆 test_*"。
+
+`ModuleTopologyExtractor.is_test_path` 在 `_source_records` 阶段过滤，判据：
+
+- 路径段包含 `test`/`tests`/`__tests__`/`testing`/`testdata`/`spec`/`specs`/
+  `cypress`/`playwright`/`__mocks__`/`mocks`/`fixtures`；
+- 文件名匹配 `test_*.py`、`conftest.py`、`*_test.{py,go,rs,rb,exs,js,ts}`、
+  `*.{spec,test}.{js,ts,tsx,jsx,vue,mjs,cjs}`、`*{Test,Tests,IT,Spec,TestCase}.{java,kt,scala,cs,php}`。
+- 文件名匹配**区分大小写**：`FooIT.java` 是测试，`Await.java` 不是。
+
+效果：`codehistory` 208 → 149 个文件，124 → 97 个模块，实体 111 → 84。
+
+### 11.2 只展示公开符号
+
+`/api/module-evidence` 只返回不以 `_` 开头的类/函数/组件；方法同样只计公开方法。
+证据链的用途是"让人一眼认出这个模块做什么"，`_file_sha256`、`_canonical` 这类
+内部工具只会淹没结论。`codegraph` 实体因此从 11 个符号收敛到 4 个真正对外的东西。
+
+### 11.3 统计口径同步
+
+分类结果落库时的 `stats` 记录的是当时的文件清单，而拓扑过滤（测试、生成物）会变化。
+读边界用实际服务的模块重新计算 `file_count / assigned_count / unclassified_count /
+domain_count / entity_count`，避免页面出现"208/208 归类"但树里只有 149 个文件的矛盾。
+
+### 11.4 已验证
+
+- `codehistory`：11 个业务域、84 个实体、149/149 文件、0 个测试文件。
+- 展开 `codegraph` 实体：4 个实现文件，符号只剩 `CodeGraphCapture`、`freeze_sources` 等公开面。
+- `harness_framework`：`tests/`（80 个文件）整体消失，顶层只剩 4 个真实模块。
+- 297 passed, 1 skipped；ruff clean。
