@@ -175,3 +175,70 @@ cohesion, afferent, efferent, layer_conflict
 
 - 模块粒度：**两层树（域 → 实体）** —— 用户已选。
 - 其余均按第 4 节默认值执行，如无异议即进入实现。
+
+---
+
+## 9. 追加：LLM 业务分类（按需覆盖）
+
+### 9.1 触发的问题
+
+第 4.2 节的接受判据只认 CamelCase 域前缀（`PmsProductController`）。实测
+`codehistory`（snake_case，208 个源文件）识别出 **0 个域**，恒走路径骨架；
+即便把规则扩展到 snake_case，前 5 大域覆盖率也只有 20%，仍低于 50%。
+
+结论：**业务划分是语义问题，正则只能做"文件名里有没有域前缀"的代理判断**。
+因此保留正则作为快速通道，新增按需的 LLM 分类覆盖层。
+
+### 9.2 分层
+
+```
+启发式 (regex)  ──命中──> 业务树，source = heuristic
+      │未命中
+      └──> 目录骨架，source = paths + 提示"可请求 LLM 分类"
+
+用户点击「按业务分类（LLM）」
+      └──> source = llm（存库，读边界覆盖）
+```
+
+- 默认路径不变：分析阶段**不调用** LLM。
+- LLM 结果存 `business_taxonomies`，按 `snapshot_id` 唯一；删除即回到启发式/路径骨架。
+- `MODULE_TOPOLOGY_VERSION` 升至 `module-topology/v4`（新增 `source`、`label`、`label_en`、`description`）。
+
+### 9.3 为什么是两段式
+
+直接把 208 条路径 + 符号交给 7B 模型，实测只归类 12 个文件，且 8192 token 输出耗尽后 JSON 截断。
+改为：
+
+1. **确定性抽实体**：文件名剥掉分层词（`service`/`sqlite`/`resolver`…）得到实体键，
+   `PmsProductServiceImpl` 与 `snapshot_query_service` 用同一套规则。
+   这一步不需要模型，且保证每个文件都有归属候选。
+2. **模型提域**：只给目录摘要，输出 6–12 个业务域（不含文件清单）。
+3. **模型归属**：按 40 个实体一批，输出 `实体 -> 域 id`；漏掉的实体重问最多 3 轮。
+4. **确定性展开**：实体 → 文件由代码完成。
+
+实测 `codehistory`：9 个域 5.5s，4 批实体合计约 40s，最终 208/208 文件归类。
+
+### 9.4 校验与失败可见
+
+- 模型只能划分给定实体：未知/重复实体丢弃；未知域 id 丢弃。
+- 未提及的实体 → `shared/unclassified`，并在 `issues` 与 UI 提示条里显示。
+- 一次重试（域调用）后仍无域 → 任务 `failed`，错误写进 `job.error_message`。
+- 缓存键：`snapshot_id + prompt_version + model + inventory_digest`；命中则 `cached: true`，不重复计费。
+
+### 9.5 接口
+
+```
+POST   /api/business-taxonomy   {snapshot_id, hint?}  -> 202 {job}
+GET    /api/business-taxonomy?snapshot_id=...         -> {taxonomy, job}
+DELETE /api/business-taxonomy?snapshot_id=...         -> {deleted}
+```
+
+`hint` 是可选的一句话业务背景，与 `pyproject.toml` 的 description 一起进提示词。
+任务复用现有 LLM 知识抽取的持久化模式（`business_taxonomy_jobs`，进程重启可恢复）。
+
+### 9.6 已验证
+
+- `codehistory`：11 个域、124 个模块、208/208 文件归类，`source = llm`。
+- 删除分类后立即回到 13 个目录模块，`source = paths`。
+- `harness_framework`：仍为路径骨架，UI 显示「按业务分类（LLM）」入口。
+- 中英文界面均验证；后端 `297 passed, 1 skipped`，前端 `60 passed`。

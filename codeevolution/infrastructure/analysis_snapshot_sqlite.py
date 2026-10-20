@@ -37,7 +37,7 @@ from codeevolution.domain.analysis_snapshot import (
 from codeevolution.domain.topology import canonical_aliases, canonical_digest
 from codeevolution.platform import ensure_supported_storage_path, set_private_permissions
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DEFAULT_TOPOLOGY_RULES_DIGEST = canonical_digest({"schema": "topology-rules/v1", "rules": []})
 
 # Retention is deliberately expressed in one place so an administrator can
@@ -147,6 +147,35 @@ CREATE INDEX IF NOT EXISTS idx_llm_knowledge_jobs_snapshot
     ON llm_knowledge_jobs(repository_snapshot_id, requested_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_active_llm_knowledge_job
     ON llm_knowledge_jobs(repository_snapshot_id)
+    WHERE status IN ('pending','running');
+"""
+
+_MIGRATION_5 = """
+CREATE TABLE IF NOT EXISTS business_taxonomies (
+    repository_snapshot_id TEXT PRIMARY KEY
+        REFERENCES repository_analysis_snapshots(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    inventory_digest TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS business_taxonomy_jobs (
+    id TEXT PRIMARY KEY,
+    repository_snapshot_id TEXT NOT NULL
+        REFERENCES repository_analysis_snapshots(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed')),
+    progress_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT,
+    error_message TEXT,
+    requested_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_business_taxonomy_jobs_snapshot
+    ON business_taxonomy_jobs(repository_snapshot_id, requested_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_business_taxonomy_job
+    ON business_taxonomy_jobs(repository_snapshot_id)
     WHERE status IN ('pending','running');
 """
 
@@ -606,6 +635,7 @@ class AnalysisSnapshotSQLiteStore:
             # Keep this migration idempotent so databases created by older
             # versions and fresh databases both get durable LLM job state.
             connection.executescript(_MIGRATION_4)
+            connection.executescript(_MIGRATION_5)
             if version < SCHEMA_VERSION:
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
@@ -1421,6 +1451,200 @@ class AnalysisSnapshotSQLiteStore:
         with self.connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM llm_knowledge_jobs WHERE status='pending' ORDER BY requested_at,id"
+            ).fetchall()
+        return [self._llm_job(row) for row in rows]  # type: ignore[list-item]
+
+    # ------------------------------------------------- business taxonomy
+
+    def get_business_taxonomy(self, snapshot_id: str) -> dict[str, Any] | None:
+        """The stored LLM classification overriding the deterministic layout."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM business_taxonomies WHERE repository_snapshot_id=?",
+                (snapshot_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["payload"] = json.loads(item.pop("payload_json") or "{}")
+        return item
+
+    def save_business_taxonomy(
+        self,
+        snapshot_id: str,
+        *,
+        model: str,
+        prompt_version: str,
+        inventory_digest: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if not connection.execute(
+                    "SELECT 1 FROM repository_analysis_snapshots WHERE id=? AND deletion_state='active'",
+                    (snapshot_id,),
+                ).fetchone():
+                    raise KeyError(snapshot_id)
+                connection.execute(
+                    """INSERT INTO business_taxonomies
+                       (repository_snapshot_id,model,prompt_version,inventory_digest,
+                        payload_json,created_at)
+                       VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(repository_snapshot_id) DO UPDATE SET
+                         model=excluded.model,
+                         prompt_version=excluded.prompt_version,
+                         inventory_digest=excluded.inventory_digest,
+                         payload_json=excluded.payload_json,
+                         created_at=excluded.created_at""",
+                    (
+                        snapshot_id,
+                        model,
+                        prompt_version,
+                        inventory_digest,
+                        _canonical_json(payload),
+                        now,
+                    ),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_business_taxonomy(snapshot_id)  # type: ignore[return-value]
+
+    def delete_business_taxonomy(self, snapshot_id: str) -> bool:
+        with self.connection() as connection, connection:
+            cursor = connection.execute(
+                "DELETE FROM business_taxonomies WHERE repository_snapshot_id=?",
+                (snapshot_id,),
+            )
+        return cursor.rowcount > 0
+
+    def get_business_taxonomy_job(
+        self, snapshot_id: str, *, job_id: str | None = None
+    ) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            if job_id:
+                row = connection.execute(
+                    "SELECT * FROM business_taxonomy_jobs WHERE id=? AND repository_snapshot_id=?",
+                    (job_id, snapshot_id),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT * FROM business_taxonomy_jobs WHERE repository_snapshot_id=? "
+                    "ORDER BY requested_at DESC, id DESC LIMIT 1",
+                    (snapshot_id,),
+                ).fetchone()
+        return self._llm_job(row)
+
+    def get_business_taxonomy_job_by_id(self, job_id: str) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM business_taxonomy_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+        return self._llm_job(row)
+
+    def create_business_taxonomy_job(self, snapshot_id: str, *, hint: str = "") -> dict[str, Any]:
+        job_id = str(uuid4())
+        now = utc_now()
+        progress = {
+            "percent": 0,
+            "completed": 0,
+            "total": 1,
+            "stage": "queued",
+            "hint": hint.strip()[:2000],
+        }
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if not connection.execute(
+                    "SELECT 1 FROM repository_analysis_snapshots WHERE id=? AND deletion_state='active'",
+                    (snapshot_id,),
+                ).fetchone():
+                    raise KeyError(snapshot_id)
+                active = connection.execute(
+                    "SELECT * FROM business_taxonomy_jobs WHERE repository_snapshot_id=? "
+                    "AND status IN ('pending','running') ORDER BY requested_at DESC LIMIT 1",
+                    (snapshot_id,),
+                ).fetchone()
+                if active is not None:
+                    connection.commit()
+                    return self._llm_job(active)  # type: ignore[return-value]
+                connection.execute(
+                    """INSERT INTO business_taxonomy_jobs
+                       (id,repository_snapshot_id,status,progress_json,requested_at)
+                       VALUES (?,?, 'pending', ?, ?)""",
+                    (job_id, snapshot_id, _canonical_json(progress), now),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.get_business_taxonomy_job(snapshot_id, job_id=job_id)  # type: ignore[return-value]
+
+    def update_business_taxonomy_job(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        progress: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> dict[str, Any] | None:
+        if status is not None and status not in {"pending", "running", "completed", "failed"}:
+            raise SnapshotStoreError("invalid business taxonomy job status")
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM business_taxonomy_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            next_status = status or row["status"]
+            next_progress = (
+                progress if progress is not None else json.loads(row["progress_json"] or "{}")
+            )
+            next_result = (
+                result
+                if result is not None
+                else (json.loads(row["result_json"]) if row["result_json"] else None)
+            )
+            started_at = row["started_at"] or (utc_now() if next_status == "running" else None)
+            completed_at = (
+                utc_now() if next_status in {"completed", "failed"} else row["completed_at"]
+            )
+            connection.execute(
+                """UPDATE business_taxonomy_jobs SET status=?,progress_json=?,result_json=?,
+                   error_message=?,started_at=?,completed_at=? WHERE id=?""",
+                (
+                    next_status,
+                    _canonical_json(next_progress),
+                    _canonical_json(next_result) if next_result is not None else None,
+                    error_message if error_message is not None else row["error_message"],
+                    started_at,
+                    completed_at,
+                    job_id,
+                ),
+            )
+            connection.commit()
+        return self.get_business_taxonomy_job(row["repository_snapshot_id"], job_id=job_id)
+
+    def recover_interrupted_business_taxonomy_jobs(self) -> list[str]:
+        with self.connection() as connection, connection:
+            rows = connection.execute(
+                "SELECT id FROM business_taxonomy_jobs WHERE status IN ('pending','running')"
+            ).fetchall()
+            connection.execute(
+                "UPDATE business_taxonomy_jobs SET status='pending',started_at=NULL,"
+                "completed_at=NULL WHERE status IN ('pending','running')"
+            )
+        return [row["id"] for row in rows]
+
+    def list_pending_business_taxonomy_jobs(self) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM business_taxonomy_jobs WHERE status='pending' "
+                "ORDER BY requested_at,id"
             ).fetchall()
         return [self._llm_job(row) for row in rows]  # type: ignore[list-item]
 

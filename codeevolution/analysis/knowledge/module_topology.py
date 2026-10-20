@@ -155,7 +155,7 @@ _ENTITY_DEPTH = 2
 # Bumped whenever the layout or the coupling semantics change. Published reports
 # carry it and read-boundary projections compare against it, so an updated
 # extractor can supersede a stale topology without republishing a snapshot.
-MODULE_TOPOLOGY_VERSION = "module-topology/v3"
+MODULE_TOPOLOGY_VERSION = "module-topology/v4"
 
 # File-name suffixes and directory names that name an architectural layer
 # rather than a business entity.  ``impl``/``serviceimpl`` collapse onto the
@@ -226,6 +226,9 @@ _MODULE_FIELDS = (
     "cohesion",
     "afferent",
     "efferent",
+    "label",
+    "label_en",
+    "description",
 )
 
 
@@ -235,6 +238,7 @@ def serialize_module_topology(topology: ModuleTopology) -> dict[str, Any]:
         "version": MODULE_TOPOLOGY_VERSION,
         "module_count": len(topology.modules),
         "coupling_score": topology.coupling_score,
+        "source": getattr(topology, "source", "paths"),
         "modules": [{key: module[key] for key in _MODULE_FIELDS} for module in topology.modules],
         "dependencies": topology.dependency_graph,
     }
@@ -249,16 +253,24 @@ class ModuleTopologyExtractor:
     def __init__(self, source: _QuerySource | Callable[[], ModuleTopology]):
         self._source = source
 
-    def extract(self, resolution: float = 0.8, max_sub_depth: int | None = None) -> ModuleTopology:
+    def extract(
+        self,
+        resolution: float = 0.8,
+        max_sub_depth: int | None = None,
+        taxonomy: dict[str, Any] | None = None,
+    ) -> ModuleTopology:
         """Build the module topology.
 
         ``resolution`` is accepted for backward compatibility with the former
         Louvain clustering and no longer affects the result.
 
-        Two layouts are possible.  When file names carry a business domain the
-        topology is ``domain -> entity`` and the architectural layer becomes a
-        per-module attribute.  Otherwise the directory skeleton is used, which
-        is already the right answer for a repository organised by business.
+        Three layouts are possible, in decreasing order of signal quality:
+
+        * ``taxonomy`` (LLM) -- file names carry no business prefix, so the
+          classification was decided semantically and is stored per snapshot.
+        * ``heuristic`` -- file names carry a business prefix such as ``Pms``.
+        * ``paths`` -- the directory skeleton, which is already the right
+          answer for a repository organised by business directories.
         """
         if callable(self._source) and not hasattr(self._source, "module_import_edges"):
             return self._source()
@@ -272,13 +284,21 @@ class ModuleTopologyExtractor:
             return ModuleTopology()
 
         source_records = self._source_records(records, all_paths)
-        assignments = self._business_assignments(source_records)
         scope_depth: int | None
         group_depth: int | None
-        if self._accepts_business_layout(source_records, assignments):
+        source = "paths"
+        assignments = self._business_assignments(source_records)
+        if taxonomy:
+            assignments = self._taxonomy_assignments(source_records, taxonomy)
             modules, meta, leaf_of = self._business_layout(source_records, assignments)
+            self._apply_taxonomy_labels(modules, taxonomy)
             # Dependencies between entities, coupling ratio between domains.
             scope_depth, group_depth = _ENTITY_DEPTH, _DOMAIN_DEPTH
+            source = "llm"
+        elif self._accepts_business_layout(source_records, assignments):
+            modules, meta, leaf_of = self._business_layout(source_records, assignments)
+            scope_depth, group_depth = _ENTITY_DEPTH, _DOMAIN_DEPTH
+            source = "heuristic"
         else:
             modules, meta, leaf_of = self._layout(source_records, all_paths, output_depth)
             scope_depth = group_depth = None
@@ -299,7 +319,13 @@ class ModuleTopologyExtractor:
             modules=modules,
             dependency_graph=meta["_dependencies"],
             coupling_score=meta["_coupling"],
+            source=source,
         )
+
+    def source_inventory(self) -> list[tuple[str, str]]:
+        """The filtered ``(path, language)`` list a taxonomy is validated against."""
+        records = self._file_records()
+        return self._source_records(records, [path for path, _ in records])
 
     # ------------------------------------------------------------------ graph
 
@@ -514,6 +540,9 @@ class ModuleTopologyExtractor:
             "layers": {},
             "layer_conflict": 0,
             "cohesion": 0.0,
+            "label": "",
+            "label_en": "",
+            "description": "",
         }
 
     @staticmethod
@@ -710,6 +739,70 @@ class ModuleTopologyExtractor:
 
         modules = [node for key, node in meta.items() if not key.startswith("_")]
         return modules, meta, leaf_of
+
+    @classmethod
+    def _taxonomy_assignments(
+        cls,
+        source_records: list[tuple[str, str]],
+        taxonomy: dict[str, Any],
+    ) -> list[tuple[str, str, str, str, str]]:
+        """Map an LLM taxonomy onto the frozen source list.
+
+        Any path the taxonomy does not mention stays in ``shared`` keyed by its
+        own entity name -- the tree must account for every file even when the
+        classifier missed it.
+        """
+        buckets: dict[str, tuple[str, str]] = {}
+        for domain in taxonomy.get("domains") or []:
+            domain_id = str(domain.get("id") or "")
+            for entity in domain.get("entities") or []:
+                entity_id = str(entity.get("id") or "")
+                for path in entity.get("files") or []:
+                    buckets.setdefault(str(path), (domain_id, entity_id))
+        for entry in taxonomy.get("shared") or []:
+            shared_id = str(entry.get("id") or "")
+            for path in entry.get("files") or []:
+                buckets.setdefault(str(path), ("", shared_id))
+
+        assignments = []
+        for path, language in source_records:
+            domain, entity = buckets.get(path, ("", ""))
+            suffix_layer, fallback_entity = cls._split_name(PurePosixPath(path).stem)
+            assignments.append(
+                (
+                    path,
+                    language,
+                    domain,
+                    entity or fallback_entity,
+                    suffix_layer or cls._directory_layer(path),
+                )
+            )
+        return assignments
+
+    @classmethod
+    def _apply_taxonomy_labels(cls, modules: list[dict], taxonomy: dict[str, Any]) -> None:
+        """Attach the model's display names to the modules it produced."""
+        labels: dict[str, dict] = {}
+        for domain in taxonomy.get("domains") or []:
+            domain_id = str(domain.get("id") or "")
+            if not domain_id:
+                continue
+            labels[domain_id] = domain
+            for entity in domain.get("entities") or []:
+                entity_id = str(entity.get("id") or "")
+                if entity_id:
+                    labels[f"{domain_id}/{entity_id}"] = entity
+        for entry in taxonomy.get("shared") or []:
+            shared_id = str(entry.get("id") or "")
+            if shared_id:
+                labels[f"{_SHARED_ID}/{shared_id}"] = entry
+        for module in modules:
+            label = labels.get(module["id"])
+            if not label:
+                continue
+            module["label"] = str(label.get("name") or "")
+            module["label_en"] = str(label.get("name_en") or "")
+            module["description"] = str(label.get("description") or "")
 
     # -------------------------------------------------------------- coupling
 

@@ -13,7 +13,11 @@ logger = logging.getLogger(__name__)
 
 class LLMClient(Protocol):
     def complete(
-        self, prompt: str, max_tokens: int = 800, temperature: float = 0.2
+        self,
+        prompt: str,
+        max_tokens: int = 800,
+        temperature: float = 0.2,
+        extra: dict | None = None,
     ) -> str | None: ...
 
 
@@ -31,7 +35,13 @@ class OpenAILLMClient:
     def __init__(self, config: dict):
         self.config = config
 
-    def complete(self, prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str | None:
+    def complete(
+        self,
+        prompt: str,
+        max_tokens: int = 800,
+        temperature: float = 0.2,
+        extra: dict | None = None,
+    ) -> str | None:
         started = time.monotonic()
         model = self.config.get("model", "")
         api_base = self.config.get("api_base", "")
@@ -91,6 +101,10 @@ class OpenAILLMClient:
                 "temperature": temperature,
                 "max_tokens": budget,
             }
+            if extra:
+                # e.g. {"response_format": {"type": "json_object"}} for
+                # structured-output tasks such as the business taxonomy.
+                kwargs.update(extra)
             if self.config.get("disable_thinking", True):
                 endpoint = (self.config.get("api_base") or None, self.config["model"])
                 if _THINKING_SUPPORT.get(endpoint) is not False:

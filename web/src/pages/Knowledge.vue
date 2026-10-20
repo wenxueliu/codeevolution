@@ -267,17 +267,43 @@
         </template>
 
         <template v-else-if="activeSection === 'module_topology'">
+          <div class="topology-toolbar">
+            <span class="source-badge" :class="'source-' + topologySource">{{ t('分类来源：{source}', { source: topologySourceLabel }) }}</span>
+            <button v-if="topologySource !== 'llm'" class="primary" :disabled="taxonomyActive" @click="classifyBusiness">
+              {{ taxonomyActive ? t('正在用 LLM 分类') : t('按业务分类（LLM）') }}
+            </button>
+            <template v-else>
+              <button class="secondary" :disabled="taxonomyActive" @click="classifyBusiness">{{ t('重新分类') }}</button>
+              <button class="secondary" :disabled="taxonomyActive" @click="resetTaxonomy">{{ t('恢复目录分类') }}</button>
+            </template>
+          </div>
+          <div class="llm-progress" v-if="taxonomyActive" data-testid="taxonomy-progress">
+            <div class="llm-progress-heading"><span>{{ t('LLM 业务分类进行中') }}</span><strong>{{ taxonomyProgress }}%</strong></div>
+            <div class="llm-progress-track"><span :style="{ width: `${taxonomyProgress}%` }"></span></div>
+            <p>{{ t('当前阶段：{stage}', { stage: taxonomyStage }) }}</p>
+          </div>
+          <div class="llm-error" v-if="taxonomyJob?.status === 'failed'">
+            {{ t('LLM 业务分类失败') }}：{{ taxonomyJob.error_message || t('未知错误') }}
+          </div>
+          <div class="llm-note" v-if="taxonomyMeta">
+            {{ t('由 {model} 分类，{assigned}/{total} 个文件归入业务域', { model: taxonomyMeta.model, assigned: taxonomyMeta.stats?.assigned_count ?? 0, total: taxonomyMeta.stats?.file_count ?? 0 }) }}
+            <span v-if="taxonomyMeta.issues?.length"> · {{ taxonomyMeta.issues.join('；') }}</span>
+          </div>
+          <div class="notice" v-else-if="topologySource !== 'llm'">
+            {{ t('当前按目录骨架展示。文件名不含业务域前缀时，可让 LLM 按业务能力重新分类（一次调用，结果缓存）。') }}
+          </div>
           <div class="metrics"><div class="metric" v-for="stat in moduleStats" :key="stat.key">{{ stat.value }} <small>{{ stat.label }}</small></div><div class="metric">{{ activeData.coupling_score ?? '-' }} <small>{{ t('耦合度') }}</small></div></div>
           <div class="card-grid">
             <div class="detail-card" v-for="item in activeData.modules || []" :key="item.id" :style="{ marginLeft: (item.depth || 0) * 12 + 'px' }">
               <h3>
-                {{ item.segment || item.name }}
+                {{ moduleTitle(item) }}
                 <span v-if="moduleKindLabel(item.kind)" class="kind-badge" :class="'kind-' + item.kind">{{ moduleKindLabel(item.kind) }}</span>
               </h3>
               <p>
                 {{ item.total_file_count ?? item.file_count }} {{ t('个文件') }} · {{ item.primary_language || t('未知语言') }}
                 <template v-if="item.kind !== 'root' && (item.afferent || item.efferent)"> · {{ t('被依赖 {afferent} · 依赖 {efferent}', { afferent: item.afferent ?? 0, efferent: item.efferent ?? 0 }) }}</template>
               </p>
+              <p v-if="item.description" class="module-description">{{ item.description }}</p>
               <div v-if="moduleLayers(item).length" class="layer-chips">
                 <span v-for="layer in moduleLayers(item)" :key="layer.name" class="layer-chip">{{ layer.name }} <small>{{ layer.count }}</small></span>
               </div>
@@ -411,7 +437,7 @@
 <script>
 import UiState from '../components/UiState.vue'
 import CallChainTree from '../components/CallChainTree.vue'
-import { t } from '../i18n.js'
+import { locale, t } from '../i18n.js'
 
 function snapshotIdFromRoute(route) {
   return route?.query?.snapshot_id
@@ -473,6 +499,7 @@ export default {
       snapshotId,
       report: null, terms: [], termsLoading: false, activeSection: 'api_contract', llmLoaded: false,
       llmJob: null, llmPollTimer: null,
+      taxonomyJob: null, taxonomyPollTimer: null,
       projectCatalog: [], catalogLoading: false, catalogError: null,
       expandedKeys: new Set(), expandedEntityKeys: new Set(),
       endpointSearch: '', endpointMethod: '', endpointService: '', endpointPage: 1, endpointPageSize: 25,
@@ -510,6 +537,18 @@ export default {
       return stats
     },
     llmJobActive() { return ['pending', 'running'].includes(this.llmJob?.status) },
+    topologySource() { return this.activeData?.source || 'paths' },
+    topologySourceLabel() {
+      return this.t(({ llm: 'LLM 业务分类', heuristic: '文件名业务域', paths: '目录骨架' })[this.topologySource] || this.topologySource)
+    },
+    taxonomyMeta() { return this.activeData?.taxonomy || null },
+    taxonomyActive() { return ['pending', 'running'].includes(this.taxonomyJob?.status) },
+    taxonomyProgress() { return this.taxonomyJob?.progress?.percent ?? 0 },
+    taxonomyStage() {
+      const stage = String(this.taxonomyJob?.progress?.stage || '')
+      if (stage.startsWith('assignment')) return this.t('实体归属')
+      return this.t(({ queued: '排队中', inventory: '读取文件清单', domains: '提出业务域', classifying: '分类中', completed: '已完成', failed: '失败' })[stage] || stage || '排队中')
+    },
     batchActive() { return ['queued', 'running'].includes(this.batchJob?.status) },
     llmProgress() {
       const progress = this.llmJob?.progress || {}
@@ -581,6 +620,7 @@ export default {
   },
   beforeUnmount() {
     this.clearLlmPoll()
+    this.clearTaxonomyPoll()
     this.clearBatchPoll()
     for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
   },
@@ -642,7 +682,7 @@ export default {
       }
       await this.$runAsync(async () => {
         this.report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: includeLlm, complete: true })
-        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus(), this.loadTerms(), this.loadExplanationStatuses()])
+        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus(), this.loadTerms(), this.loadExplanationStatuses(), this.loadTaxonomyState()])
         for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
         this.explanationPollTimers = {}
         this.apiExplanations = {}
@@ -815,6 +855,70 @@ export default {
     },
     moduleLayers(item) {
       return Object.entries(item.layers || {}).map(([name, count]) => ({ name, count }))
+    },
+    moduleTitle(item) {
+      const zh = item.label || ''
+      const en = item.label_en || ''
+      const label = locale.value === 'en' ? (en || zh) : (zh || en)
+      return label || item.segment || item.name
+    },
+    async loadTaxonomyState() {
+      if (!this.snapshotId) return
+      try {
+        const data = await this.$api.get('/api/business-taxonomy', { snapshot_id: this.snapshotId })
+        this.taxonomyJob = data?.job || null
+        if (this.taxonomyActive) this.scheduleTaxonomyPoll()
+      } catch (err) {
+        this.taxonomyJob = null
+      }
+    },
+    async classifyBusiness() {
+      if (!window.confirm(this.t('LLM 业务分类会调用模型并产生费用，是否继续？'))) return
+      if (!this.snapshotId || this.taxonomyActive) return
+      try {
+        const response = await this.$api.request('/api/business-taxonomy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ snapshot_id: this.snapshotId }),
+        })
+        this.taxonomyJob = response?.job || response || null
+        this.scheduleTaxonomyPoll()
+      } catch (err) {
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('LLM 业务分类失败')
+        this.error = { message: detail }
+      }
+    },
+    async resetTaxonomy() {
+      if (!window.confirm(this.t('恢复目录骨架并删除已保存的 LLM 分类？'))) return
+      if (!this.snapshotId) return
+      try {
+        await this.$api.delete(`/api/business-taxonomy?snapshot_id=${encodeURIComponent(this.snapshotId)}`)
+        this.taxonomyJob = null
+        await this.load(false)
+      } catch (err) {
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('恢复目录分类失败')
+        this.error = { message: detail }
+      }
+    },
+    clearTaxonomyPoll() {
+      if (this.taxonomyPollTimer) clearTimeout(this.taxonomyPollTimer)
+      this.taxonomyPollTimer = null
+    },
+    scheduleTaxonomyPoll() {
+      this.clearTaxonomyPoll()
+      this.taxonomyPollTimer = setTimeout(() => this.refreshTaxonomyStatus(), 1200)
+    },
+    async refreshTaxonomyStatus() {
+      this.taxonomyPollTimer = null
+      if (!this.snapshotId) return
+      try {
+        const data = await this.$api.get('/api/business-taxonomy', { snapshot_id: this.snapshotId })
+        this.taxonomyJob = data?.job || null
+        if (this.taxonomyActive) this.scheduleTaxonomyPoll()
+        else if (this.taxonomyJob?.status === 'completed') await this.load(false)
+      } catch (err) {
+        if (this.taxonomyActive) this.scheduleTaxonomyPoll()
+      }
     },
     formatJson(value) { return JSON.stringify(value, null, 2) },
     endpointKey(item, index) { return `${item.method || ''}-${item.path || ''}-${index}` },
@@ -1230,6 +1334,12 @@ button:disabled { opacity: .55; cursor: wait; }
 .layer-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .layer-chip { padding: 1px 6px; border-radius: 8px; border: 1px solid #e5e8ee; color: #667085; font-size: 10px; }
 .layer-chip small { color: #9aa3b2; }
+.topology-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.source-badge { padding: 3px 9px; border-radius: 10px; font-size: 12px; background: #eef1f6; color: #55637a; }
+.source-badge.source-llm { background: #eef7f0; color: #2f7a4d; }
+.source-badge.source-heuristic { background: #fff4e5; color: #8a5a12; }
+.llm-note { margin-bottom: 12px; padding: 8px 12px; border: 1px solid #dfe6ef; border-radius: 6px; background: #f7f9fc; color: #55637a; font-size: 12px; }
+.module-description { color: #667085; font-size: 12px; margin: 2px 0 4px; }
 .layer-conflict { color: #b7791f; font-size: 10px; margin-top: 4px; }
 .table-wrap { overflow-x: auto; }
 .table-tools { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }

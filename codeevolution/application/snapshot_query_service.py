@@ -111,6 +111,9 @@ class SnapshotQueryService:
         the current extractor can answer for a snapshot published by an earlier
         one without touching the immutable facts.  A report already carrying
         the current ``MODULE_TOPOLOGY_VERSION`` is returned untouched.
+
+        An LLM business taxonomy -- when one was requested for this snapshot --
+        outranks both the stored report and the deterministic classifier.
         """
         from codeevolution.analysis.knowledge.module_topology import (
             MODULE_TOPOLOGY_VERSION,
@@ -118,16 +121,43 @@ class SnapshotQueryService:
             serialize_module_topology,
         )
 
+        record = self._business_taxonomy(getattr(handle.snapshot, "id", ""))
         existing = facts.get("module_topology")
-        if isinstance(existing, dict) and existing.get("version") == MODULE_TOPOLOGY_VERSION:
+        if (
+            isinstance(existing, dict)
+            and existing.get("version") == MODULE_TOPOLOGY_VERSION
+            and not record
+        ):
             return facts
         try:
-            topology = ModuleTopologyExtractor(handle.graph).extract()
+            taxonomy = (record or {}).get("payload") or None
+            topology = ModuleTopologyExtractor(handle.graph).extract(taxonomy=taxonomy)
         except Exception:
             return facts
         if not topology.modules:
             return facts
-        return {**facts, "module_topology": serialize_module_topology(topology)}
+        serialized = serialize_module_topology(topology)
+        if record:
+            serialized["taxonomy"] = {
+                "model": record.get("model", ""),
+                "prompt_version": record.get("prompt_version", ""),
+                "created_at": record.get("created_at", ""),
+                "stats": (taxonomy or {}).get("stats", {}),
+                "issues": (taxonomy or {}).get("issues", []),
+            }
+        return {**facts, "module_topology": serialized}
+
+    def _business_taxonomy(self, snapshot_id: str) -> dict | None:
+        if not snapshot_id:
+            return None
+        store = getattr(self.resolver, "store", None)
+        getter = getattr(store, "get_business_taxonomy", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(snapshot_id)
+        except Exception:
+            return None
 
     def api_contract(self, snapshot_id: str) -> dict:
         """Return the complete API contract, including legacy-truncated facts.

@@ -124,6 +124,7 @@ def test_openapi_path_snapshot():
         "/api/business-rules",
         "/api/business-rules/generate",
         "/api/business-rules/{rule_id}/prompt",
+        "/api/business-taxonomy",
         "/api/call-tree/children",
         "/api/call-tree/rule",
         "/api/call-tree/rule/generate",

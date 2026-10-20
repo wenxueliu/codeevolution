@@ -878,6 +878,15 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
     def file_records(self) -> list[dict[str, Any]]:
         return self.query("SELECT path, language FROM files")
 
+    def file_symbols(self) -> list[dict[str, Any]]:
+        """Declared symbols per file, used to give a model classification context."""
+        return self.query(
+            """SELECT file_path, name, kind FROM nodes
+               WHERE file_path IS NOT NULL AND name IS NOT NULL
+                 AND kind IN ('class', 'function', 'method', 'component')
+               ORDER BY file_path, start_line"""
+        )
+
     def config_candidate_nodes(self) -> list[dict[str, Any]]:
         return self.query(
             """SELECT id, name, qualified_name, file_path, kind, start_line, decorators

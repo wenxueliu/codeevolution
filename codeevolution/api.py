@@ -255,6 +255,11 @@ class AnalysisRunCreateRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
 
 
+class BusinessTaxonomyRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=200)
+    hint: str = Field(default="", max_length=2000)
+
+
 class AnalysisRunRetryRequest(BaseModel):
     member_ids: list[str] | None = None
 
@@ -510,6 +515,15 @@ def get_llm_knowledge_scheduler():
     if runtime := dependencies.get("snapshot_runtime"):
         return runtime.llm_knowledge_scheduler
     return get_snapshot_runtime().llm_knowledge_scheduler
+
+
+def get_business_taxonomy_scheduler():
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("business_taxonomy_scheduler"):
+        return injected
+    if runtime := dependencies.get("snapshot_runtime"):
+        return runtime.business_taxonomy_scheduler
+    return get_snapshot_runtime().business_taxonomy_scheduler
 
 
 def get_snapshot_store():
@@ -1509,6 +1523,48 @@ def start_llm_knowledge_extraction(request: KnowledgeExtractionRequest):
         raise HTTPException(404, "repository snapshot not found") from error
     get_llm_knowledge_scheduler().submit(job["id"])
     return {"job": job}
+
+
+# ── LLM business taxonomy for module topology ──
+
+
+@app.get("/api/business-taxonomy")
+def read_business_taxonomy(snapshot_id: str):
+    """Return the stored classification (if any) and the latest job."""
+    store = get_snapshot_store()
+    if store.get_snapshot(snapshot_id) is None:
+        raise HTTPException(404, "repository snapshot not found")
+    return {
+        "taxonomy": store.get_business_taxonomy(snapshot_id),
+        "job": store.get_business_taxonomy_job(snapshot_id),
+    }
+
+
+@app.post("/api/business-taxonomy", status_code=202)
+def start_business_taxonomy(request: BusinessTaxonomyRequest):
+    """Start or reuse the on-demand classification job for a snapshot."""
+    from .semantic.config import get_llm_config
+
+    if not get_llm_config():
+        raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
+    store = get_snapshot_store()
+    if store.get_snapshot(request.snapshot_id) is None:
+        raise HTTPException(404, "repository snapshot not found")
+    try:
+        job = store.create_business_taxonomy_job(request.snapshot_id, hint=request.hint)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    get_business_taxonomy_scheduler().submit(job["id"])
+    return {"job": job}
+
+
+@app.delete("/api/business-taxonomy")
+def delete_business_taxonomy(snapshot_id: str):
+    """Drop the override so the deterministic layout is served again."""
+    store = get_snapshot_store()
+    if store.get_snapshot(snapshot_id) is None:
+        raise HTTPException(404, "repository snapshot not found")
+    return {"deleted": store.delete_business_taxonomy(snapshot_id)}
 
 
 # ── Evidence-backed terminology ──

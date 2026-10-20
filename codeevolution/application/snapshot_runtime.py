@@ -12,6 +12,10 @@ from codeevolution.application.analysis_run_service import (
     RepositoryCatalogService,
 )
 from codeevolution.application.analysis_scheduler import AnalysisScheduler
+from codeevolution.application.business_taxonomy_service import (
+    BusinessTaxonomyScheduler,
+    BusinessTaxonomyService,
+)
 from codeevolution.application.graph_artifact_scheduler import GraphArtifactScheduler
 from codeevolution.application.graph_artifact_service import GraphArtifactService
 from codeevolution.application.llm_knowledge_service import (
@@ -62,15 +66,23 @@ class SnapshotRuntime:
         self.graph_artifact_scheduler = GraphArtifactScheduler(self.graph_artifacts)
         self.llm_knowledge_service = LLMKnowledgeService(self.store, self.snapshot_queries)
         self.llm_knowledge_scheduler = LLMKnowledgeScheduler(self.llm_knowledge_service)
+        self.business_taxonomy_service = BusinessTaxonomyService(
+            self.store, self.snapshot_queries
+        )
+        self.business_taxonomy_scheduler = BusinessTaxonomyScheduler(
+            self.business_taxonomy_service
+        )
 
     def start(self) -> None:
         self.scheduler.start(recover=True)
         self.llm_knowledge_scheduler.start()
+        self.business_taxonomy_scheduler.start()
 
     def notify(self) -> None:
         self.scheduler.notify()
 
     def close(self) -> None:
         self.llm_knowledge_scheduler.close()
+        self.business_taxonomy_scheduler.close()
         self.graph_artifact_scheduler.close()
         self.scheduler.close()

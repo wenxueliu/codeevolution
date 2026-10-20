@@ -85,6 +85,8 @@ class ModuleTopology:
     modules: list[dict] = field(default_factory=list)
     dependency_graph: dict[str, list[str]] = field(default_factory=dict)
     coupling_score: float = 0.0
+    # "paths" | "heuristic" | "llm" -- how the module boundaries were decided.
+    source: str = "paths"
 
 
 @dataclass
