@@ -293,22 +293,41 @@
             {{ t('当前按目录骨架展示。文件名不含业务域前缀时，可让 LLM 按业务能力重新分类（一次调用，结果缓存）。') }}
           </div>
           <div class="metrics"><div class="metric" v-for="stat in moduleStats" :key="stat.key">{{ stat.value }} <small>{{ stat.label }}</small></div><div class="metric">{{ activeData.coupling_score ?? '-' }} <small>{{ t('耦合度') }}</small></div></div>
-          <div class="card-grid">
-            <div class="detail-card" v-for="item in activeData.modules || []" :key="item.id" :style="{ marginLeft: (item.depth || 0) * 12 + 'px' }">
-              <h3>
-                {{ moduleTitle(item) }}
-                <span v-if="moduleKindLabel(item.kind)" class="kind-badge" :class="'kind-' + item.kind">{{ moduleKindLabel(item.kind) }}</span>
-              </h3>
-              <p>
-                {{ item.total_file_count ?? item.file_count }} {{ t('个文件') }} · {{ item.primary_language || t('未知语言') }}
-                <template v-if="item.kind !== 'root' && (item.afferent || item.efferent)"> · {{ t('被依赖 {afferent} · 依赖 {efferent}', { afferent: item.afferent ?? 0, efferent: item.efferent ?? 0 }) }}</template>
-              </p>
-              <p v-if="item.description" class="module-description">{{ item.description }}</p>
-              <div v-if="moduleLayers(item).length" class="layer-chips">
-                <span v-for="layer in moduleLayers(item)" :key="layer.name" class="layer-chip">{{ layer.name }} <small>{{ layer.count }}</small></span>
-              </div>
-              <p v-if="item.layer_conflict" class="layer-conflict">{{ t('{count} 个文件名与目录分层不一致', { count: item.layer_conflict }) }}</p>
-              <code v-if="item.path">{{ item.path }}</code>
+          <div class="module-tree" data-testid="module-tree">
+            <p v-if="!moduleRows.length" class="tree-empty">{{ t('暂无模块') }}</p>
+            <div
+              v-for="row in moduleRows"
+              :key="row.key"
+              class="tree-row"
+              :class="[`tree-${row.type}`, `tree-level-${row.level}`]"
+              :style="{ paddingLeft: 10 + row.level * 18 + 'px' }"
+            >
+              <template v-if="row.type === 'module'">
+                <button
+                  v-if="row.hasChildren"
+                  class="tree-toggle"
+                  :aria-label="expandedModules.has(row.node.id) ? t('收起') : t('展开')"
+                  @click="toggleModule(row.node)"
+                >{{ expandedModules.has(row.node.id) ? '▾' : '▸' }}</button>
+                <span v-else class="tree-toggle tree-toggle-empty"></span>
+                <button class="tree-label" @click="toggleModule(row.node)">{{ moduleTitle(row.node) }}</button>
+                <span v-if="moduleKindLabel(row.node.kind)" class="kind-badge" :class="'kind-' + row.node.kind">{{ moduleKindLabel(row.node.kind) }}</span>
+                <span class="tree-meta">{{ row.node.total_file_count ?? row.node.file_count }} {{ t('个文件') }}</span>
+                <span v-if="row.node.kind !== 'root' && (row.node.afferent || row.node.efferent)" class="tree-meta">{{ t('被依赖 {afferent} · 依赖 {efferent}', { afferent: row.node.afferent ?? 0, efferent: row.node.efferent ?? 0 }) }}</span>
+                <span v-for="layer in moduleLayers(row.node)" :key="layer.name" class="layer-chip">{{ layer.name }} <small>{{ layer.count }}</small></span>
+                <span v-if="row.node.layer_conflict" class="layer-conflict">{{ t('{count} 个文件名与目录分层不一致', { count: row.node.layer_conflict }) }}</span>
+                <span v-if="row.node.description" class="tree-description">{{ row.node.description }}</span>
+              </template>
+              <template v-else-if="row.type === 'file'">
+                <span class="tree-file-mark">▪</span>
+                <code class="tree-file">{{ row.path }}</code>
+                <span v-if="evidenceLoading[row.moduleId]" class="tree-meta">{{ t('正在加载证据') }}</span>
+                <span v-else-if="row.symbolCount !== null" class="tree-meta">{{ t('{count} 个类/函数', { count: row.symbolCount }) }}</span>
+              </template>
+              <template v-else>
+                <span class="symbol-kind" :class="'sym-' + row.symbol.kind">{{ symbolKindLabel(row.symbol.kind) }}</span>
+                <span class="tree-symbol">{{ row.symbol.name }}</span>
+              </template>
             </div>
           </div>
         </template>
@@ -500,6 +519,7 @@ export default {
       report: null, terms: [], termsLoading: false, activeSection: 'api_contract', llmLoaded: false,
       llmJob: null, llmPollTimer: null,
       taxonomyJob: null, taxonomyPollTimer: null,
+      expandedModules: new Set(), moduleEvidence: {}, evidenceLoading: {},
       projectCatalog: [], catalogLoading: false, catalogError: null,
       expandedKeys: new Set(), expandedEntityKeys: new Set(),
       endpointSearch: '', endpointMethod: '', endpointService: '', endpointPage: 1, endpointPageSize: 25,
@@ -523,6 +543,54 @@ export default {
     },
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.activeSection === 'terms' ? this.terms : (this.report?.[this.activeSection] ?? {}) },
+    moduleTree() {
+      const nodes = new Map()
+      for (const item of this.activeData?.modules || []) nodes.set(item.id, { ...item, childIds: [] })
+      for (const node of nodes.values()) {
+        const parent = node.parent_id ? nodes.get(node.parent_id) : null
+        if (parent && parent.id !== node.id) parent.childIds.push(node.id)
+      }
+      const sortIds = ids => ids.sort((left, right) => {
+        const a = nodes.get(left) || {}
+        const b = nodes.get(right) || {}
+        return (b.total_file_count || 0) - (a.total_file_count || 0) || String(left).localeCompare(String(right))
+      })
+      for (const node of nodes.values()) sortIds(node.childIds)
+      const root = nodes.get('.')
+      const top = root
+        ? root.childIds
+        : [...nodes.values()].filter(node => !node.parent_id || !nodes.get(node.parent_id)).map(node => node.id)
+      return { nodes, top: sortIds(top) }
+    },
+    moduleRows() {
+      const { nodes, top } = this.moduleTree
+      const rows = []
+      const walk = (id, level) => {
+        const node = nodes.get(id)
+        if (!node) return
+        const files = node.files || []
+        const hasChildren = node.childIds.length > 0 || files.length > 0
+        rows.push({ type: 'module', key: 'm:' + id, level, node, hasChildren })
+        if (!this.expandedModules.has(id)) return
+        if (node.childIds.length) {
+          for (const child of node.childIds) walk(child, level + 1)
+          return
+        }
+        const evidence = this.moduleEvidence[id]
+        for (const path of files) {
+          const symbols = evidence?.byFile?.[path]
+          rows.push({
+            type: 'file', key: 'f:' + id + ':' + path, level: level + 1,
+            path, moduleId: id, symbolCount: symbols ? symbols.length : null,
+          })
+          for (const symbol of symbols || []) {
+            rows.push({ type: 'symbol', key: 's:' + path + ':' + symbol.kind + ':' + symbol.name, level: level + 2, symbol, path })
+          }
+        }
+      }
+      for (const id of top) walk(id, 0)
+      return rows
+    },
     moduleStats() {
       const counts = {}
       for (const module of this.activeData?.modules || []) {
@@ -694,6 +762,9 @@ export default {
         this.endpointService = ''
         this.expandedKeys = new Set()
         this.expandedEntityKeys = new Set()
+        this.expandedModules = new Set()
+        this.moduleEvidence = {}
+        this.evidenceLoading = {}
         this.loadedAt = new Date().toLocaleTimeString()
         this.loadDuration = Math.round(performance.now() - started)
       })
@@ -861,6 +932,39 @@ export default {
       const en = item.label_en || ''
       const label = locale.value === 'en' ? (en || zh) : (zh || en)
       return label || item.segment || item.name
+    },
+    symbolKindLabel(kind) {
+      return this.t(({ class: '类', function: '函数', component: '组件', method: '方法' })[kind] || kind || '')
+    },
+    async toggleModule(node) {
+      if (!node) return
+      const hasChildren = (node.childIds?.length || 0) > 0 || (node.files?.length || 0) > 0
+      if (!hasChildren) return
+      if (this.expandedModules.has(node.id)) {
+        this.expandedModules.delete(node.id)
+        return
+      }
+      this.expandedModules.add(node.id)
+      if (!node.childIds?.length && !this.moduleEvidence[node.id]) {
+        await this.loadModuleEvidence(node.id)
+      }
+    },
+    async loadModuleEvidence(moduleId) {
+      if (!this.snapshotId) return
+      this.evidenceLoading = { ...this.evidenceLoading, [moduleId]: true }
+      try {
+        const data = await this.$api.get('/api/module-evidence', { snapshot_id: this.snapshotId, module_id: moduleId })
+        const byFile = {}
+        for (const file of data?.files || []) byFile[file.path] = file.symbols || []
+        this.moduleEvidence = { ...this.moduleEvidence, [moduleId]: { files: data?.files || [], byFile } }
+      } catch (err) {
+        const detail = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('加载模块证据失败')
+        this.error = { message: detail }
+      } finally {
+        const next = { ...this.evidenceLoading }
+        delete next[moduleId]
+        this.evidenceLoading = next
+      }
     },
     async loadTaxonomyState() {
       if (!this.snapshotId) return
@@ -1340,6 +1444,25 @@ button:disabled { opacity: .55; cursor: wait; }
 .source-badge.source-heuristic { background: #fff4e5; color: #8a5a12; }
 .llm-note { margin-bottom: 12px; padding: 8px 12px; border: 1px solid #dfe6ef; border-radius: 6px; background: #f7f9fc; color: #55637a; font-size: 12px; }
 .module-description { color: #667085; font-size: 12px; margin: 2px 0 4px; }
+.module-tree { display: flex; flex-direction: column; border: 1px solid #e5e8ee; border-radius: 8px; overflow: hidden; background: #fff; }
+.tree-row { display: flex; align-items: center; gap: 8px; min-height: 32px; padding-right: 10px; font-size: 13px; border-bottom: 1px solid #f1f3f7; }
+.tree-row:last-child { border-bottom: none; }
+.tree-row:hover { background: #f7f9fc; }
+.tree-level-0 { font-weight: 600; background: #fbfcfe; }
+.tree-level-1 { font-weight: 500; }
+.tree-toggle { width: 18px; height: 18px; flex: none; border: none; background: transparent; color: #667085; cursor: pointer; padding: 0; font-size: 11px; line-height: 1; }
+.tree-toggle-empty { cursor: default; }
+.tree-label { border: none; background: transparent; padding: 0; font: inherit; color: #1f2d3d; cursor: pointer; text-align: left; }
+.tree-meta { color: #8b95a5; font-size: 11px; white-space: nowrap; }
+.tree-description { color: #667085; font-size: 11px; }
+.tree-file { font-size: 11px; color: #3c4a5c; background: transparent; }
+.tree-file-mark { color: #b6bfcc; font-size: 9px; }
+.tree-symbol { font-size: 12px; color: #3c4a5c; }
+.symbol-kind { font-size: 9px; padding: 1px 5px; border-radius: 6px; background: #eef1f6; color: #55637a; }
+.symbol-kind.sym-class { background: #eef7f0; color: #2f7a4d; }
+.symbol-kind.sym-function { background: #eef4fd; color: #2f5fa8; }
+.symbol-kind.sym-component { background: #fdf2e9; color: #97601f; }
+.tree-empty { color: #8b95a5; font-size: 13px; padding: 12px; margin: 0; }
 .layer-conflict { color: #b7791f; font-size: 10px; margin-top: 4px; }
 .table-wrap { overflow-x: auto; }
 .table-tools { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }

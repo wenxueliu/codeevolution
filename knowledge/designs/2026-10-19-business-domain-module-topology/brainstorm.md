@@ -242,3 +242,50 @@ DELETE /api/business-taxonomy?snapshot_id=...         -> {deleted}
 - 删除分类后立即回到 13 个目录模块，`source = paths`。
 - `harness_framework`：仍为路径骨架，UI 显示「按业务分类（LLM）」入口。
 - 中英文界面均验证；后端 `297 passed, 1 skipped`，前端 `60 passed`。
+
+---
+
+## 10. 追加：树形下钻与证据链
+
+### 10.1 问题
+
+第 9 节的 LLM 分类落地后，页面把 124 个模块一次性平铺成卡片、只靠 `marginLeft`
+缩进表示层级。结果：看不到"业务域"这个层次，无法判断某个实体该不该在它下面，
+也没有任何依据可供人工校验——模块名只是模型的一句断言。
+
+### 10.2 结构
+
+```
+业务域（默认展开层）
+└── 实体
+    └── 文件（完整路径）
+        └── 类 / 函数（CodeGraph 声明，method 折叠为计数）
+```
+
+- 默认只渲染顶层（LLM 模式下即业务域；路径模式下即顶层目录），点击逐层展开。
+- 文件列表随拓扑一起返回（`modules[].files`，取自既有 `owner` 映射，不新增计算）。
+- 类/函数不放进拓扑 payload（一个仓库上千个），改为按模块懒加载。
+
+### 10.3 证据接口
+
+```
+GET /api/module-evidence?snapshot_id=...&module_id=...
+-> {module_id, file_count, files:[{path, symbols:[{name,kind}], method_count}]}
+```
+
+- 符号来自 `CodeGraph.file_symbols()`，仍按冻结图查询，不重新解析源码。
+- `method` 不逐条渲染，只给 `method_count`：1100 个方法会淹没证据本身。
+- 模块不存在 → 404，前端提示条显示错误，不静默空白。
+
+### 10.4 交互
+
+- 折叠状态在 `expandedModules`，文件/符号缓存在 `moduleEvidence`，同一模块只请求一次。
+- 刷新结构知识或切换快照时清空，回到"只看业务域"。
+- 中英文文案走 `i18n.js`；模块标题按 `label` / `label_en` 取当前语言。
+
+### 10.5 已验证
+
+- `codehistory`：12 行顶层（11 域 + shared）→ 展开域得实体 → 展开实体得文件 →
+  文件下直接列出类/函数（如 `codegraph_capture.py` 的 `CodeGraphCapture` 与 7 个函数）。
+- `harness_framework`：路径模式同样按顶层目录 → 子目录 → 文件 → 符号展开。
+- `/api/module-evidence` 实测 70–180ms；后端 297 passed，前端 60 passed。

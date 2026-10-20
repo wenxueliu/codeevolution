@@ -144,6 +144,7 @@ def test_openapi_path_snapshot():
         "/api/llm-config",
         "/api/llm-config/test",
         "/api/llm-status",
+        "/api/module-evidence",
         "/api/repos",
         "/api/repos/register",
         "/api/repos/{name}",

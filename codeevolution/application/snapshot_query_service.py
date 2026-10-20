@@ -147,6 +147,72 @@ class SnapshotQueryService:
             }
         return {**facts, "module_topology": serialized}
 
+    def module_evidence(self, snapshot_id: str, module_id: str) -> dict:
+        """Files and declared symbols behind one module.
+
+        A module name is a claim; the files and the classes/functions they
+        declare are the evidence a reviewer checks it against.  Symbol lookup is
+        kept off the topology payload because a repository has thousands of
+        them and only the expanded module is ever inspected.
+        """
+        from codeevolution.analysis.knowledge.module_topology import ModuleTopologyExtractor
+
+        record = self._business_taxonomy(snapshot_id)
+        with self.open(snapshot_id) as handle:
+            topology = ModuleTopologyExtractor(handle.graph).extract(
+                taxonomy=(record or {}).get("payload") or None
+            )
+            node = next((item for item in topology.modules if item["id"] == module_id), None)
+            if node is None:
+                raise KeyError(module_id)
+            paths = self._module_files(topology.modules, module_id)
+            symbols, method_counts = self._file_symbols(handle.graph)
+        return {
+            "module_id": module_id,
+            "file_count": len(paths),
+            "files": [
+                {
+                    "path": path,
+                    "symbols": symbols.get(path, []),
+                    "method_count": method_counts.get(path, 0),
+                }
+                for path in paths
+            ],
+        }
+
+    @staticmethod
+    def _module_files(modules: list[dict], module_id: str) -> list[str]:
+        paths: set[str] = set()
+        for module in modules:
+            key = module["id"]
+            if key == module_id or module_id == "." or key.startswith(module_id + "/"):
+                paths.update(module.get("files") or [])
+        return sorted(paths)
+
+    @staticmethod
+    def _file_symbols(graph) -> tuple[dict[str, list[dict]], dict[str, int]]:
+        """Declared classes/functions per file, plus a method count.
+
+        Methods are folded into their class: listing 1,100 of them would bury
+        the evidence instead of supporting it.
+        """
+        getter = getattr(graph, "file_symbols", None)
+        if not callable(getter):
+            return {}, {}
+        symbols: dict[str, list[dict]] = {}
+        methods: dict[str, int] = {}
+        for row in getter() or []:
+            kind = str(row.get("kind") or "")
+            path = str(row.get("file_path") or "")
+            name = str(row.get("name") or "")
+            if not path or not name:
+                continue
+            if kind == "method":
+                methods[path] = methods.get(path, 0) + 1
+            elif kind in {"class", "function", "component"}:
+                symbols.setdefault(path, []).append({"name": name, "kind": kind})
+        return symbols, methods
+
     def _business_taxonomy(self, snapshot_id: str) -> dict | None:
         if not snapshot_id:
             return None

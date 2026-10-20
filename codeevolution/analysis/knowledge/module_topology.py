@@ -226,6 +226,8 @@ _MODULE_FIELDS = (
     "cohesion",
     "afferent",
     "efferent",
+    # The files behind a leaf module: the evidence a reviewer checks against.
+    "files",
     "label",
     "label_en",
     "description",

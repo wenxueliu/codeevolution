@@ -1567,6 +1567,15 @@ def delete_business_taxonomy(snapshot_id: str):
     return {"deleted": store.delete_business_taxonomy(snapshot_id)}
 
 
+@app.get("/api/module-evidence")
+def read_module_evidence(snapshot_id: str, module_id: str):
+    """Files plus declared classes/functions behind one module node."""
+    try:
+        return get_snapshot_query_service().module_evidence(snapshot_id, module_id)
+    except KeyError as error:
+        raise HTTPException(404, "module not found") from error
+
+
 # ── Evidence-backed terminology ──
 
 def _term_snapshot_context(snapshot_id: str) -> tuple[dict, str]:
