@@ -50,6 +50,24 @@ def test_recognizer_prefers_api_and_entity_anchors_and_ranks_terms():
     assert relations["applies_to"]["source_term_id"] == terms[("action", "ApproveOrder")]["id"]
 
 
+def test_same_repository_extracts_terms_for_multiple_snapshots(tmp_path):
+    """Evidence ids must stay unique across snapshots of the same repository."""
+    store = TermStore(tmp_path / "terms.db")
+    service = TermRecognitionService(store)
+
+    first = service.extract("snapshot-1", "orders", FACTS)
+    second = service.extract("snapshot-2", "orders", FACTS)
+
+    assert first["counts"]["total"] == second["counts"]["total"] >= 1
+    first_evidence_ids = {item["id"] for term in first["terms"] for item in term["evidence"]}
+    second_evidence_ids = {item["id"] for term in second["terms"] for item in term["evidence"]}
+    assert first_evidence_ids and second_evidence_ids
+    assert first_evidence_ids.isdisjoint(second_evidence_ids)
+    term = next(item for item in second["terms"] if item["canonical_name"] == "Order")
+    assert store.list_evidence("snapshot-2", term["id"])
+    store.close()
+
+
 def test_data_operation_names_do_not_become_terms():
     facts = {
         "api_contract": {"endpoints": [

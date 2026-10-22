@@ -365,8 +365,11 @@ class TermRecognizer:
         all_candidates = [item for item in merge(by_canonical) if item.evidence]
         for candidate in all_candidates:
             for index, evidence in enumerate(candidate.evidence):
+                # Evidence ids are the primary key of the snapshot-scoped
+                # term_evidence table, so the snapshot must be part of the hash:
+                # term ids are stable per repository and repeat across snapshots.
                 evidence.id = "ev-" + hashlib.sha256(
-                    f"{candidate.id}|{index}|{evidence.evidence_type}|{evidence.evidence_value}".encode("utf-8")
+                    f"{snapshot_id}|{candidate.id}|{index}|{evidence.evidence_type}|{evidence.evidence_value}".encode("utf-8")
                 ).hexdigest()[:24]
             self._finalize(candidate)
         all_candidates.sort(key=lambda item: (-item.confidence_score, item.term_type, item.id))
