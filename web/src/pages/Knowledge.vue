@@ -368,7 +368,7 @@
           <div class="table-wrap"><table><thead><tr><th>{{ t('来源') }}</th><th>{{ t('依赖') }}</th><th>{{ t('目标') }}</th></tr></thead><tbody><tr v-for="(item, index) in activeData.violations || []" :key="index"><td><b>{{ item.source_layer }}</b><br><code>{{ item.source_file }}</code></td><td>→</td><td><b>{{ item.target_layer }}</b><br><code>{{ item.target_file }}</code></td></tr></tbody></table></div>
         </template>
 
-        <template v-else>
+        <template v-else-if="activeSection !== 'terms'">
           <div v-if="isDisabled(activeData)" class="empty-semantic">
             <p>{{ activeData.note }}</p><button class="primary" @click="loadLlm">{{ t('现在抽取') }}</button>
           </div>
