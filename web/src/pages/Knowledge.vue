@@ -344,6 +344,7 @@
                     <div><strong>{{ t('限定名') }}:</strong> <code>{{ item.qualified_name }}</code></div>
                     <div><strong>{{ t('类型') }}:</strong> {{ item.kind }} &middot; <strong>{{ t('分层') }}:</strong> {{ item.layer || t('未分类') }} &middot; <strong>{{ t('领域分') }}:</strong> {{ Number(item.score || 0).toFixed(2) }}</div>
                     <div><strong>{{ t('文件位置') }}:</strong> <code>{{ item.file_path }}{{ item.start_line ? ':' + item.start_line : '' }}</code></div>
+                    <div><strong>{{ t('语言') }}:</strong> {{ item.language || '-' }} &middot; <strong>{{ t('评分构成') }}:</strong> <code>{{ scoreBreakdownText(item.score_breakdown) || '-' }}</code></div>
                     <div v-if="item.annotations?.length"><strong>{{ t('标注') }}:</strong> {{ item.annotations.join(', ') }}</div>
                     <div v-if="item.fields?.length" class="field-list">
                       <strong>{{ t('字段') }} ({{ item.fields.length }}):</strong>
@@ -1025,6 +1026,12 @@ export default {
       }
     },
     formatJson(value) { return JSON.stringify(value, null, 2) },
+    scoreBreakdownText(breakdown) {
+      return Object.entries(breakdown || {})
+        .filter(([key]) => key !== 'total')
+        .map(([key, value]) => `${key} ${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}`)
+        .join(' · ')
+    },
     endpointKey(item, index) { return `${item.method || ''}-${item.path || ''}-${index}` },
     explanationKey(item) { return [this.repoName || '', item.repository || '', item.method || '', item.path || '', item.handler || ''].join('||') },
     apiKey(item) { return item.api_key || [String(item.method || '').toUpperCase(), item.path || '', item.handler || ''].join('|') },

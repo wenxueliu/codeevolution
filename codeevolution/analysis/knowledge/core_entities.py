@@ -8,6 +8,7 @@ from typing import Any, Protocol
 import networkx as nx
 
 from ...domain.knowledge import CoreEntity
+from .entity_profiles import EntityProfile, first_match, profile_for_path, skipped
 
 
 class _Source(Protocol):
@@ -22,9 +23,11 @@ class CoreEntityExtractor:
         self,
         source: _Source | Callable[[], list[CoreEntity]],
         classify_layer: Callable[[str], str] | None = None,
+        profile_resolver: Callable[[str], EntityProfile] | None = None,
     ):
         self._source = source
         self._classify_layer = classify_layer or (lambda _path: "")
+        self._profile_for_path = profile_resolver or profile_for_path
         self._type_graph: nx.DiGraph | None = None
 
     def extract(self, top_n: int = 30) -> list[CoreEntity]:
@@ -39,24 +42,26 @@ class CoreEntityExtractor:
             row["id"]: int(row["field_count"])
             for row in self._source.domain_type_field_counts()  # type: ignore[union-attr]
         }
-        ranked = sorted(
-            nodes,
-            key=lambda item: -self.domain_score(
-                item,
-                centrality.get(item["id"], 0),
-                field_counts.get(item["id"], 0),
-                graph.degree(item["id"]),
-            ),
-        )[:top_n]
-        entities = []
-        for item in ranked:
+        scored = []
+        for item in nodes:
             node_id = item["id"]
-            score = self.domain_score(
+            profile = self._profile_for_path(item.get("file_path", ""))
+            if skipped(item.get("file_path", ""), profile):
+                continue
+            breakdown = self.score_details(
                 item,
                 centrality.get(node_id, 0),
                 field_counts.get(node_id, 0),
                 graph.degree(node_id),
+                profile,
             )
+            if breakdown["total"] <= 0:
+                continue
+            scored.append((breakdown["total"], breakdown, profile, item))
+        scored.sort(key=lambda row: -row[0])
+        entities = []
+        for score, breakdown, profile, item in scored[:top_n]:
+            node_id = item["id"]
             entities.append(
                 CoreEntity(
                     node_id=node_id,
@@ -74,6 +79,8 @@ class CoreEntityExtractor:
                     fields=self._source.domain_type_fields(node_id) if hasattr(self._source, "domain_type_fields") else [],
                     score=round(score, 4),
                     annotations=self.decode_annotations(item.get("decorators")),
+                    language=profile.key,
+                    score_breakdown={key: round(value, 4) for key, value in breakdown.items()},
                 )
             )
         return entities
@@ -93,24 +100,55 @@ class CoreEntityExtractor:
         return self.type_graph()
 
     @staticmethod
-    def domain_score(item: dict, centrality: float, fields: int, relationships: int) -> float:
-        path = item["file_path"].lower()
-        name = item["name"].lower()
+    def domain_score(
+        item: dict,
+        centrality: float,
+        fields: int,
+        relationships: int,
+        profile: EntityProfile | None = None,
+    ) -> float:
+        return CoreEntityExtractor.score_details(
+            item, centrality, fields, relationships, profile
+        )["total"]
+
+    @staticmethod
+    def score_details(
+        item: dict,
+        centrality: float,
+        fields: int,
+        relationships: int,
+        profile: EntityProfile | None = None,
+    ) -> dict[str, float]:
+        """Explainable entity score: graph signal plus language-specific priors."""
+        profile = profile or profile_for_path(item.get("file_path", ""))
+        path = (item.get("file_path") or "").lower().replace("\\", "/")
+        name = (item.get("name") or "").lower()
         annotations = " ".join(CoreEntityExtractor.decode_annotations(item.get("decorators"))).lower()
-        score = centrality * 30 + min(fields, 20) * 0.8 + min(relationships, 20) * 0.5
-        if any(part in path for part in ("/domain/", "/model/", "/entity/", "/pojo/")):
-            score += 8
-        if "/types/" in path:
-            score += 4
-        if path.startswith(("public/", "node_modules/")) or ".d.ts" in path:
-            score -= 14
-        if any(part in path for part in ("/controller/", "/service/", "/config/")):
-            score -= 6
-        if any(token in annotations for token in ("entity", "document", "table", "aggregate")):
-            score += 10
-        if name.endswith(("controller", "service", "repository", "config", "test")):
-            score -= 8
-        return score
+        kind = str(item.get("kind") or "").lower()
+
+        path_bonus = first_match(path, profile.path_bonuses)[1]
+        path_penalty = first_match(path, profile.path_penalties)[1]
+        annotation_bonus = first_match(annotations, profile.annotation_bonuses)[1]
+        name_penalty = next(
+            (delta for suffix, delta in profile.name_suffix_penalties if name.endswith(suffix)),
+            0.0,
+        )
+        kind_penalty = next(
+            (delta for token, delta in profile.kind_penalties if kind == token),
+            0.0,
+        )
+        breakdown = {
+            "pagerank": centrality * 30,
+            "fields": min(fields, 20) * 0.8,
+            "relationships": min(relationships, 20) * 0.5,
+            "path_bonus": path_bonus,
+            "path_penalty": -path_penalty,
+            "annotation_bonus": annotation_bonus,
+            "name_penalty": -name_penalty,
+            "kind_penalty": -kind_penalty,
+        }
+        breakdown["total"] = sum(breakdown.values())
+        return breakdown
 
     @staticmethod
     def decode_annotations(raw: Any) -> list[str]:

@@ -731,7 +731,9 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
             """SELECT id, kind, name, qualified_name, file_path, start_line, decorators
                FROM nodes
                WHERE kind IN ('class','interface','record','struct','type','enum')
-                 AND file_path NOT LIKE '%/test/%' AND file_path NOT LIKE '%/tests/%'"""
+                 AND file_path NOT LIKE '%/test/%' AND file_path NOT LIKE '%/tests/%'
+                 AND file_path NOT LIKE 'test/%' AND file_path NOT LIKE 'tests/%'
+                 AND file_path NOT LIKE '%/__tests__/%' AND file_path NOT LIKE '__tests__/%'"""
         )
 
     def domain_type_relationships(self) -> list[dict[str, Any]]:

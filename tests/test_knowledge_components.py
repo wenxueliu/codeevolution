@@ -127,9 +127,13 @@ def test_api_contract_extractor_owns_the_real_extraction_algorithm():
 def test_core_entities_are_domain_types_not_methods():
     entities = CoreEntityExtractor(DomainQueryStub()).extract()
 
-    assert [entity.name for entity in entities] == ["Product", "ProductService"]
+    # ProductService is a type but carries no positive entity evidence: the
+    # service path and name penalties push it out of the candidate list.
+    assert [entity.name for entity in entities] == ["Product"]
     assert all(entity.kind == "class" for entity in entities)
     assert entities[0].field_count == 8
+    assert entities[0].language == "java"
+    assert entities[0].score_breakdown["annotation_bonus"] == 10
 
 
 def test_module_topology_extractor_owns_graph_building_and_analysis():

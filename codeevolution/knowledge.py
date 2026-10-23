@@ -155,6 +155,8 @@ class KnowledgeExtractor:
                     "score": item.score,
                     "annotations": item.annotations,
                     "fields": item.fields,
+                    "language": item.language,
+                    "score_breakdown": item.score_breakdown,
                 }
                 for item in entities
             ],
