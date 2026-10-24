@@ -1,0 +1,177 @@
+{
+  "version": "layers/v1",
+  "layers": {
+    "presentation": [
+      "**/api/**",
+      "**/delivery/**"
+    ],
+    "application": [
+      "**/application/**",
+      "**/*service.*"
+    ],
+    "domain": [
+      "**/domain/**"
+    ],
+    "infrastructure": [
+      "**/infrastructure/**",
+      "**/*config.*"
+    ],
+    "test": [
+      "**/tests/**"
+    ]
+  },
+  "rules": {
+    "strict": true,
+    "allow": [
+      [
+        "application",
+        "domain"
+      ],
+      [
+        "application",
+        "infrastructure"
+      ],
+      [
+        "infrastructure",
+        "application"
+      ],
+      [
+        "infrastructure",
+        "domain"
+      ]
+    ],
+    "deny": [],
+    "ignore": [
+      "test"
+    ]
+  },
+  "generated": {
+    "at": "2026-10-24T14:43:28Z",
+    "strategy": "role-naming",
+    "file_count": 211,
+    "classified_files": 124,
+    "coverage": 0.588,
+    "edge_count": 2127,
+    "classified_edges": 169,
+    "unclassified_edges": 1152,
+    "unclassified_samples": [
+      ".github/workflows/ci.yml",
+      "codeevolution/__init__.py",
+      "codeevolution/analysis/__init__.py",
+      "codeevolution/analysis/communication/__init__.py",
+      "codeevolution/analysis/communication/entry_collector.py",
+      "codeevolution/analysis/communication/extractor.py",
+      "codeevolution/analysis/communication/rules.py",
+      "codeevolution/analysis/communication/schema.py"
+    ]
+  },
+  "evidence": {
+    "observed": [
+      {
+        "from": "application",
+        "to": "infrastructure",
+        "edges": 156,
+        "files": [
+          [
+            "codeevolution/application/api_explanation_batch_service.py",
+            "codeevolution/infrastructure/explanation_snapshot_store.py"
+          ],
+          [
+            "codeevolution/application/api_explanation_batch_service.py",
+            "codeevolution/infrastructure/explanation_snapshot_store.py"
+          ],
+          [
+            "codeevolution/application/api_explanation_batch_service.py",
+            "codeevolution/infrastructure/explanation_snapshot_store.py"
+          ]
+        ]
+      },
+      {
+        "from": "infrastructure",
+        "to": "application",
+        "edges": 5,
+        "files": [
+          [
+            "codeevolution/infrastructure/codegraph_command.py",
+            "codeevolution/application/topology_query_service.py"
+          ],
+          [
+            "codeevolution/semantic/config.py",
+            "codeevolution/application/graph_artifact_service.py"
+          ],
+          [
+            "codeevolution/semantic/config.py",
+            "codeevolution/application/graph_artifact_service.py"
+          ]
+        ]
+      },
+      {
+        "from": "infrastructure",
+        "to": "domain",
+        "edges": 5,
+        "files": [
+          [
+            "codeevolution/infrastructure/analysis_snapshot_sqlite.py",
+            "codeevolution/domain/topology.py"
+          ],
+          [
+            "codeevolution/infrastructure/analysis_snapshot_sqlite.py",
+            "codeevolution/domain/topology.py"
+          ],
+          [
+            "codeevolution/infrastructure/analysis_snapshot_sqlite.py",
+            "codeevolution/domain/topology.py"
+          ]
+        ]
+      },
+      {
+        "from": "application",
+        "to": "domain",
+        "edges": 3,
+        "files": [
+          [
+            "codeevolution/application/graph_artifact_service.py",
+            "codeevolution/domain/topology.py"
+          ],
+          [
+            "codeevolution/application/graph_artifact_service.py",
+            "codeevolution/domain/topology.py"
+          ],
+          [
+            "codeevolution/application/graph_artifact_service.py",
+            "codeevolution/domain/topology.py"
+          ]
+        ]
+      }
+    ]
+  },
+  "ratchet": {
+    "note": "Every listed pair is allowed because it exists today. Remove a pair from rules.allow to start flagging its violations; run 'layers check --write-baseline' first to grandfather the existing ones.",
+    "remove_candidates": [
+      {
+        "from": "infrastructure",
+        "to": "application",
+        "edges": 5,
+        "against_convention": true
+      },
+      {
+        "from": "infrastructure",
+        "to": "domain",
+        "edges": 5,
+        "against_convention": true
+      },
+      {
+        "from": "application",
+        "to": "domain",
+        "edges": 3,
+        "against_convention": false
+      },
+      {
+        "from": "application",
+        "to": "infrastructure",
+        "edges": 156,
+        "against_convention": false
+      }
+    ]
+  }
+}

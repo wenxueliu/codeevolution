@@ -12,6 +12,7 @@ from .analysis.knowledge.core_entities import CoreEntityExtractor
 from .analysis.knowledge.dependencies import DependencyExtractor
 from .analysis.knowledge.frontend_pages import FrontendPageExtractor
 from .analysis.knowledge.heatmap import HeatmapExtractor
+from .analysis.knowledge.layer_config import LayerConfig, load_repo_layers_config
 from .analysis.knowledge.layer_rules import LayerRuleExtractor
 from .analysis.knowledge.module_topology import (
     ModuleTopologyExtractor,
@@ -33,13 +34,23 @@ from .ports import SourceProvider
 class KnowledgeExtractor:
     """Legacy public API delegating each dimension to an independent analyzer."""
 
-    def __init__(self, reader: CodeGraphReader, source_provider: SourceProvider | None = None):
+    def __init__(
+        self,
+        reader: CodeGraphReader,
+        source_provider: SourceProvider | None = None,
+        layers_config: LayerConfig | None = None,
+    ):
         self.reader = reader
         repo_root = Path(reader.db_path).parent.parent
         self.source_provider = source_provider or FileSystemSourceProvider(repo_root)
         self._api = ApiContractExtractor(reader)
         self._modules = ModuleTopologyExtractor(reader)
-        self._layers = LayerRuleExtractor(reader)
+        # Layers are repository data, not a built-in table: read the repo's own
+        # declaration when it has one and fall back to the legacy defaults.
+        self._layers = LayerRuleExtractor(
+            reader,
+            layers_config if layers_config is not None else load_repo_layers_config(repo_root),
+        )
         self._entities = CoreEntityExtractor(reader, self._layers.classify_file)
         self._config = ConfigUsageExtractor(reader, self.source_provider)
         self._dependencies = DependencyExtractor(reader)

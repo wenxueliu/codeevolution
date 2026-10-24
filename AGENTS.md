@@ -33,6 +33,11 @@ npm i -g @colbymchenry/codegraph@0.9.x && cd <repo> && codegraph init
 # 快照分析：先通过 Web API 创建 analysis run，再对已发布快照查询知识
 codeevolution knowledge --snapshot-id <snapshot-id> [-s api]
 
+# 分层规则：从现有代码图反推声明，再按声明检查（支持基线，存量渐进收紧）
+codeevolution layers init --db .codegraph/codegraph.db
+codeevolution layers check --db .codegraph/codegraph.db
+codeevolution layers check --db .codegraph/codegraph.db --write-baseline
+
 # 多仓分析（先 register 注册服务）
 codeevolution register -n <name> -r <repo>
 codeevolution topology --view-id <view-id>

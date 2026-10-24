@@ -137,7 +137,7 @@ codeevolution/
 | 1 | API 契约 | route nodes + handler functions | HTTP decorator 匹配 + 签名提取 |
 | 2 | 模块拓扑 | imports/calls edges + 构建清单/目录布局 | 路径骨架 + 图耦合（依赖/耦合度/内聚度） |
 | 3 | 核心实体 | calls edges | PageRank 中心度 |
-| 4 | 分层违规 | file_path + calls edges | 目录命名约定检查 |
+| 4 | 分层违规 | `layers.json` + calls edges | 仓库声明的 glob 分层 + 允许/禁止边 |
 
 ### Phase 2 — 图 + 规则（秒级，无 LLM）
 
@@ -147,6 +147,33 @@ codeevolution/
 | 6 | 外部依赖 | import nodes + decorators | 40+ 已知服务模式匹配 |
 | 7 | 权限模型 | decorators + function names | 20+ 权限注解模式匹配 |
 | 8 | 热力图 | calls edges | in/out-degree 百分位分层 |
+
+#### 分层声明（`layers/v1`）
+
+分层是仓库属性，不是语言属性：Java MVC、Python 六边形和 Go module 布局用不同路径
+约定表达同一批关注点，任何内置表都只能覆盖其中一种。因此分层改为仓库数据：
+
+```json
+{
+  "version": "layers/v1",
+  "layers": {"domain": ["**/domain/**"], "infrastructure": ["**/infrastructure/**"]},
+  "rules": {"strict": true, "allow": [["domain", "infrastructure"]], "deny": [], "ignore": ["test"]}
+}
+```
+
+- 位置：`<repo>/.codeevolution/layers.json`，随仓库提交，可 review。
+- 匹配：glob 对仓库相对路径，大小写敏感；字面字符更多者优先，其次更长的模式，再次声明顺序。
+- 判定：`deny` 优先，其次 `allow`，未命中时由 `strict` 决定（严格模式下未声明即违规）。
+  `ignore` 中的层（默认 `test`）不参与判定。
+- 缺省：仓库没有配置文件时回落到内置表，行为与旧版目录约定检查完全一致
+  （`strict: false` + 6 条显式 `deny`），升级不改变既有结论。
+
+`layers init` 从现有代码图反推声明：角色目录（`**/service/**`）优先，文件名后缀族
+（`**/*Controller.*`，要求跨至少 3 个文件、2 个目录才算约定）兜底，再把**当前已存在**
+的每一对依赖方向写成 `allow`。生成的配置必然通过它自己，之后再逐对收紧。
+
+`layers check` 消费同一份声明，配合 `layers.baseline.json` 支持存量治理：先
+`--write-baseline` 把现有违规计入基线，此后只有新增违规让 CI 失败。
 
 ### Phase 3 — 图 + LLM（需要 API key）
 

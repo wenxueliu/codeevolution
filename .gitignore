@@ -3,7 +3,9 @@ __pycache__/
 *.pyc
 *.egg-info/
 dist/
-.codeevolution/
+.codeevolution/*
+!.codeevolution/layers.json
+!.codeevolution/layers.baseline.json
 .codehistory/
 .remember/
 web/node_modules/

@@ -112,6 +112,143 @@ def cmd_knowledge(args):
         runtime.close()
 
 
+def _layers_graph(args) -> tuple[Path, Path]:
+    """Resolve the CodeGraph database and the repository root that owns it."""
+    db_path = Path(args.db) if args.db else Path(".codegraph") / "codegraph.db"
+    db_path = db_path.resolve()
+    if not db_path.exists():
+        _fail(f"code graph not found: {db_path} (run 'codegraph init' in the target repo)", 2)
+    return db_path, db_path.parent.parent
+
+
+def cmd_layers_init(args):
+    """Derive a layer declaration from the architecture the repository already has."""
+    from .analysis.knowledge.layer_config import CONFIG_RELPATH
+    from .application.layer_config_service import LayerConfigService
+    from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
+
+    db_path, repo_root = _layers_graph(args)
+    target = Path(args.out).resolve() if args.out else repo_root / CONFIG_RELPATH
+    if target.exists() and not args.force:
+        _fail(f"{target} already exists; pass --force to overwrite", 2)
+
+    repository = SQLiteCodeGraphRepository(str(db_path))
+    try:
+        payload = LayerConfigService(repository).generate()
+    finally:
+        repository.close()
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    generated = payload["generated"]
+    print(f"Layers config written to {target}")
+    print(f"  strategy         : {generated['strategy']}")
+    print(
+        f"  files classified : {generated['classified_files']}/{generated['file_count']}"
+        f" ({generated['coverage']:.0%})"
+    )
+    print(
+        f"  edges classified : {generated['classified_edges']}/{generated['edge_count']}"
+    )
+    print(f"  layers           : {', '.join(payload['layers'])}")
+    print(f"  allowed pairs    : {len(payload['rules']['allow'])}")
+
+    candidates = payload["ratchet"]["remove_candidates"]
+    if candidates:
+        print("\nRatchet candidates (convention-breaking first, then cheapest):")
+        for item in candidates[:8]:
+            mark = "break" if item["against_convention"] else "keep "
+            print(
+                f"  [{mark}] {item['from']:15s} -> {item['to']:15s} {item['edges']:5d} edge(s)"
+            )
+    print("\nNext: drop a pair from rules.allow to start flagging it.")
+
+
+def cmd_layers_check(args):
+    """Check a code graph against its layer declaration, honouring a baseline."""
+    from .analysis.knowledge.layer_config import (
+        BASELINE_RELPATH,
+        CONFIG_RELPATH,
+        builtin_layers_config,
+        load_layers_config,
+    )
+    from .application.layer_config_service import (
+        LayerConfigService,
+        read_baseline,
+        write_baseline,
+    )
+    from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
+
+    db_path, repo_root = _layers_graph(args)
+    config_path = Path(args.config).resolve() if args.config else repo_root / CONFIG_RELPATH
+    baseline_path = Path(args.baseline).resolve() if args.baseline else repo_root / BASELINE_RELPATH
+
+    try:
+        if config_path.exists():
+            config = load_layers_config(config_path)
+        else:
+            print(
+                f"No layers config at {config_path}; using built-in defaults. "
+                "Run 'codeevolution layers init' to declare this repository's own layers.",
+                file=sys.stderr,
+            )
+            config = builtin_layers_config()
+    except ValueError as error:
+        _fail(str(error), 2)
+
+    repository = SQLiteCodeGraphRepository(str(db_path))
+    try:
+        service = LayerConfigService(repository)
+        report = service.check(config, read_baseline(baseline_path))
+        if args.write_baseline:
+            count = write_baseline(baseline_path, report["known"] + report["new"])
+            print(f"Baseline written to {baseline_path} ({count} pair(s))")
+            return
+    finally:
+        repository.close()
+
+    if args.output:
+        _canonical_output(_layer_report_payload(report), args.output)
+    print(f"config: {config.origin}")
+    print(
+        f"{len(report['new'])} new violation(s), "
+        f"{report['baseline']} baselined, {report['total']} total"
+    )
+    if not report["new"]:
+        return
+    for group in report["groups"]:
+        print(f"\n  {group['from']} -> {group['to']}  ({group['count']})")
+        for item in group["items"][: max(args.max_items, 0)]:
+            line = f":{item.call_line}" if item.call_line else ""
+            print(f"    {item.source_file}{line}  ->  {item.target_file}")
+    raise SystemExit(1)
+
+
+def _layer_report_payload(report: dict) -> dict:
+    def rows(items):
+        return [
+            {
+                "source": item.source_name,
+                "source_file": item.source_file,
+                "source_layer": item.source_layer,
+                "target": item.target_name,
+                "target_file": item.target_file,
+                "target_layer": item.target_layer,
+                "call_line": item.call_line,
+            }
+            for item in items
+        ]
+
+    return {
+        "total": report["total"],
+        "baselined": report["baseline"],
+        "new_count": len(report["new"]),
+        "new": rows(report["new"]),
+        "baselined_violations": rows(report["known"]),
+    }
+
+
 def cmd_api_contract(args):
     """Export one contract document per endpoint from an immutable snapshot."""
     runtime = None
@@ -891,6 +1028,27 @@ def main():
         help="Which knowledge section to extract (default: all)",
     )
     p.set_defaults(handler=cmd_knowledge)
+
+    # layers
+    p = subparsers.add_parser("layers", help="Generate or check architecture-layer rules")
+    layer_parsers = p.add_subparsers(dest="layers_command", help="Layers sub-commands")
+
+    init = layer_parsers.add_parser(
+        "init", help="Derive layers.json from the code graph the repository already has"
+    )
+    init.add_argument("--db", default="", help="CodeGraph SQLite path (default: ./.codegraph/codegraph.db)")
+    init.add_argument("--out", "-o", default="", help="Output path (default: <repo>/.codeevolution/layers.json)")
+    init.add_argument("--force", action="store_true", help="Overwrite an existing layers.json")
+    init.set_defaults(handler=cmd_layers_init)
+
+    check = layer_parsers.add_parser("check", help="Check a code graph against layers.json")
+    check.add_argument("--db", default="", help="CodeGraph SQLite path (default: ./.codegraph/codegraph.db)")
+    check.add_argument("--config", default="", help="Layers config (default: <repo>/.codeevolution/layers.json)")
+    check.add_argument("--baseline", default="", help="Baseline path (default: <repo>/.codeevolution/layers.baseline.json)")
+    check.add_argument("--write-baseline", action="store_true", help="Accept current violations as the baseline")
+    check.add_argument("--max-items", type=int, default=10, help="Violations to print per layer pair (default: 10)")
+    check.add_argument("--output", "-o", default="", help="Write the full report as JSON")
+    check.set_defaults(handler=cmd_layers_check)
 
     # API contract export
     p = subparsers.add_parser(
