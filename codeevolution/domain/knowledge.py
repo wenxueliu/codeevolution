@@ -111,17 +111,6 @@ class CoreEntity:
 
 
 @dataclass
-class TestGap:
-    node_id: str
-    name: str
-    qualified_name: str
-    file_path: str
-    kind: str
-    line: int
-    is_exported: bool = False
-
-
-@dataclass
 class LayerViolation:
     source_name: str
     source_file: str

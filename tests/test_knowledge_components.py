@@ -8,7 +8,6 @@ from codeevolution.analysis.knowledge.layer_rules import LayerRuleExtractor
 from codeevolution.analysis.knowledge.module_topology import ModuleTopologyExtractor
 from codeevolution.analysis.knowledge.report_builder import KnowledgeReportBuilder
 from codeevolution.analysis.knowledge.semantic import SemanticExtractor
-from codeevolution.analysis.knowledge.test_gaps import TestGapExtractor as GapExtractor
 
 
 class QueryStub:
@@ -97,7 +96,6 @@ def test_every_knowledge_dimension_is_independently_callable():
         LayerRuleExtractor,
         ModuleTopologyExtractor,
         SemanticExtractor,
-        GapExtractor,
     ]
     for dimension in dimensions:
         assert dimension(lambda: "result").extract() == "result"

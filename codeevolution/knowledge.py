@@ -18,7 +18,6 @@ from .analysis.knowledge.module_topology import (
     serialize_module_topology,
 )
 from .analysis.knowledge.semantic import SemanticExtractor
-from .analysis.knowledge.test_gaps import TestGapExtractor
 from .codegraph_reader import CodeGraphReader, FunctionDef
 from .domain.knowledge import (
     ApiContract,
@@ -26,7 +25,6 @@ from .domain.knowledge import (
     CoreEntity,
     LayerViolation,
     ModuleTopology,
-    TestGap,
 )
 from .infrastructure.source_filesystem import FileSystemSourceProvider
 from .ports import SourceProvider
@@ -43,7 +41,6 @@ class KnowledgeExtractor:
         self._modules = ModuleTopologyExtractor(reader)
         self._layers = LayerRuleExtractor(reader)
         self._entities = CoreEntityExtractor(reader, self._layers.classify_file)
-        self._gaps = TestGapExtractor(reader)
         self._config = ConfigUsageExtractor(reader, self.source_provider)
         self._dependencies = DependencyExtractor(reader)
         self._authorization = AuthorizationExtractor(reader)
@@ -61,12 +58,6 @@ class KnowledgeExtractor:
 
     def extract_core_entities(self, top_n: int = 30) -> list[CoreEntity]:
         return self._entities.extract(top_n)
-
-    def extract_test_gaps(self) -> list[TestGap]:
-        return self._gaps.extract()
-
-    def extract_test_coverage_stats(self) -> dict:
-        return self._gaps.coverage_stats()
 
     def extract_layer_violations(self) -> list[LayerViolation]:
         return self._layers.extract()
@@ -102,7 +93,6 @@ class KnowledgeExtractor:
         api = self.extract_api_contract()
         modules = self.extract_module_topology()
         entities = self.extract_core_entities(30)
-        gaps = self.extract_test_gaps()
         violations = self.extract_layer_violations()
         disabled = {"note": "Set --llm flag to enable LLM analysis"}
         return {
@@ -160,20 +150,6 @@ class KnowledgeExtractor:
                 }
                 for item in entities
             ],
-            "test_coverage": {
-                **self.extract_test_coverage_stats(),
-                "top_gaps": [
-                    {
-                        "name": item.name,
-                        "qualified_name": item.qualified_name,
-                        "file_path": item.file_path,
-                        "kind": item.kind,
-                        "line": item.line,
-                        "is_exported": item.is_exported,
-                    }
-                    for item in gaps[:50]
-                ],
-            },
             "layer_violations": {
                 "violation_count": len(violations),
                 "violations": [
@@ -216,7 +192,6 @@ class KnowledgeExtractor:
     _parse_params = staticmethod(ApiContractExtractor.parse_params)
     _parse_return_type = staticmethod(ApiContractExtractor.parse_return_type)
     _common_prefix = staticmethod(ModuleTopologyExtractor.common_prefix)
-    _is_test_function = staticmethod(TestGapExtractor.is_test_function)
     _classify_file_layer = staticmethod(LayerRuleExtractor.classify_file)
     _classify_import = staticmethod(DependencyExtractor.classify)
     _extract_enum_usage_lines = staticmethod(SemanticExtractor.enum_usage)
@@ -295,5 +270,4 @@ __all__ = [
     "KnowledgeExtractor",
     "LayerViolation",
     "ModuleTopology",
-    "TestGap",
 ]

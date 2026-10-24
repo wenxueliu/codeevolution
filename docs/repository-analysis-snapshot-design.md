@@ -138,7 +138,7 @@ view_digest = SHA256(canonical(member_id + snapshot_id ...))
 
 ### 5.4 单仓事实与组合事实分离
 
-`RepositoryAnalysisSnapshot` 只保存单仓事实，包括 API、模块、实体、测试缺口、分层、
+`RepositoryAnalysisSnapshot` 只保存单仓事实，包括 API、模块、实体、分层、
 配置、依赖、权限和热力图。
 
 依赖多个仓库的结果保存为 `GraphViewArtifact`，包括：

@@ -82,7 +82,7 @@ class SnapshotQueryService:
                 # and topology) sees the same endpoint set.
                 api_contract = self._complete_api_contract(handle, facts)
                 return {**facts, "api_contract": api_contract}
-            aliases = {"gaps": "test_coverage", "tests": "test_coverage", "deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map"}
+            aliases = {"deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map"}
             key = aliases.get(section, section)
             if key not in facts:
                 raise KeyError(section)

@@ -359,11 +359,6 @@
           </tbody></table></div>
         </template>
 
-        <template v-else-if="activeSection === 'test_coverage'">
-          <div class="metrics"><div class="metric">{{ activeData.coverage_pct ?? 0 }}% <small>{{ t('覆盖率') }}</small></div><div class="metric">{{ activeData.gap_count || 0 }} <small>{{ t('个测试缺口') }}</small></div></div>
-          <div class="table-wrap"><table><thead><tr><th>{{ t('未覆盖符号') }}</th><th>{{ t('类型') }}</th><th>{{ t('位置') }}</th></tr></thead><tbody><tr v-for="item in activeData.top_gaps || []" :key="item.qualified_name"><td>{{ item.qualified_name }}</td><td>{{ item.kind }}</td><td><code>{{ item.file_path }}:{{ item.line }}</code></td></tr></tbody></table></div>
-        </template>
-
         <template v-else-if="activeSection === 'layer_violations'">
           <div class="metric danger">{{ activeData.violation_count || 0 }} <small>{{ t('个分层违规') }}</small></div>
           <div class="table-wrap"><table><thead><tr><th>{{ t('来源') }}</th><th>{{ t('依赖') }}</th><th>{{ t('目标') }}</th></tr></thead><tbody><tr v-for="(item, index) in activeData.violations || []" :key="index"><td><b>{{ item.source_layer }}</b><br><code>{{ item.source_file }}</code></td><td>→</td><td><b>{{ item.target_layer }}</b><br><code>{{ item.target_file }}</code></td></tr></tbody></table></div>
@@ -470,7 +465,6 @@ const SECTIONS = [
   ['terms', '术语识别', '阶段1', '从 API 契约、实体定义和前端页面生成按可信度排序的业务术语'],
   ['module_topology', '模块拓扑', '阶段1', '业务域与实体划分、依赖关系与耦合度'],
   ['core_entities', '核心实体', '阶段1', '按字段、类型关系与领域语义识别核心领域对象'],
-  ['test_coverage', '测试缺口', '阶段1', '生产函数覆盖率与未覆盖列表'],
   ['layer_violations', '分层违规', '阶段1', '跨层依赖和架构边界违规'],
   ['config_consumption', '配置消费', '阶段2', '配置键与代码消费者的对应关系'],
   ['external_dependencies', '外部依赖', '阶段2', '外部服务、库与中间件分类'],
@@ -633,7 +627,6 @@ export default {
         { key: 'terms', label: this.t('术语'), value: this.terms.length },
         { key: 'module_topology', label: this.t('模块'), value: this.report.module_topology?.module_count ?? 0 },
         { key: 'core_entities', label: this.t('核心实体'), value: this.report.core_entities?.length ?? 0 },
-        { key: 'test_coverage', label: this.t('测试覆盖率'), value: `${this.report.test_coverage?.coverage_pct ?? 0}%` },
         { key: 'layer_violations', label: this.t('分层违规'), value: this.report.layer_violations?.violation_count ?? 0 },
       ]
     },

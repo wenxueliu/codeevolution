@@ -76,8 +76,8 @@ sessionStorage 保存 `codeevolution:last-snapshot-id` / `-member` / `-graph-vie
 
 ### 6.1 概要与分区
 
-- 概要卡：API 端点 · 术语 · 模块 · 核心实体 · 测试覆盖率 · 分层违规。
-- 14 个知识分区（`SECTIONS` 常量）按阶段分组：阶段 1/2 结构知识（api_contract、terms、module_topology、core_entities、test_coverage、layer_violations、config_consumption、external_dependencies、authorization_model、heat_map）默认可用；阶段 3 LLM 分区（business_descriptions、business_rules、error_catalog、state_machines）显式提示配置与费用。
+- 概要卡：API 端点 · 术语 · 模块 · 核心实体 · 分层违规。
+- 13 个知识分区（`SECTIONS` 常量）按阶段分组：阶段 1/2 结构知识（api_contract、terms、module_topology、core_entities、layer_violations、config_consumption、external_dependencies、authorization_model、heat_map）默认可用；阶段 3 LLM 分区（business_descriptions、business_rules、error_catalog、state_machines）显式提示配置与费用。
 - LLM 抽取按钮 + `llm-progress` 进度条轮询 job 状态；失败不影响其他分区浏览。
 
 ### 6.2 API 解释（FR-08 重点）

@@ -1,11 +1,11 @@
 ---
 name: codeevolution-knowledge
-description: Extract business knowledge from code and analyze multi-service microservice topologies. Use when user asks about API design, module structure, core entities, test coverage, architecture violations, external dependencies, authorization model, service dependencies, cross-service impact, end-to-end flow tracing, entity alignment, or wants LLM-powered business descriptions/rules/error catalogs/state machines. Examples: "What APIs does this project expose?", "Find core domain entities", "Show me the service dependency graph", "What's the impact of changing user-service?", "Trace the order flow end-to-end", "Which entities are shared across services?", "Generate business descriptions for this codebase"
+description: Extract business knowledge from code and analyze multi-service microservice topologies. Use when user asks about API design, module structure, core entities, architecture violations, external dependencies, authorization model, service dependencies, cross-service impact, end-to-end flow tracing, entity alignment, or wants LLM-powered business descriptions/rules/error catalogs/state machines. Examples: "What APIs does this project expose?", "Find core domain entities", "Show me the service dependency graph", "What's the impact of changing user-service?", "Trace the order flow end-to-end", "Which entities are shared across services?", "Generate business descriptions for this codebase"
 ---
 
 # CodeEvolution Knowledge Extraction
 
-Two subsystems: **single-repo knowledge** (13 dimensions via `knowledge` command) and **multi-repo topology** (cross-service analysis via `topology`/`impact`/`trace`/`flow`/`entities`/`check` commands).
+Two subsystems: **single-repo knowledge** (12 dimensions via `knowledge` command) and **multi-repo topology** (cross-service analysis via `topology`/`impact`/`trace`/`flow`/`entities`/`check` commands).
 
 ## Prerequisites
 
@@ -29,7 +29,6 @@ cd /home/chengnanfeng/code/harness/services/codehistory
 python -m codeevolution.cli knowledge -r <repo_path> -s api       # API contract
 python -m codeevolution.cli knowledge -r <repo_path> -s modules    # Module topology
 python -m codeevolution.cli knowledge -r <repo_path> -s entities   # Core entities (PageRank)
-python -m codeevolution.cli knowledge -r <repo_path> -s tests      # Test coverage gaps
 python -m codeevolution.cli knowledge -r <repo_path> -s layers     # Layer violations
 
 # Phase 2 — Graph + rules (fast, no LLM)
@@ -74,7 +73,6 @@ python -m codeevolution.cli entities [--llm]                        # Cross-serv
 | What APIs does this service have? | `knowledge -s api` |
 | Module boundaries and coupling? | `knowledge -s modules` |
 | Most important classes/functions? | `knowledge -s entities` |
-| Test coverage gaps? | `knowledge -s tests` |
 | Architecture layer violations? | `knowledge -s layers` |
 | What config keys affect what? | `knowledge -s config` |
 | External services the code uses? | `knowledge -s deps` |

@@ -9,7 +9,7 @@
 CodeEvolution 三大子系统：
 
 1. **Evolution Engine** — 分析 git 历史，以「功能」（入口点 + 调用树）为单位追踪代码演进
-2. **Knowledge Extractor** — 从代码逆向业务知识（三阶段 13 维），服务产品/架构/开发/测试/运维
+2. **Knowledge Extractor** — 从代码逆向业务知识（三阶段 12 维），服务产品/架构/开发/测试/运维
 3. **Cross-Repo Analyzer** — 多仓微服务统一拓扑：跨服务调用拼接 + 影响分析 + 流程追踪 + 实体对齐
 
 ## 工作原则
@@ -57,28 +57,27 @@ codeevolution web                    # http://0.0.0.0:8765
 完整命令以 `codeevolution --help` 与 `codeevolution/cli.py` 为准；旧的
 `backfill`、`update`、演进 `status` 和 `init-all` 已移除。
 
-## 能力矩阵（18 维 × 5 角色，兼作命令速查）
+## 能力矩阵（17 维 × 5 角色，兼作命令速查）
 
 | # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
 |---|------|:---:|:---:|:---:|:---:|:---:|------|
 | 1 | API 契约 | x | x | x | x | | `knowledge --snapshot-id <id> -s api` |
 | 2 | 模块拓扑 | | x | x | | | `knowledge --snapshot-id <id> -s modules` |
 | 3 | 核心实体 (PageRank) | | x | x | | | `knowledge --snapshot-id <id> -s entities` |
-| 4 | 测试缺口 | | | | x | | `knowledge --snapshot-id <id> -s tests` |
-| 5 | 分层违规 | | x | | | | `knowledge --snapshot-id <id> -s layers` |
-| 6 | 配置消费图 | | | | | x | `knowledge --snapshot-id <id> -s config` |
-| 7 | 外部依赖清单 | | x | | | x | `knowledge --snapshot-id <id> -s deps` |
-| 8 | 权限模型 | | x | | | x | `knowledge --snapshot-id <id> -s auth` |
-| 9 | 热力图 | | x | x | | | `knowledge --snapshot-id <id> -s heatmap` |
-| 10 | 业务描述 | x | | x | | | `knowledge --snapshot-id <id> -s business --llm` |
-| 11 | 业务规则 | x | | | x | | `knowledge --snapshot-id <id> -s rules --llm` |
-| 12 | 错误目录 | | | | x | x | `knowledge --snapshot-id <id> -s errors --llm` |
-| 13 | 状态机 | x | | | x | | `knowledge --snapshot-id <id> -s states --llm` |
-| 14 | 统一服务拓扑 | | x | x | | x | `topology --view-id <id>` |
-| 15 | 跨仓变更影响 | | x | x | x | | `impact --view-id <id> --service <id>` |
-| 16 | 全通道流程追踪 | | x | x | x | x | `flow --view-id <id> --service <id>` |
-| 17 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
-| 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
+| 4 | 分层违规 | | x | | | | `knowledge --snapshot-id <id> -s layers` |
+| 5 | 配置消费图 | | | | | x | `knowledge --snapshot-id <id> -s config` |
+| 6 | 外部依赖清单 | | x | | | x | `knowledge --snapshot-id <id> -s deps` |
+| 7 | 权限模型 | | x | | | x | `knowledge --snapshot-id <id> -s auth` |
+| 8 | 热力图 | | x | x | | | `knowledge --snapshot-id <id> -s heatmap` |
+| 9 | 业务描述 | x | | x | | | `knowledge --snapshot-id <id> -s business --llm` |
+| 10 | 业务规则 | x | | | x | | `knowledge --snapshot-id <id> -s rules --llm` |
+| 11 | 错误目录 | | | | x | x | `knowledge --snapshot-id <id> -s errors --llm` |
+| 12 | 状态机 | x | | | x | | `knowledge --snapshot-id <id> -s states --llm` |
+| 13 | 统一服务拓扑 | | x | x | | x | `topology --view-id <id>` |
+| 14 | 跨仓变更影响 | | x | x | x | | `impact --view-id <id> --service <id>` |
+| 15 | 全通道流程追踪 | | x | x | x | x | `flow --view-id <id> --service <id>` |
+| 16 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
+| 17 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
 
 ## 自动打包与重启
 

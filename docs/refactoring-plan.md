@@ -233,7 +233,7 @@ CLI、API 和 MCP 必须复用这些用例。
 
 1. layer rules
 2. dependencies、authorization、config
-3. API contract、test gaps
+3. API contract
 4. entities、heatmap、module topology
 5. report builder
 6. semantic extractors
@@ -245,7 +245,6 @@ analysis/knowledge/
 ├── api_contract.py
 ├── module_topology.py
 ├── core_entities.py
-├── test_gaps.py
 ├── layer_rules.py
 ├── config_usage.py
 ├── dependencies.py

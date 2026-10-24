@@ -9,7 +9,6 @@ describe('Knowledge route integration', () => {
       api_contract: { endpoint_count: 0, endpoints: [] },
       module_topology: { module_count: 0 },
       core_entities: [],
-      test_coverage: { coverage_pct: 0 },
       layer_violations: { violation_count: 0 },
     }
     const api = {

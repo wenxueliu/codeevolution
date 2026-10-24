@@ -508,7 +508,6 @@ describe('repository and knowledge pages', () => {
       api_contract: { endpoint_count: 1, endpoints: [{ method: 'POST', path: '/product/create', handler: 'ProductController.create', request_headers: [{ name: 'Authorization' }], path_params: [], query_params: [], request_body: { type: 'ProductParam' }, response_body: { type: 'CommonResult<Product>' }, call_chain: [{ id: '1', name: 'create' }, { id: '2', name: 'save' }], frontend_callers: [{ function: 'createProductAPI', definition_file: 'src/apis/product.ts', definition_line: 10, call_sites: [{ file: 'src/views/product.vue', line: 20 }] }] }] },
       module_topology: { module_count: 1, coupling_score: 0.2, modules: [{ id: 'm', name: 'product', file_count: 3, primary_language: 'java' }] },
       core_entities: [{ qualified_name: 'PmsProduct', name: 'PmsProduct', kind: 'class', field_count: 20, relationship_count: 4, score: 25, repository: 'mall', file_path: 'model/PmsProduct.java' }],
-      test_coverage: { coverage_pct: 75, gap_count: 1, top_gaps: [{ qualified_name: 'save', kind: 'method', file_path: 'service.java', line: 2 }] },
       layer_violations: { violation_count: 1, violations: [{ source_layer: 'api', source_file: 'a', target_layer: 'infra', target_file: 'b' }] },
       config_consumption: { files: [] }, external_dependencies: {}, authorization_model: {}, heat_map: {},
       business_descriptions: { note: 'disabled' }, business_rules: { note: 'disabled' }, error_catalog: { note: 'disabled' }, state_machines: { note: 'disabled' },
@@ -539,7 +538,7 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.vm.isDisabled({ note: 'x' })).toBe(true)
     expect(wrapper.vm.formatJson({ ok: true })).toContain('"ok"')
 
-    for (const key of ['module_topology', 'test_coverage', 'layer_violations', 'config_consumption']) {
+    for (const key of ['module_topology', 'layer_violations', 'config_consumption']) {
       wrapper.vm.activeSection = key
       await wrapper.vm.$nextTick()
       expect(wrapper.find('.panel').exists()).toBe(true)

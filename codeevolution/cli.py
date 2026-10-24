@@ -878,7 +878,6 @@ def main():
             "api",
             "modules",
             "entities",
-            "tests",
             "layers",
             "config",
             "deps",

@@ -35,7 +35,7 @@ describe('API explanation call-chain rail', () => {
                 node_id: 'fn-root', file: 'orders.py', line: 10,
               }],
             },
-            module_topology: {}, core_entities: [], test_coverage: {}, layer_violations: {},
+            module_topology: {}, core_entities: [], layer_violations: {},
           }
         }
         if (path === '/api/api-explanations/current') {

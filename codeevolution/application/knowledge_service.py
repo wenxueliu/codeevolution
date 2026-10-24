@@ -24,8 +24,6 @@ class KnowledgeService:
             "api": self.extractor.extract_api_contract,
             "modules": self.extractor.extract_module_topology,
             "entities": self.extractor.extract_core_entities,
-            "tests": self.extractor.extract_test_coverage_stats,
-            "gaps": self.extractor.extract_test_gaps,
             "layers": self.extractor.extract_layer_violations,
             "config": self.extractor.extract_config_consumption,
             "deps": self.extractor.extract_external_dependencies,
@@ -90,7 +88,6 @@ def merge_knowledge_reports(reports: list[tuple[str, dict]], include_llm: bool =
     api_endpoints = []
     modules = []
     entities = []
-    gaps = []
     violations = []
     config_files = []
     dependency_categories = []
@@ -108,10 +105,6 @@ def merge_knowledge_reports(reports: list[tuple[str, dict]], include_llm: bool =
         modules.extend(_tag(topology.get("modules", []), repository))
         totals["coupling"] += float(topology.get("coupling_score") or 0)
         entities.extend(_tag(report.get("core_entities", []), repository))
-        coverage = report["test_coverage"]
-        for key in ("test_functions", "production_functions", "covered_functions", "gap_count"):
-            totals[key] += int(coverage.get(key) or 0)
-        gaps.extend(_tag(coverage.get("top_gaps", []), repository))
         layers = report["layer_violations"]
         violations.extend(_tag(layers.get("violations", []), repository))
         config = report["config_consumption"]
@@ -136,8 +129,6 @@ def merge_knowledge_reports(reports: list[tuple[str, dict]], include_llm: bool =
             for key in ("business_descriptions", "business_rules", "error_catalog", "state_machines"):
                 semantic[key].extend(_tag(report.get(key, []), repository))
 
-    production = int(totals["production_functions"])
-    covered = int(totals["covered_functions"])
     disabled = {"note": "Set --llm flag to enable LLM analysis"}
     return {
         "repositories": [name for name, _ in reports],
@@ -149,14 +140,6 @@ def merge_knowledge_reports(reports: list[tuple[str, dict]], include_llm: bool =
             "dependencies": {},
         },
         "core_entities": sorted(entities, key=lambda item: -item.get("score", 0))[:30],
-        "test_coverage": {
-            "test_functions": int(totals["test_functions"]),
-            "production_functions": production,
-            "covered_functions": covered,
-            "coverage_pct": round(covered / production * 100, 1) if production else 0,
-            "gap_count": int(totals["gap_count"]),
-            "top_gaps": gaps,
-        },
         "layer_violations": {"violation_count": len(violations), "violations": violations},
         "config_consumption": {
             "config_files": len(config_files),

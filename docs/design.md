@@ -7,7 +7,7 @@
 
 CodeEvolution 做两件事：
 
-1. **从代码逆向业务知识** — 基于 CodeGraph 知识图谱，无需重新解析代码，自动抽取 18 维结构化知识
+1. **从代码逆向业务知识** — 基于 CodeGraph 知识图谱，无需重新解析代码，自动抽取 17 维结构化知识
 2. **追踪代码演进** — 沿 git 历史逐 commit 分析，以"功能"为单位追踪代码的演变过程
 
 服务产品经理、架构师、开发、测试、运维五个角色。输出形态为 CLI + MCP Server + Web 控制台。
@@ -16,7 +16,7 @@ CodeEvolution 做两件事：
 
 | 工具 | 做什么 | CodeEvolution 增加什么 |
 |------|--------|---------------------|
-| `codegraph` (npm) | 对当前代码建知识图谱 | 从图谱逆向业务知识（18 维）、跨仓库拼接、时间维度演进追踪 |
+| `codegraph` (npm) | 对当前代码建知识图谱 | 从图谱逆向业务知识（17 维）、跨仓库拼接、时间维度演进追踪 |
 | `code-review-graph` (PyPI) | PR diff 影响分析 | 长期演进趋势、业务规则提取、跨服务实体对齐 |
 | OpenTelemetry / Sentry | 运行时 trace/error | 静态知识图谱 + 代码结构关联（Phase 3+） |
 
@@ -128,7 +128,7 @@ codeevolution/
 
 ---
 
-## 4. 知识提取：三阶段 13 维
+## 4. 知识提取：三阶段 12 维
 
 ### Phase 1 — 纯图计算（秒级，无 LLM）
 
@@ -137,26 +137,25 @@ codeevolution/
 | 1 | API 契约 | route nodes + handler functions | HTTP decorator 匹配 + 签名提取 |
 | 2 | 模块拓扑 | imports/calls edges + 构建清单/目录布局 | 路径骨架 + 图耦合（依赖/耦合度/内聚度） |
 | 3 | 核心实体 | calls edges | PageRank 中心度 |
-| 4 | 测试缺口 | test files + calls edges | 测试→生产 调用差集 |
-| 5 | 分层违规 | file_path + calls edges | 目录命名约定检查 |
+| 4 | 分层违规 | file_path + calls edges | 目录命名约定检查 |
 
 ### Phase 2 — 图 + 规则（秒级，无 LLM）
 
 | # | 维度 | 输入 | 算法 |
 |---|------|------|------|
-| 6 | 配置消费 | config files + variable nodes | key 名匹配 + 调用链追踪 |
-| 7 | 外部依赖 | import nodes + decorators | 40+ 已知服务模式匹配 |
-| 8 | 权限模型 | decorators + function names | 20+ 权限注解模式匹配 |
-| 9 | 热力图 | calls edges | in/out-degree 百分位分层 |
+| 5 | 配置消费 | config files + variable nodes | key 名匹配 + 调用链追踪 |
+| 6 | 外部依赖 | import nodes + decorators | 40+ 已知服务模式匹配 |
+| 7 | 权限模型 | decorators + function names | 20+ 权限注解模式匹配 |
+| 8 | 热力图 | calls edges | in/out-degree 百分位分层 |
 
 ### Phase 3 — 图 + LLM（需要 API key）
 
 | # | 维度 | 输入 | 算法 |
 |---|------|------|------|
-| 10 | 业务描述 | function signature + callers/callees + 源码 | LLM → 中英文摘要 + 业务域分类 |
-| 11 | 业务规则 | 函数体源码 | LLM → 验证/转换/授权/工作流规则提取 |
-| 12 | 错误目录 | 函数体源码 | LLM → 错误类型+触发条件+处理策略 |
-| 13 | 状态机 | enum nodes + 使用函数 | LLM → 状态+转换+触发器推导 |
+| 9 | 业务描述 | function signature + callers/callees + 源码 | LLM → 中英文摘要 + 业务域分类 |
+| 10 | 业务规则 | 函数体源码 | LLM → 验证/转换/授权/工作流规则提取 |
+| 11 | 错误目录 | 函数体源码 | LLM → 错误类型+触发条件+处理策略 |
+| 12 | 状态机 | enum nodes + 使用函数 | LLM → 状态+转换+触发器推导 |
 
 API 功能解释采用人工触发、叶子优先的节点解释与快照发布机制，详细设计见
 [API 功能解释与快照设计](api-explanation-snapshot-design.md)。

@@ -94,8 +94,6 @@ def test_knowledge_api_returns_all_endpoints_in_report():
         modules=[], coupling_score=0, dependency_graph={}
     )
     extractor.extract_core_entities = lambda _top_n: []
-    extractor.extract_test_gaps = lambda: []
-    extractor.extract_test_coverage_stats = lambda: {}
     extractor.extract_layer_violations = lambda: []
     extractor.extract_config_consumption = lambda: []
     extractor.extract_external_dependencies = lambda: []

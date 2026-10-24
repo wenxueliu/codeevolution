@@ -25,7 +25,7 @@ CodeEvolution 是一个本地优先的代码仓功能演进分析与业务知识
 | 单仓视角不足 | 服务依赖、消息链路和共享资源分散在多个仓库 | 将多个 Repository Member 固定到同一个 Graph View，生成带证据的拓扑 |
 | 变更影响不可见 | 开发者不知道上游、下游和潜在受影响的入口 | 通过调用图、影响分析和流程追踪查询传播路径 |
 | 分析结果不可信或不可复现 | 实时读取现场代码导致结果随时间漂移 | 显式 Analysis Run，冻结源码和 CodeGraph，发布不可变 Snapshot |
-| 自动化测试与代码知识脱节 | 测试缺口、业务规则和浏览器回归用例互相孤立 | 从知识中心进入 UI 录制、检查点和回放闭环 |
+| 自动化测试与代码知识脱节 | 业务规则和浏览器回归用例互相孤立 | 从知识中心进入 UI 录制、检查点和回放闭环 |
 
 ### 2.2 产品假设
 
@@ -64,7 +64,7 @@ CodeEvolution 是一个本地优先的代码仓功能演进分析与业务知识
 | 产品经理/业务分析师 | 从 API 和调用链理解业务流程、规则和副作用 | API 功能解释、业务流程、验收线索 | P0 |
 | 架构师 | 理解模块边界、服务拓扑、依赖和影响范围 | Graph View、拓扑证据、影响路径 | P0 |
 | 开发者 | 定位符号、调用方/被调用方和变更风险 | 调用树、源码位置、受控问答结果 | P0 |
-| 测试工程师 | 找到覆盖缺口，将业务旅程转成可回放用例 | 测试缺口、UI Recording、检查点结果 | P1 |
+| 测试工程师 | 将业务旅程转成可回放用例 | UI Recording、检查点结果 | P1 |
 | 运维/平台工程师 | 识别外部依赖、配置、权限和服务健康问题 | 依赖清单、配置消费、权限模型、拓扑 | P1 |
 
 ## 5. 产品核心模型
@@ -76,7 +76,7 @@ flowchart LR
     Run --> Attempt[Member Attempt\n按成员执行/失败/重试]
     Attempt --> Evidence[Evidence Bundle\n冻结源码 + CodeGraph + manifest]
     Evidence --> Snapshot[Repository Snapshot\n不可变单仓事实]
-    Snapshot --> Knowledge[Knowledge Report\n13 维单仓知识]
+    Snapshot --> Knowledge[Knowledge Report\n12 维单仓知识]
     Snapshot --> Chain[Call Tree / API 解释]
     Snapshot --> Chat[受控问答 + Audit Log]
     Snapshot --> Rule[节点规则/业务规则]
@@ -128,7 +128,7 @@ flowchart LR
     E -->|取消/失败| H[修复环境或重新选择]
     H --> D
     F --> I[创建 Graph View]
-    F --> J[Knowledge：13 维结构化知识]
+    F --> J[Knowledge：12 维结构化知识]
     J --> R[Terms：术语识别与审核]
     J --> K[API 契约 → 调用树 → 源码证据]
     K --> L[LLM 业务解释/规则]
@@ -151,7 +151,7 @@ flowchart LR
 | FR-01 | P0 | 注册和管理 Scope、Repository Member | 能创建 Scope；只能添加可读的 Git 目录；可查看、更新、移除成员；移除不删除实际代码和历史 Snapshot | 已实现：`/api/scopes*`、`RepositoryCatalogService`、`Home.vue` |
 | FR-02 | P0 | 显式发起可追踪的分析 Run | 选择一个或多个成员后创建异步 Run；页面显示每个 Attempt 的阶段和错误；可取消 Run/成员；失败成员可重试 | 已实现：`/api/analysis-runs*`、`AnalysisRunService`、`Snapshots.vue` |
 | FR-03 | P0 | 生成不可变、可校验的 Repository Snapshot | 分析前后校验源码 digest；冻结 CodeGraph、源码和 manifest；成功后才发布；保留 branch/head/dirty/完整性信息 | 已实现：`RepositoryAttemptWorker`、`EvidenceBundle`、Snapshot 存储 |
-| FR-04 | P0 | 浏览单仓结构化知识 | Snapshot 可展示 API 契约、模块拓扑、核心实体、测试缺口、分层违规、配置、外部依赖、权限和热力图等维度；每项保留来源位置 | 已实现：`/api/knowledge`、`Knowledge.vue`、`analysis/knowledge/` |
+| FR-04 | P0 | 浏览单仓结构化知识 | Snapshot 可展示 API 契约、模块拓扑、核心实体、分层违规、配置、外部依赖、权限和热力图等维度；每项保留来源位置 | 已实现：`/api/knowledge`、`Knowledge.vue`、`analysis/knowledge/` |
 | FR-05 | P0 | 从 API 入口查看调用链 | 用户可筛选 API、展开节点、查看调用位置和时序图；节点展开使用 Snapshot 内的 CodeGraph ID | 已实现：`/api/call-tree/children`、`CallChainTree.vue` |
 | FR-06 | P0 | 固定多个仓库的 Graph View | 能按成员当前 Snapshot 创建 View；View 显示成员、digest 和可用性；固定后可复查/导出 | 已实现 API：`/api/graph-views*`；Web 已支持创建/查看，固定操作入口仍需补齐：`Snapshots.vue`、`GraphView.vue` |
 | FR-07 | P0 | 生成拓扑并查询影响/流程 | 拓扑需显式创建 Artifact Job；完成后展示服务边、通信类型、证据、覆盖、候选和资源依赖；Impact/Flow 以同一 View 查询 | 已实现：`GraphArtifactService`、`/api/graph-views/{id}/impact|flow` |
@@ -186,7 +186,7 @@ flowchart LR
 - 页面标题必须明确当前 Snapshot ID；不能只显示成员名。
 - 无仓上下文时呈现项目目录态，引导用户从 Snapshots 进入。
 - Phase 1/2 结构知识默认可用；Phase 3/LLM 能力显式提示配置与潜在费用。
-- 概要卡展示端点/术语/模块/核心实体/测试覆盖/分层违规计数；知识分区按阶段分组，可逐个展开。
+- 概要卡展示端点/术语/模块/核心实体/分层违规计数；知识分区按阶段分组，可逐个展开。
 - API 契约支持搜索、HTTP 方法筛选、服务筛选、分页、调用树和时序图。
 - API 解释支持提示词模板编辑（系统默认/local/synthesis/aggregate 与端点级覆盖）、单条生成、批量任务卡（进度、完成/失败/跳过/取消计数、取消与失败重试）和每端点解释状态徽章。
 - 术语分区展示按可信度排序的术语与状态徽章，与 Terms 页共享同一套状态语义。
@@ -323,7 +323,7 @@ flowchart LR
 
 | 版本 | 目标 | 能力范围 |
 |---|---|---|
-| MVP | 从仓库到可信代码证据 | Scope/Member、Analysis Run、Snapshot、13 维结构化知识、API 调用树、错误恢复 |
+| MVP | 从仓库到可信代码证据 | Scope/Member、Analysis Run、Snapshot、12 维结构化知识、API 调用树、错误恢复 |
 | V1 | 从单仓理解到跨仓决策 | Graph View、Topology Artifact、Impact、Flow、固定 View 导出、历史引用保护 |
 | V1.1 | 从事实到语义 | LLM 设置、API 功能解释（单条/批量/提示词模板）、业务规则、节点解释、业务术语识别与审核、语义产物覆盖与审计 |
 | V2 | 从分析到验证 | UI 录制/回放、更多检查点、跨 Snapshot diff、趋势、报告和团队协作 |
