@@ -11,7 +11,6 @@ const Knowledge = () => import('./pages/Knowledge.vue')
 const Snapshots = () => import('./pages/Snapshots.vue')
 const GraphView = () => import('./pages/GraphView.vue')
 const Terms = () => import('./pages/Terms.vue')
-const Layers = () => import('./pages/Layers.vue')
 
 const routes = [
   { path: '/', name: 'home', component: Home },
@@ -19,7 +18,6 @@ const routes = [
   { path: '/graph-views/:viewId?', name: 'graph-view', component: GraphView, props: true },
   { path: '/knowledge', name: 'knowledge-home', component: Knowledge },
   { path: '/terms', name: 'terms', component: Terms },
-  { path: '/layers', name: 'layers', component: Layers },
   { path: '/repo/:repoName', name: 'knowledge', component: Knowledge, props: true },
 ]
 

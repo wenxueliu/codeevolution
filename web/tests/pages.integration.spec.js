@@ -543,6 +543,9 @@ describe('repository and knowledge pages', () => {
       await wrapper.vm.$nextTick()
       expect(wrapper.find('.panel').exists()).toBe(true)
     }
+    wrapper.vm.activeSection = 'layer_violations'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="layer-rules"]').exists()).toBe(true)
     wrapper.vm.report.business_descriptions = { note: '请启用 LLM' }
     wrapper.vm.activeSection = 'business_descriptions'
     await wrapper.vm.$nextTick()

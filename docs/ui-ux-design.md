@@ -78,6 +78,7 @@ sessionStorage 保存 `codeevolution:last-snapshot-id` / `-member` / `-graph-vie
 
 - 概要卡：API 端点 · 术语 · 模块 · 核心实体 · 分层违规。
 - 13 个知识分区（`SECTIONS` 常量）按阶段分组：阶段 1/2 结构知识（api_contract、terms、module_topology、core_entities、layer_violations、config_consumption、external_dependencies、authorization_model、heat_map）默认可用；阶段 3 LLM 分区（business_descriptions、business_rules、error_catalog、state_machines）显式提示配置与费用。
+- 「分层违规」分区内嵌「分层规则」面板（`LayerRules.vue`，`data-testid="layer-rules"`）：每个仓库一份声明，随当前 Snapshot 所属仓库读写 `<repo>/.codeevolution/layers.json`，无仓库选择器；提供重新生成、格式化、检查（针对该 Snapshot 冻结代码图预览）、写基线、保存。保存后提示需重新分析生成新 Snapshot 才更新已发布违规。
 - LLM 抽取按钮 + `llm-progress` 进度条轮询 job 状态；失败不影响其他分区浏览。
 
 ### 6.2 API 解释（FR-08 重点）

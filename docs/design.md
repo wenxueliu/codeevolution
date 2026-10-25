@@ -175,9 +175,14 @@ codeevolution/
 `layers check` 消费同一份声明，配合 `layers.baseline.json` 支持存量治理：先
 `--write-baseline` 把现有违规计入基线，此后只有新增违规让 CI 失败。
 
-Web 控制台的「分层规则」页（`/layers`）对同一份声明提供在线查看、编辑、重新生成、
-检查和写基线；接口为 `GET|PUT /api/repos/{name}/layers`、
-`POST /api/repos/{name}/layers/{init,check,baseline}`。
+Web 知识中心的「分层违规」分区内嵌「分层规则」面板：每个仓库一份声明，面板随当前
+Snapshot 所属仓库定位 `<repo>/.codeevolution/layers.json`，提供在线查看、编辑、重新
+生成、检查和写基线。检查与生成针对该 Snapshot 的冻结代码图执行，因此预览结果与页面上
+列出的违规同源；保存声明后需重新分析生成新 Snapshot 才会改变已发布事实。接口为
+`GET|PUT /api/repository-snapshots/{snapshot_id}/layers`、
+`POST /api/repository-snapshots/{snapshot_id}/layers/{init,check,baseline}`。
+分析发布时读取仓库声明并写入 facts，声明内容的摘要并入 `rules_digest`，声明变化会产生
+新 Snapshot。
 
 ### Phase 3 — 图 + LLM（需要 API key）
 

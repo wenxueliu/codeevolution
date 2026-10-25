@@ -281,10 +281,12 @@ class RepositoryAttemptWorker:
         inventory = SnapshotSourceInventory(evidence_staging / "sources", manifest)
 
         self._stage(attempt.id, AttemptStage.ANALYZING, 75)
+        rules_digest = _declared_layers_digest(root)
         facts = self.analyzer(graph.path, inventory)
+        facts = _apply_declared_layers(facts, graph.path, root)
         snapshot_id = str(uuid4())
         communication = self._communication_artifact(
-            graph.path, inventory, snapshot_id, member_id=attempt.member_id
+            graph.path, inventory, snapshot_id, member_id=attempt.member_id, rules_digest=rules_digest
         )
         communication_bytes = serialize_communication_artifact(communication)
         communication_staging = staging / "communication"
@@ -331,7 +333,7 @@ class RepositoryAttemptWorker:
             codegraph_version=self.codegraph_version,
             codegraph_schema_digest=graph.schema_fingerprint,
             analyzer_bundle_digest=self.analyzer_bundle_digest,
-            rules_digest=self.rules_digest,
+            rules_digest=rules_digest,
             report_schema_version=self.report_schema_version,
             options_digest=self.options_digest,
             facts_digest=facts_digest,
@@ -380,12 +382,14 @@ class RepositoryAttemptWorker:
         snapshot_id: str,
         *,
         member_id: str | None = None,
+        rules_digest: str | None = None,
     ) -> RepositoryCommunicationArtifact:
         """Build communication facts exclusively from the frozen staging inputs."""
         from codeevolution.infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 
+        effective_digest = rules_digest or self.rules_digest
         rules = CollectorRuleSet(
-            digest=self.rules_digest,
+            digest=effective_digest,
             version=str(TIER1_RULES["version"]),
             budgets=dict(TIER1_RULES["budgets"]),
             options={"support": TIER1_RULES["support"]},
@@ -400,7 +404,7 @@ class RepositoryAttemptWorker:
             # language/framework collector cannot inspect a frozen graph.
             return RepositoryCommunicationArtifact(
                 snapshot_id=snapshot_id,
-                rules_digest=self.rules_digest,
+                rules_digest=effective_digest,
                 collector_coverage=(
                     CollectorCoverage(
                         "communication",
@@ -546,6 +550,56 @@ def _analyze_existing_report(graph_db: Path, sources: SnapshotSourceInventory) -
         return KnowledgeExtractor(repository, sources).extract_all(include_llm=False)
     finally:
         repository.close()
+
+
+def _apply_declared_layers(
+    facts: dict[str, Any], graph_db: Path, repository_root: Path
+) -> dict[str, Any]:
+    """Recompute layer violations with the declaration the repository owns.
+
+    The default analyzer sees only the frozen graph, whose parent directories
+    contain no ``.codeevolution/layers.json``.  Layers are repository data, so
+    the declaration is read from the live checkout and applied here, keeping
+    every other fact untouched.
+    """
+    from codeevolution.analysis.knowledge.layer_config import (
+        CONFIG_RELPATH,
+        load_layers_config,
+    )
+    from codeevolution.analysis.knowledge.layer_rules import LayerRuleExtractor
+    from codeevolution.infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
+    from codeevolution.knowledge import serialize_layer_violations
+
+    if "layer_violations" not in facts:
+        return facts
+    config_path = repository_root / CONFIG_RELPATH
+    if not config_path.is_file():
+        return facts
+    try:
+        config = load_layers_config(config_path)
+    except ValueError as error:
+        logger.warning("ignoring invalid layers config for %s: %s", repository_root, error)
+        return facts
+    repository = SQLiteCodeGraphRepository(str(graph_db))
+    try:
+        violations = LayerRuleExtractor(repository, config).extract()
+    finally:
+        repository.close()
+    return {**facts, "layer_violations": serialize_layer_violations(violations)}
+
+
+def _declared_layers_digest(repository_root: Path) -> str:
+    """Fold the declaration into the rules digest so edits invalidate reuse."""
+    from codeevolution.analysis.knowledge.layer_config import CONFIG_RELPATH
+
+    config_path = repository_root / CONFIG_RELPATH
+    if not config_path.is_file():
+        return TIER1_RULES_DIGEST
+    try:
+        blob = config_path.read_bytes()
+    except OSError:
+        return TIER1_RULES_DIGEST
+    return "sha256:" + hashlib.sha256(TIER1_RULES_DIGEST.encode() + b"\0" + blob).hexdigest()
 
 
 def _canonical_bytes(value: Any) -> bytes:

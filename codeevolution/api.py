@@ -1373,35 +1373,36 @@ def api_remove_member(name: str, path: str = Query(..., min_length=1)):
 _LAYERS_WRITE_FIELDS = ("version", "layers", "rules", "generated", "evidence", "ratchet")
 
 
-def _layers_member(name: str, member: str) -> tuple[dict, Path]:
-    """Resolve the logical service and the physical repository the config belongs to."""
-    entry = get_repo(name)
-    if not entry:
-        raise HTTPException(404, f"Repo '{name}' not found")
-    members = repository_members(entry)
-    if member:
-        target = next((item for item in members if item.get("path") == member), None)
-        if target is None:
-            raise HTTPException(404, f"Repository member '{member}' not found in '{name}'")
-        return entry, Path(target["path"])
-    if members:
-        return entry, Path(members[0]["path"])
-    return entry, Path(entry["path"])
+def _layers_repo_root(snapshot_id: str) -> Path:
+    """Resolve the checkout that owns a snapshot's single layer declaration."""
+    store = get_snapshot_store()
+    snapshot = store.get_snapshot(snapshot_id)
+    if snapshot is None:
+        raise HTTPException(404, "repository snapshot not found")
+    member = store.get_member(snapshot.member_id)
+    if member is None:
+        raise HTTPException(404, "repository member not found")
+    root = Path(member.registered_path).expanduser()
+    if not root.is_dir():
+        raise HTTPException(409, f"repository checkout not found: {root}")
+    return root
+
+
+def _layers_graph(snapshot_id: str):
+    """Open the snapshot's frozen CodeGraph so checks match the shown facts."""
+    try:
+        handle = get_snapshot_query_service().open(snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(410 if str(error) == "snapshot_gone" else 409, str(error)) from error
+    return handle
 
 
 def _layers_paths(repo_path: Path) -> tuple[Path, Path]:
     from .analysis.knowledge.layer_config import BASELINE_RELPATH, CONFIG_RELPATH
 
     return repo_path / CONFIG_RELPATH, repo_path / BASELINE_RELPATH
-
-
-def _layers_graph_db(repo_path: Path) -> str:
-    db_path = repo_path / ".codegraph" / "codegraph.db"
-    if not db_path.exists():
-        raise HTTPException(
-            409, f"code graph not found: {db_path} (run 'codegraph init' in {repo_path})"
-        )
-    return str(db_path)
 
 
 def _write_layers_file(target: Path, payload: dict[str, Any]) -> None:
@@ -1423,13 +1424,13 @@ def _layers_config_view(config) -> dict[str, Any]:
     return payload
 
 
-@app.get("/api/repos/{name}/layers")
-def api_get_layers(name: str, member: str = Query("")):
-    """Read one repository's layer declaration, or the built-in default when absent."""
+@app.get("/api/repository-snapshots/{snapshot_id}/layers")
+def api_get_layers(snapshot_id: str):
+    """Read the declaration the snapshot's repository owns, or the built-in default."""
     from .analysis.knowledge.layer_config import builtin_layers_config, load_layers_config
     from .application.layer_config_service import read_baseline
 
-    entry, repo_path = _layers_member(name, member)
+    repo_path = _layers_repo_root(snapshot_id)
     config_path, baseline_path = _layers_paths(repo_path)
     exists = config_path.exists()
     if exists:
@@ -1444,13 +1445,12 @@ def api_get_layers(name: str, member: str = Query("")):
         config = builtin_layers_config()
         document = _layers_config_view(config)
     return {
-        "repo": name,
+        "snapshot_id": snapshot_id,
         "repo_path": str(repo_path),
         "config_path": str(config_path),
         "baseline_path": str(baseline_path),
         "exists": exists,
         "baseline_pairs": len(read_baseline(baseline_path)),
-        "graph_ready": (repo_path / ".codegraph" / "codegraph.db").exists(),
         "config": document if isinstance(document, dict) else _layers_config_view(config),
     }
 
@@ -1459,12 +1459,12 @@ class LayersWriteRequest(BaseModel):
     config: dict[str, Any]
 
 
-@app.put("/api/repos/{name}/layers")
-def api_put_layers(name: str, request: LayersWriteRequest, member: str = Query("")):
+@app.put("/api/repository-snapshots/{snapshot_id}/layers")
+def api_put_layers(snapshot_id: str, request: LayersWriteRequest):
     """Validate and persist an edited declaration, keeping generation metadata."""
     from .analysis.knowledge.layer_config import LayerConfig
 
-    entry, repo_path = _layers_member(name, member)
+    repo_path = _layers_repo_root(snapshot_id)
     config_path, _baseline_path = _layers_paths(repo_path)
     try:
         config = LayerConfig.from_dict(request.config, origin=str(config_path))
@@ -1480,21 +1480,15 @@ def api_put_layers(name: str, request: LayersWriteRequest, member: str = Query("
     return {"ok": True, "config_path": str(config_path), "config": _layers_config_view(config)}
 
 
-@app.post("/api/repos/{name}/layers/init")
-def api_init_layers(
-    name: str, member: str = Query(""), write: bool = Query(False)
-):
-    """Derive a declaration from the current code graph; writes only when asked."""
+@app.post("/api/repository-snapshots/{snapshot_id}/layers/init")
+def api_init_layers(snapshot_id: str, write: bool = Query(False)):
+    """Derive a declaration from the snapshot graph; writes only when asked."""
     from .application.layer_config_service import LayerConfigService
-    from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 
-    entry, repo_path = _layers_member(name, member)
+    repo_path = _layers_repo_root(snapshot_id)
     config_path, _baseline_path = _layers_paths(repo_path)
-    repository = SQLiteCodeGraphRepository(_layers_graph_db(repo_path))
-    try:
-        generated = LayerConfigService(repository).generate()
-    finally:
-        repository.close()
+    with _layers_graph(snapshot_id) as handle:
+        generated = LayerConfigService(handle.graph).generate()
     if write:
         _write_layers_file(config_path, generated)
     return {"ok": True, "config_path": str(config_path), "written": write, "generated": generated}
@@ -1504,20 +1498,17 @@ class LayersCheckRequest(BaseModel):
     config: dict[str, Any] | None = None
 
 
-@app.post("/api/repos/{name}/layers/check")
-def api_check_layers(
-    name: str, request: LayersCheckRequest | None = None, member: str = Query("")
-):
-    """Check the current graph against the saved declaration or an unsaved draft."""
+@app.post("/api/repository-snapshots/{snapshot_id}/layers/check")
+def api_check_layers(snapshot_id: str, request: LayersCheckRequest | None = None):
+    """Check the snapshot graph against the saved declaration or an unsaved draft."""
     from .analysis.knowledge.layer_config import (
         LayerConfig,
         builtin_layers_config,
         load_layers_config,
     )
     from .application.layer_config_service import LayerConfigService, read_baseline
-    from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 
-    entry, repo_path = _layers_member(name, member)
+    repo_path = _layers_repo_root(snapshot_id)
     config_path, baseline_path = _layers_paths(repo_path)
     try:
         if request and request.config:
@@ -1529,11 +1520,8 @@ def api_check_layers(
     except ValueError as error:
         raise HTTPException(400, str(error))
 
-    repository = SQLiteCodeGraphRepository(_layers_graph_db(repo_path))
-    try:
-        report = LayerConfigService(repository).check(config, read_baseline(baseline_path))
-    finally:
-        repository.close()
+    with _layers_graph(snapshot_id) as handle:
+        report = LayerConfigService(handle.graph).check(config, read_baseline(baseline_path))
 
     def rows(items):
         return [
@@ -1570,30 +1558,30 @@ class LayersBaselineRequest(BaseModel):
     config: dict[str, Any] | None = None
 
 
-@app.post("/api/repos/{name}/layers/baseline")
-def api_baseline_layers(
-    name: str, request: LayersBaselineRequest | None = None, member: str = Query("")
-):
+@app.post("/api/repository-snapshots/{snapshot_id}/layers/baseline")
+def api_baseline_layers(snapshot_id: str, request: LayersBaselineRequest | None = None):
     """Accept every current violation into the baseline so only new ones fail."""
-    from .analysis.knowledge.layer_config import LayerConfig, load_layers_config
+    from .analysis.knowledge.layer_config import (
+        LayerConfig,
+        builtin_layers_config,
+        load_layers_config,
+    )
     from .application.layer_config_service import LayerConfigService, read_baseline, write_baseline
-    from .infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
 
-    entry, repo_path = _layers_member(name, member)
+    repo_path = _layers_repo_root(snapshot_id)
     config_path, baseline_path = _layers_paths(repo_path)
     try:
         if request and request.config:
             config = LayerConfig.from_dict(request.config, origin="draft")
-        else:
+        elif config_path.exists():
             config = load_layers_config(config_path)
+        else:
+            config = builtin_layers_config()
     except ValueError as error:
         raise HTTPException(400, str(error))
 
-    repository = SQLiteCodeGraphRepository(_layers_graph_db(repo_path))
-    try:
-        report = LayerConfigService(repository).check(config, read_baseline(baseline_path))
-    finally:
-        repository.close()
+    with _layers_graph(snapshot_id) as handle:
+        report = LayerConfigService(handle.graph).check(config, read_baseline(baseline_path))
     count = write_baseline(baseline_path, report["known"] + report["new"])
     return {"ok": True, "baseline_path": str(baseline_path), "pairs": count}
 

@@ -31,6 +31,24 @@ from .infrastructure.source_filesystem import FileSystemSourceProvider
 from .ports import SourceProvider
 
 
+def serialize_layer_violations(violations: list[LayerViolation]) -> dict:
+    """Freeze violations into the report shape every consumer already reads."""
+    return {
+        "violation_count": len(violations),
+        "violations": [
+            {
+                "source": item.source_name,
+                "source_file": item.source_file,
+                "source_layer": item.source_layer,
+                "target": item.target_name,
+                "target_file": item.target_file,
+                "target_layer": item.target_layer,
+            }
+            for item in violations[:50]
+        ],
+    }
+
+
 class KnowledgeExtractor:
     """Legacy public API delegating each dimension to an independent analyzer."""
 
@@ -161,20 +179,7 @@ class KnowledgeExtractor:
                 }
                 for item in entities
             ],
-            "layer_violations": {
-                "violation_count": len(violations),
-                "violations": [
-                    {
-                        "source": item.source_name,
-                        "source_file": item.source_file,
-                        "source_layer": item.source_layer,
-                        "target": item.target_name,
-                        "target_file": item.target_file,
-                        "target_layer": item.target_layer,
-                    }
-                    for item in violations[:50]
-                ],
-            },
+            "layer_violations": serialize_layer_violations(violations),
             "config_consumption": self._serialize_config_consumption(
                 self.extract_config_consumption()
             ),
