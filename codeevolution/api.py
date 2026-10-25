@@ -1435,10 +1435,14 @@ def api_get_layers(name: str, member: str = Query("")):
     if exists:
         try:
             config = load_layers_config(config_path)
+            # Serve the file verbatim so the editor shows exactly what is on
+            # disk, including the generation evidence a regeneration wrote.
+            document = json.loads(config_path.read_text(encoding="utf-8"))
         except ValueError as error:
             raise HTTPException(400, str(error))
     else:
         config = builtin_layers_config()
+        document = _layers_config_view(config)
     return {
         "repo": name,
         "repo_path": str(repo_path),
@@ -1447,7 +1451,7 @@ def api_get_layers(name: str, member: str = Query("")):
         "exists": exists,
         "baseline_pairs": len(read_baseline(baseline_path)),
         "graph_ready": (repo_path / ".codegraph" / "codegraph.db").exists(),
-        "config": _layers_config_view(config),
+        "config": document if isinstance(document, dict) else _layers_config_view(config),
     }
 
 

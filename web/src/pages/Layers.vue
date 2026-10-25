@@ -331,6 +331,7 @@ export default {
 .layers-selectors select { border: 1px solid #cfd3da; border-radius: 5px; padding: 7px 8px; min-width: 150px; }
 .layers-meta { display: flex; gap: 1px; background: #e7e7eb; border: 1px solid #e7e7eb; border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
 .layers-meta > div { flex: 1; background: #fff; padding: 12px 14px; min-width: 0; }
+.layers-meta > div:first-child { flex: 2.2; }
 .layers-meta span { display: block; color: #888; font-size: 11px; margin-bottom: 5px; }
 .layers-meta code { display: block; color: #444; font-size: 12px; overflow-wrap: anywhere; }
 .layers-meta strong { font-size: 14px; }
