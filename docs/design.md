@@ -175,6 +175,10 @@ codeevolution/
 `layers check` 消费同一份声明，配合 `layers.baseline.json` 支持存量治理：先
 `--write-baseline` 把现有违规计入基线，此后只有新增违规让 CI 失败。
 
+Web 控制台的「分层规则」页（`/layers`）对同一份声明提供在线查看、编辑、重新生成、
+检查和写基线；接口为 `GET|PUT /api/repos/{name}/layers`、
+`POST /api/repos/{name}/layers/{init,check,baseline}`。
+
 ### Phase 3 — 图 + LLM（需要 API key）
 
 | # | 维度 | 输入 | 算法 |

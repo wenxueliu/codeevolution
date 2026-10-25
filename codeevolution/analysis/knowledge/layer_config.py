@@ -73,7 +73,7 @@ LEGACY_ALLOW: tuple[tuple[str, str], ...] = (
 _EXTRA_ROLE_TOKENS: dict[str, tuple[str, ...]] = {
     "presentation": (
         "presentation", "controllers", "handlers", "views", "routes", "routers", "apis",
-        "endpoints", "resources", "serializers", "rest", "http", "servlets", "delivery",
+        "endpoints", "resource", "serializers", "rest", "http", "servlets", "delivery",
         "interface", "interfaces",
     ),
     "application": (

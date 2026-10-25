@@ -44,6 +44,10 @@ _WRAPPER_DIRS = {
 _SUFFIX_MIN_OCCURRENCES = 3
 _SUFFIX_MIN_DIRECTORIES = 2
 
+# Process entry points end in a role-like word but name no layer: a Spring Boot
+# ``MallApplication`` is the bootstrap, not the application layer.
+_BOOTSTRAP_SUFFIXES = {"application", "bootstrap", "main", "app"}
+
 # Directions the previous built-in matrix already treated as violations.  They
 # are only a ranking hint for ``layers init``: a reviewer should look at these
 # pairs before the ones that merely exist.
@@ -80,6 +84,8 @@ def _suffix_role(stem: str) -> tuple[str, str]:
         if len(tokens) <= size - 1:
             continue
         candidate = "".join(tokens[-size:])
+        if candidate.lower() in _BOOTSTRAP_SUFFIXES:
+            return "", ""
         layer = ROLE_GLOSSARY.get(candidate.lower())
         if layer:
             return layer, candidate
