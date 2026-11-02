@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+from ..domain.term_types import canonical_term_type, term_type_aliases
 from .analysis_snapshot_sqlite import utc_now
 
 
@@ -127,8 +128,208 @@ class TermStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_term_overrides_snapshot
                     ON term_overrides(snapshot_id, term_id, created_at);
+                CREATE TABLE IF NOT EXISTS evidence_package (
+                    snapshot_id TEXT NOT NULL,
+                    term_id TEXT NOT NULL,
+                    source_version TEXT NOT NULL DEFAULT '',
+                    analysis_version TEXT NOT NULL DEFAULT '',
+                    conflict_count INTEGER NOT NULL DEFAULT 0,
+                    package_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(snapshot_id, term_id)
+                );
+                CREATE TABLE IF NOT EXISTS evidence_conflict (
+                    id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL,
+                    term_id TEXT NOT NULL,
+                    conflict_type TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'review',
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    resolved INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS term_definition (
+                    id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL,
+                    term_id TEXT NOT NULL,
+                    canonical_name TEXT NOT NULL DEFAULT '',
+                    definition TEXT NOT NULL DEFAULT '',
+                    facts_json TEXT NOT NULL DEFAULT '[]',
+                    inferences_json TEXT NOT NULL DEFAULT '[]',
+                    unknowns_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    grounding_json TEXT NOT NULL DEFAULT '{}',
+                    model_name TEXT NOT NULL DEFAULT '',
+                    prompt_version TEXT NOT NULL DEFAULT '',
+                    analysis_version TEXT NOT NULL DEFAULT '',
+                    input_hash TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS term_pair_judgment (
+                    id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL DEFAULT '',
+                    view_id TEXT NOT NULL DEFAULT '',
+                    source_term_id TEXT NOT NULL,
+                    target_term_id TEXT NOT NULL,
+                    judgment TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 0,
+                    support_evidence_json TEXT NOT NULL DEFAULT '[]',
+                    against_evidence_json TEXT NOT NULL DEFAULT '[]',
+                    constraints_json TEXT NOT NULL DEFAULT '[]',
+                    algorithm_version TEXT NOT NULL DEFAULT 'pair-v1',
+                    status TEXT NOT NULL DEFAULT 'proposed',
+                    reviewer TEXT NOT NULL DEFAULT '',
+                    reviewed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(snapshot_id, view_id, source_term_id, target_term_id)
+                );
+                CREATE TABLE IF NOT EXISTS merge_operation (
+                    id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL DEFAULT '',
+                    source_term_ids_json TEXT NOT NULL DEFAULT '[]',
+                    target_term_id TEXT NOT NULL,
+                    operation TEXT NOT NULL DEFAULT 'MERGE',
+                    reason TEXT NOT NULL DEFAULT '',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    affected_relations_json TEXT NOT NULL DEFAULT '[]',
+                    reviewer TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'proposed',
+                    reversed_by TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS review_record (
+                    id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL DEFAULT '',
+                    release_id TEXT NOT NULL DEFAULT '',
+                    item_type TEXT NOT NULL DEFAULT 'TERM',
+                    item_id TEXT NOT NULL,
+                    item_version INTEGER NOT NULL DEFAULT 1,
+                    action TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    reviewer TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS release_snapshot (
+                    release_id TEXT PRIMARY KEY,
+                    release_name TEXT NOT NULL DEFAULT '',
+                    version TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_by TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    snapshot_hash TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS release_item (
+                    release_id TEXT NOT NULL,
+                    item_type TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    item_version INTEGER NOT NULL DEFAULT 1,
+                    snapshot_content_json TEXT NOT NULL DEFAULT '{}',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(release_id, item_type, item_id)
+                );
+                CREATE TABLE IF NOT EXISTS analysis_run (
+                    id TEXT PRIMARY KEY,
+                    repository_id TEXT NOT NULL,
+                    commit_id TEXT NOT NULL DEFAULT '',
+                    analysis_version TEXT NOT NULL,
+                    input_hash TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    scope_json TEXT NOT NULL DEFAULT '{}',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_run_idempotent
+                    ON analysis_run(repository_id, commit_id, analysis_version, input_hash);
+                CREATE TABLE IF NOT EXISTS bounded_context (
+                    id TEXT PRIMARY KEY,
+                    repository_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'proposed',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS asset_inventory (
+                    id TEXT PRIMARY KEY,
+                    snapshot_id TEXT NOT NULL,
+                    asset_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    locator_json TEXT NOT NULL DEFAULT '{}',
+                    source_version TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
+            self._ensure_columns(
+                connection,
+                "terms",
+                {
+                    "display_name": "TEXT NOT NULL DEFAULT ''",
+                    "domain_id": "TEXT NOT NULL DEFAULT ''",
+                    "source_of_truth": "TEXT NOT NULL DEFAULT ''",
+                    "term_confidence": "REAL NOT NULL DEFAULT 0",
+                    "definition_confidence": "REAL NOT NULL DEFAULT 0",
+                    "owner": "TEXT NOT NULL DEFAULT ''",
+                    "steward": "TEXT NOT NULL DEFAULT ''",
+                    "lifecycle_status": "TEXT NOT NULL DEFAULT 'DISCOVERED'",
+                    "version": "INTEGER NOT NULL DEFAULT 1",
+                    "effective_time": "TEXT NOT NULL DEFAULT ''",
+                    "deprecated_reason": "TEXT NOT NULL DEFAULT ''",
+                    "replaced_by": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
+            self._ensure_columns(
+                connection,
+                "term_snapshot_results",
+                {
+                    "priority": "TEXT NOT NULL DEFAULT 'P1'",
+                    "language": "TEXT NOT NULL DEFAULT ''",
+                    "module": "TEXT NOT NULL DEFAULT ''",
+                    "term_confidence": "REAL NOT NULL DEFAULT 0",
+                    "definition_confidence": "REAL NOT NULL DEFAULT 0",
+                    "lifecycle_status": "TEXT NOT NULL DEFAULT 'DISCOVERED'",
+                    "source_refs_json": "TEXT NOT NULL DEFAULT '[]'",
+                },
+            )
+            self._ensure_columns(
+                connection,
+                "term_evidence",
+                {
+                    "polarity": "TEXT NOT NULL DEFAULT 'SUPPORT'",
+                    "reliability": "REAL NOT NULL DEFAULT 0",
+                    "independence_group": "TEXT NOT NULL DEFAULT ''",
+                    "content_hash": "TEXT NOT NULL DEFAULT ''",
+                    "derived_from": "TEXT NOT NULL DEFAULT ''",
+                    "source_version": "TEXT NOT NULL DEFAULT ''",
+                    "observed_at": "TEXT NOT NULL DEFAULT ''",
+                    "subject_id": "TEXT NOT NULL DEFAULT ''",
+                    "predicate": "TEXT NOT NULL DEFAULT ''",
+                    "object_value": "TEXT NOT NULL DEFAULT ''",
+                },
+            )
+            self._ensure_columns(
+                connection,
+                "term_relations",
+                {
+                    "direction": "TEXT NOT NULL DEFAULT 'forward'",
+                    "cardinality": "TEXT NOT NULL DEFAULT ''",
+                    "bounded_context_id": "TEXT NOT NULL DEFAULT ''",
+                    "review_status": "TEXT NOT NULL DEFAULT 'proposed'",
+                    "version": "INTEGER NOT NULL DEFAULT 1",
+                },
+            )
+
+    @staticmethod
+    def _ensure_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+        existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns.items():
+            if name not in existing:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
     def close(self) -> None:
         """Connections are per operation; retained for lifecycle symmetry."""
@@ -139,27 +340,74 @@ class TermStore:
             connection.execute("DELETE FROM term_evidence WHERE snapshot_id=?", (snapshot_id,))
             connection.execute("DELETE FROM term_relations WHERE snapshot_id=?", (snapshot_id,))
             connection.execute("DELETE FROM term_snapshot_results WHERE snapshot_id=?", (snapshot_id,))
+            connection.execute("DELETE FROM asset_inventory WHERE snapshot_id=?", (snapshot_id,))
+            connection.execute("DELETE FROM evidence_package WHERE snapshot_id=?", (snapshot_id,))
+            connection.execute("DELETE FROM evidence_conflict WHERE snapshot_id=?", (snapshot_id,))
+            for asset in (report.get("asset_inventory") or {}).get("assets", []):
+                asset_type = str(asset.get("asset_type") or "")
+                name = str(asset.get("name") or "")
+                if not asset_type or not name:
+                    continue
+                connection.execute(
+                    """INSERT OR REPLACE INTO asset_inventory
+                       (id,snapshot_id,asset_type,name,locator_json,source_version,created_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    ("asset-" + sha256(f"{snapshot_id}|{asset_type}|{name}".encode()).hexdigest()[:24],
+                     snapshot_id, asset_type, name,
+                     json.dumps(asset.get("locator", {}), ensure_ascii=False),
+                     asset.get("source_version", ""), now),
+                )
+            conflicts_by_term: dict[str, list[dict[str, Any]]] = {}
+            for conflict in report.get("conflicts", []):
+                term_id = str(conflict.get("term_id") or "")
+                if not term_id:
+                    continue
+                conflicts_by_term.setdefault(term_id, []).append(conflict)
+                connection.execute(
+                    """INSERT OR REPLACE INTO evidence_conflict
+                       (id,snapshot_id,term_id,conflict_type,severity,detail_json,resolved,created_at)
+                       VALUES(?,?,?,?,?,?,0,?)""",
+                    (conflict.get("id") or "cf-" + uuid4().hex, snapshot_id, term_id,
+                     conflict.get("conflict_type", ""), conflict.get("severity", "review"),
+                     json.dumps(conflict.get("detail", {}), ensure_ascii=False), now),
+                )
             for term in report.get("terms", []):
                 term_id = term["id"]
                 connection.execute(
                     """INSERT INTO terms
-                       (id,repository_id,bounded_context,canonical_name,normalized_name,term_type,definition,created_at,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?)
+                       (id,repository_id,bounded_context,canonical_name,display_name,normalized_name,term_type,definition,
+                        domain_id,source_of_truth,term_confidence,definition_confidence,owner,steward,lifecycle_status,version,
+                        created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(id) DO UPDATE SET canonical_name=excluded.canonical_name,
-                       normalized_name=excluded.normalized_name,term_type=excluded.term_type,
+                       display_name=excluded.display_name,normalized_name=excluded.normalized_name,
+                       term_type=excluded.term_type,
                        definition=CASE WHEN excluded.definition != '' THEN excluded.definition ELSE terms.definition END,
+                       domain_id=excluded.domain_id,source_of_truth=excluded.source_of_truth,
+                       term_confidence=excluded.term_confidence,definition_confidence=excluded.definition_confidence,
+                       lifecycle_status=excluded.lifecycle_status,version=excluded.version,
                        updated_at=excluded.updated_at""",
                     (term_id, repository_id, term.get("bounded_context", repository_id), term["canonical_name"],
-                     term["normalized_name"], term["term_type"], term.get("definition", ""), now, now),
+                     term.get("display_name") or term["canonical_name"], term["normalized_name"], term["term_type"],
+                     term.get("definition", ""), term.get("domain_id") or repository_id,
+                     term.get("source_of_truth", ""), term.get("term_confidence") or term.get("confidence_score", 0),
+                     term.get("definition_confidence", 0), term.get("owner", ""), term.get("steward", ""),
+                     term.get("lifecycle_status", "DISCOVERED"), term.get("version", 1), now, now),
                 )
                 connection.execute(
                     """INSERT INTO term_snapshot_results
-                       (snapshot_id,term_id,domain_score,confidence_score,confidence_band,status,source,risk_flags_json,aliases_json,rank)
-                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                       (snapshot_id,term_id,domain_score,confidence_score,confidence_band,status,source,
+                        risk_flags_json,aliases_json,rank,priority,language,module,term_confidence,
+                        definition_confidence,lifecycle_status,source_refs_json)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (snapshot_id, term_id, term.get("domain_score", 0), term.get("confidence_score", 0),
                      term.get("confidence_band", "low"), term.get("status", "candidate"), term.get("source", "rule"),
                      json.dumps(term.get("risk_flags", []), ensure_ascii=False),
-                     json.dumps(term.get("aliases", []), ensure_ascii=False), term.get("rank", 0)),
+                     json.dumps(term.get("aliases", []), ensure_ascii=False), term.get("rank", 0),
+                     term.get("priority", "P1"), term.get("language", ""), term.get("module", ""),
+                     term.get("term_confidence") or term.get("confidence_score", 0),
+                     term.get("definition_confidence", 0), term.get("lifecycle_status", "DISCOVERED"),
+                     json.dumps(term.get("source_refs", []), ensure_ascii=False)),
                 )
                 for index, evidence in enumerate(term.get("evidence", [])):
                     evidence_id = evidence.get("id") or "ev-" + sha256(
@@ -167,23 +415,174 @@ class TermStore:
                     ).hexdigest()[:24]
                     connection.execute(
                         """INSERT INTO term_evidence
-                           (id,snapshot_id,term_id,evidence_type,evidence_value,weight,source_location_json,node_id,rule_id,created_at)
-                           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                           (id,snapshot_id,term_id,evidence_type,evidence_value,weight,source_location_json,node_id,rule_id,
+                            polarity,reliability,independence_group,content_hash,derived_from,source_version,
+                            observed_at,subject_id,predicate,object_value,created_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (evidence_id, snapshot_id, term_id, evidence.get("evidence_type", ""),
                          evidence.get("evidence_value", ""), evidence.get("weight", 0),
                          json.dumps(evidence.get("source_location", {}), ensure_ascii=False), evidence.get("node_id"),
-                         evidence.get("rule_id", ""), now),
+                         evidence.get("rule_id", ""), evidence.get("polarity", "SUPPORT"),
+                         evidence.get("reliability", 0), evidence.get("independence_group", ""),
+                         evidence.get("content_hash", ""), evidence.get("derived_from", ""),
+                         evidence.get("source_version", ""), evidence.get("observed_at", ""),
+                         evidence.get("subject_id", "") or term_id, evidence.get("predicate", ""),
+                         evidence.get("object_value", ""), now),
                     )
+                support = [item for item in term.get("evidence", []) if item.get("polarity", "SUPPORT") == "SUPPORT"]
+                against = [item for item in term.get("evidence", []) if item.get("polarity") == "AGAINST"]
+                package = {
+                    "term": {key: term.get(key) for key in (
+                        "id", "canonical_name", "display_name", "term_type", "priority",
+                        "module", "language", "term_confidence", "decision_band", "status",
+                    )},
+                    "bounded_context": term.get("bounded_context", repository_id),
+                    "support": support,
+                    "against": against,
+                    "independence_groups": sorted({
+                        item.get("independence_group", "") for item in support + against
+                    } - {""}),
+                    "conflicts": conflicts_by_term.get(term_id, []),
+                    "source_version": snapshot_id,
+                    "analysis_version": report.get("analysis_version", ""),
+                }
+                connection.execute(
+                    """INSERT OR REPLACE INTO evidence_package
+                       (snapshot_id,term_id,source_version,analysis_version,conflict_count,package_json,created_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (snapshot_id, term_id, snapshot_id, report.get("analysis_version", ""),
+                     len(package["conflicts"]),
+                     json.dumps(package, ensure_ascii=False), now),
+                )
             for relation in report.get("relations", []):
                 connection.execute(
                     """INSERT OR REPLACE INTO term_relations
-                       (id,snapshot_id,source_term_id,target_term_id,relationship,confidence,status,score_breakdown_json,llm_status)
-                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                       (id,snapshot_id,source_term_id,target_term_id,relationship,confidence,status,
+                        score_breakdown_json,llm_status,direction,cardinality,bounded_context_id,review_status,version)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     ("rel-" + uuid4().hex, snapshot_id, relation["source_term_id"], relation["target_term_id"],
                      relation["relationship"], relation.get("confidence", 0), relation.get("status", "candidate"),
-                     json.dumps(relation.get("score_breakdown", {}), ensure_ascii=False), relation.get("llm_status", "not_requested")),
+                     json.dumps(relation.get("score_breakdown", {}), ensure_ascii=False),
+                     relation.get("llm_status", "not_requested"), relation.get("direction", "forward"),
+                     relation.get("cardinality", ""), relation.get("bounded_context_id", ""),
+                     relation.get("review_status", "proposed"), relation.get("version", 1)),
                 )
         return self.get_summary(snapshot_id)
+
+    def apply_overrides(self, snapshot_id: str, repository_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        """Re-apply prior human decisions to a freshly extracted report.
+
+        Extraction replaces a snapshot's derived rows wholesale, so decisions
+        stored in ``term_overrides`` would otherwise be lost on the next run.
+        """
+        terms = {item["id"]: item for item in report.get("terms", [])}
+        relations = report.setdefault("relations", [])
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT term_id,action,value_json FROM term_overrides "
+                "WHERE snapshot_id=? ORDER BY created_at,rowid",
+                (snapshot_id,),
+            ).fetchall()
+        for row in rows:
+            action = row["action"]
+            value = json.loads(row["value_json"] or "{}")
+            if action == "add_term":
+                self._add_override_term(report, terms, repository_id, value)
+                continue
+            term = terms.get(row["term_id"])
+            if term is None:
+                continue
+            if action in {"accept", "reject"}:
+                accepted = action == "accept"
+                term["status"] = "accepted" if accepted else "rejected"
+                term["lifecycle_status"] = "APPROVED" if accepted else "REJECTED"
+                term["source"] = "user_override"
+            elif action == "rename":
+                name = str(value.get("canonical_name") or "").strip()
+                if name:
+                    from ..analysis.knowledge.terms import normalize_term
+
+                    term["canonical_name"] = name
+                    term["display_name"] = name
+                    term["normalized_name"] = normalize_term(name)
+                    term["source"] = "user_override"
+            elif action == "reclassify":
+                term_type = canonical_term_type(str(value.get("term_type") or ""))
+                if term_type:
+                    term["term_type"] = term_type
+                    term["source"] = "user_override"
+            elif action in {"alias", "relate"}:
+                target_id = str(value.get("target_term_id") or "").strip()
+                if target_id:
+                    relationship = "alias" if action == "alias" else str(value.get("relationship") or "related")
+                    if not any(
+                        item.get("source_term_id") == row["term_id"]
+                        and item.get("target_term_id") == target_id
+                        and item.get("relationship") == relationship
+                        for item in relations
+                    ):
+                        relations.append({
+                            "source_term_id": row["term_id"], "target_term_id": target_id,
+                            "relationship": relationship, "confidence": 1.0,
+                            "status": "accepted", "score_breakdown": {},
+                            "llm_status": "not_requested",
+                        })
+        self._reserialize_report(report)
+        return report
+
+    @staticmethod
+    def _add_override_term(
+        report: dict[str, Any], terms: dict[str, dict[str, Any]], repository_id: str, value: dict[str, Any]
+    ) -> None:
+        from ..analysis.knowledge.terms import display_name, normalize_term
+
+        name = str(value.get("canonical_name") or "").strip()
+        if not name:
+            return
+        normalized = normalize_term(name)
+        term_type = canonical_term_type(str(value.get("term_type") or "entity"))
+        bounded_context = str(value.get("bounded_context") or repository_id)
+        term_id = "term-" + sha256(
+            f"{repository_id}|{bounded_context}|{term_type}|{normalized}".encode()
+        ).hexdigest()[:24]
+        if term_id in terms:
+            terms[term_id]["status"] = "accepted"
+            return
+        term = {
+            "id": term_id, "repository_id": repository_id, "snapshot_id": report.get("snapshot_id", ""),
+            "canonical_name": name if name.isupper() else (display_name(name) or name),
+            "display_name": name, "normalized_name": normalized, "term_type": term_type,
+            "bounded_context": bounded_context,
+            "domain_id": repository_id, "module": "", "language": "", "priority": "P0",
+            "definition": str(value.get("definition") or ""),
+            "domain_score": 1.0, "confidence_score": 1.0, "confidence_band": "high",
+            "term_confidence": 1.0, "definition_confidence": 1.0,
+            "status": "accepted", "lifecycle_status": "APPROVED", "version": 1,
+            "source": "manual", "mentions": [], "aliases": list(value.get("aliases") or []),
+            "risk_flags": [], "source_refs": [],
+            "evidence": [{
+                "evidence_type": "manual_definition",
+                "evidence_value": str(value.get("definition") or "manual term"),
+                "weight": 1.0, "source_location": {}, "node_id": None, "rule_id": "manual",
+            }],
+        }
+        terms[term_id] = term
+        report.setdefault("terms", []).append(term)
+
+    @staticmethod
+    def _reserialize_report(report: dict[str, Any]) -> None:
+        terms = report.setdefault("terms", [])
+        terms.sort(key=lambda item: (-float(item.get("confidence_score") or 0), item.get("term_type", ""), item["id"]))
+        for index, term in enumerate(terms, 1):
+            term["rank"] = index
+        report["default_terms"] = [item for item in terms if item.get("status") == "accepted"]
+        report["candidates"] = [item for item in terms if item.get("status") != "accepted"]
+        report["counts"] = {
+            "total": len(terms),
+            "accepted": len(report["default_terms"]),
+            "candidates": len(report["candidates"]),
+            "needs_review": sum(item.get("status") == "needs_review" for item in report["candidates"]),
+        }
 
     def get_summary(self, snapshot_id: str) -> dict[str, Any]:
         with self._connection() as connection:
@@ -269,7 +668,11 @@ class TermStore:
     ) -> dict[str, Any]:
         clauses = ["r.snapshot_id=?"]
         params: list[Any] = [snapshot_id]
-        for column, value in (("t.term_type", term_type), ("r.status", status), ("r.confidence_band", confidence_band)):
+        if term_type:
+            aliases = sorted(term_type_aliases(term_type))
+            clauses.append(f"LOWER(t.term_type) IN ({','.join('?' for _ in aliases)})")
+            params.extend(item.lower() for item in aliases)
+        for column, value in (("r.status", status), ("r.confidence_band", confidence_band)):
             if value:
                 clauses.append(f"{column}=?")
                 params.append(value)
@@ -281,7 +684,8 @@ class TermStore:
             total = connection.execute(f"SELECT COUNT(*) FROM terms t JOIN term_snapshot_results r ON r.term_id=t.id WHERE {where}", params).fetchone()[0]
             rows = connection.execute(
                 f"""SELECT t.*,r.domain_score,r.confidence_score,r.confidence_band,r.status,r.source,
-                    r.risk_flags_json,r.aliases_json,r.rank,r.reviewed_at,
+                    r.risk_flags_json,r.aliases_json,r.rank,r.reviewed_at,r.priority,r.language,r.module,
+                    r.term_confidence,r.definition_confidence,r.lifecycle_status,r.source_refs_json,
                     (SELECT COUNT(*) FROM term_evidence e WHERE e.snapshot_id=r.snapshot_id AND e.term_id=t.id) AS evidence_count
                     FROM terms t JOIN term_snapshot_results r ON r.term_id=t.id
                     WHERE {where} ORDER BY r.confidence_score DESC,r.rank,t.id LIMIT ? OFFSET ?""",
@@ -293,7 +697,8 @@ class TermStore:
         with self._connection() as connection:
             row = connection.execute(
                 """SELECT t.*,r.domain_score,r.confidence_score,r.confidence_band,r.status,r.source,
-                   r.risk_flags_json,r.aliases_json,r.rank,r.reviewed_at,
+                   r.risk_flags_json,r.aliases_json,r.rank,r.reviewed_at,r.priority,r.language,r.module,
+                   r.term_confidence,r.definition_confidence,r.lifecycle_status,r.source_refs_json,
                    (SELECT COUNT(*) FROM term_evidence e WHERE e.snapshot_id=r.snapshot_id AND e.term_id=t.id) AS evidence_count
                    FROM terms t JOIN term_snapshot_results r ON r.term_id=t.id
                    WHERE r.snapshot_id=? AND t.id=?""", (snapshot_id, term_id)
@@ -310,6 +715,44 @@ class TermStore:
             "id": row["id"], "evidence_type": row["evidence_type"], "evidence_value": row["evidence_value"],
             "weight": row["weight"], "source_location": json.loads(row["source_location_json"]),
             "node_id": row["node_id"], "rule_id": row["rule_id"],
+            "polarity": row["polarity"], "reliability": row["reliability"],
+            "independence_group": row["independence_group"], "content_hash": row["content_hash"],
+            "derived_from": row["derived_from"], "source_version": row["source_version"],
+            "observed_at": row["observed_at"], "subject_id": row["subject_id"],
+            "predicate": row["predicate"], "object_value": row["object_value"],
+        } for row in rows]
+
+    def get_evidence_package(self, snapshot_id: str, term_id: str) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT package_json FROM evidence_package WHERE snapshot_id=? AND term_id=?",
+                (snapshot_id, term_id),
+            ).fetchone()
+        return json.loads(row["package_json"]) if row else None
+
+    def list_conflicts(self, snapshot_id: str) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM evidence_conflict WHERE snapshot_id=? ORDER BY created_at,id",
+                (snapshot_id,),
+            ).fetchall()
+        return [{
+            "id": row["id"], "term_id": row["term_id"],
+            "conflict_type": row["conflict_type"], "severity": row["severity"],
+            "detail": json.loads(row["detail_json"]), "resolved": bool(row["resolved"]),
+        } for row in rows]
+
+    def list_assets(self, snapshot_id: str, asset_type: str = "") -> list[dict[str, Any]]:
+        query = "SELECT * FROM asset_inventory WHERE snapshot_id=?"
+        params: list[Any] = [snapshot_id]
+        if asset_type:
+            query += " AND asset_type=?"
+            params.append(asset_type)
+        with self._connection() as connection:
+            rows = connection.execute(query + " ORDER BY asset_type,name", params).fetchall()
+        return [{
+            "id": row["id"], "asset_type": row["asset_type"], "name": row["name"],
+            "locator": json.loads(row["locator_json"]), "source_version": row["source_version"],
         } for row in rows]
 
     def review(self, snapshot_id: str, term_id: str, action: str, value: dict[str, Any], reason: str, author: str) -> dict[str, Any]:
@@ -334,7 +777,7 @@ class TermStore:
                 connection.execute("UPDATE terms SET canonical_name=?,normalized_name=?,updated_at=? WHERE id=?", (name, normalize_term(name), now, term_id))
                 connection.execute("UPDATE term_snapshot_results SET source='user_override',reviewed_at=? WHERE snapshot_id=? AND term_id=?", (now, snapshot_id, term_id))
             elif action == "reclassify":
-                term_type = str(value.get("term_type") or "").strip()
+                term_type = canonical_term_type(str(value.get("term_type") or "").strip())
                 if not term_type:
                     raise ValueError("term_type is required")
                 connection.execute("UPDATE terms SET term_type=?,updated_at=? WHERE id=?", (term_type, now, term_id))
@@ -361,7 +804,7 @@ class TermStore:
             raise ValueError("canonical_name is required")
         from ..analysis.knowledge.terms import display_name, normalize_term
         normalized = normalize_term(name)
-        term_type = str(value.get("term_type") or "entity")
+        term_type = canonical_term_type(str(value.get("term_type") or "entity"))
         bounded_context = str(value.get("bounded_context") or repository_id)
         term_id = "term-" + sha256(f"{repository_id}|{bounded_context}|{term_type}|{normalized}".encode()).hexdigest()[:24]
         now = utc_now()
@@ -393,6 +836,14 @@ class TermStore:
         data = dict(row)
         data["risk_flags"] = json.loads(data.pop("risk_flags_json", "[]"))
         data["aliases"] = json.loads(data.pop("aliases_json", "[]"))
+        data["source_refs"] = json.loads(data.pop("source_refs_json", "[]") or "[]")
+        data["term_type"] = canonical_term_type(data.get("term_type", ""))
+        data["display_name"] = data.get("display_name") or data.get("canonical_name", "")
+        data["domain_id"] = data.get("domain_id") or data.get("repository_id", "")
+        data["term_confidence"] = data.get("term_confidence") or data.get("confidence_score", 0)
+        data["lifecycle_status"] = data.get("lifecycle_status") or (
+            "REJECTED" if data.get("status") == "rejected" else "DISCOVERED"
+        )
         return data
 
     @staticmethod

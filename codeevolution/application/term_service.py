@@ -7,8 +7,9 @@ from typing import Any, Iterable
 
 from ..analysis.knowledge.terms import TermRecognizer
 from ..analysis.topology.matching import EntitySimilarity
+from ..domain.term_types import TERM_API_RESOURCE, TERM_BUSINESS_EVENT, TERM_ENTITY, canonical_term_type
 
-_ALIGNABLE_TYPES = frozenset({"entity", "resource", "event", "value_object"})
+_ALIGNABLE_TYPES = frozenset({TERM_ENTITY, TERM_API_RESOURCE, TERM_BUSINESS_EVENT})
 _TECHNICAL_SERVICE_TOKENS = frozenset({
     "admin", "api", "config", "configuration", "consul", "db", "database", "eureka",
     "gateway", "health", "kafka", "logging", "metrics", "monitor", "monitoring", "nacos",
@@ -38,6 +39,7 @@ class TermRecognitionService:
         self, snapshot_id: str, repository_id: str, facts: dict[str, Any], term_types: Iterable[str] | None = None
     ) -> dict[str, Any]:
         report = self.recognizer.extract(snapshot_id, repository_id, facts, term_types)
+        report = self.store.apply_overrides(snapshot_id, repository_id, report)
         persisted = self.store.replace_snapshot(snapshot_id, repository_id, report)
         report["persisted_counts"] = persisted
         return report
@@ -50,6 +52,15 @@ class TermRecognitionService:
 
     def evidence(self, snapshot_id: str, term_id: str) -> list[dict[str, Any]]:
         return self.store.list_evidence(snapshot_id, term_id)
+
+    def evidence_package(self, snapshot_id: str, term_id: str) -> dict[str, Any] | None:
+        return self.store.get_evidence_package(snapshot_id, term_id)
+
+    def conflicts(self, snapshot_id: str) -> list[dict[str, Any]]:
+        return self.store.list_conflicts(snapshot_id)
+
+    def assets(self, snapshot_id: str, asset_type: str = "") -> list[dict[str, Any]]:
+        return self.store.list_assets(snapshot_id, asset_type)
 
     def review(self, snapshot_id: str, term_id: str, action: str, value: dict[str, Any], reason: str, author: str) -> dict[str, Any]:
         return self.store.review(snapshot_id, term_id, action, value, reason, author)
@@ -84,7 +95,7 @@ class TermRecognitionService:
                 "display_name": display_name,
                 "technical": _is_technical_service(service_id, display_name),
                 "terms": [item for item in candidates
-                          if item.get("term_type") in _ALIGNABLE_TYPES
+                          if canonical_term_type(item.get("term_type", "")) in _ALIGNABLE_TYPES
                           and item.get("status") == "accepted"
                           and "technical_name" not in (item.get("risk_flags") or [])],
             })
@@ -126,7 +137,7 @@ class TermRecognitionService:
             right = service_by_id[pair["target_service_id"]]
             for source in left["terms"]:
                 for target in right["terms"]:
-                    if source["term_type"] != target["term_type"]:
+                    if canonical_term_type(source["term_type"]) != canonical_term_type(target["term_type"]):
                         continue
                     score = EntitySimilarity.score(source["canonical_name"], target["canonical_name"])
                     if score < 0.6:

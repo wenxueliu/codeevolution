@@ -27,7 +27,7 @@
 
       <form v-if="manualOpen" class="manual-form" @submit.prevent="addManual">
         <label>{{ t('规范名') }}<input v-model.trim="manual.canonical_name" required /></label>
-        <label>{{ t('类型') }}<select v-model="manual.term_type"><option value="entity">entity</option><option value="value_object">value_object</option><option value="state">state</option><option value="event">event</option><option value="action">action</option></select></label>
+        <label>{{ t('类型') }}<select v-model="manual.term_type"><option v-for="type in termTypes" :key="type" :value="type">{{ termTypeLabel(type) }}</option></select></label>
         <label class="wide">{{ t('业务定义') }}<textarea v-model.trim="manual.definition" rows="2" /></label>
         <label>{{ t('作者') }}<input v-model.trim="manual.author" /></label>
         <button class="primary" :disabled="saving">{{ saving ? t('保存中...') : t('保存术语') }}</button>
@@ -42,14 +42,14 @@
 
       <section class="toolbar">
         <label>{{ t('状态') }}<select v-model="filters.status" @change="load"><option value="">{{ t('全部') }}</option><option value="accepted">accepted</option><option value="needs_review">needs_review</option><option value="candidate">candidate</option><option value="rejected">rejected</option></select></label>
-        <label>{{ t('类型') }}<select v-model="filters.type" @change="load"><option value="">{{ t('全部') }}</option><option value="entity">entity</option><option value="resource">resource</option><option value="page">page</option><option value="action">action</option><option value="value_object">value_object</option><option value="state">state</option><option value="event">event</option></select></label>
+        <label>{{ t('类型') }}<select v-model="filters.type" @change="load"><option value="">{{ t('全部') }}</option><option v-for="type in termTypes" :key="type" :value="type">{{ termTypeLabel(type) }}</option></select></label>
         <label class="search">{{ t('搜索术语') }}<input v-model.trim="filters.name" @input="debouncedLoad" /></label>
       </section>
 
       <section class="panel">
         <div class="panel-heading"><div><h2>{{ t('按可信度排序的术语清单') }}</h2><p>{{ t('默认清单优先保证准确率，候选池用于人工补充召回率。') }}</p></div><span>{{ t('共 {count} 条', { count: terms.length }) }}</span></div>
         <div class="table-wrap" v-if="terms.length"><table><thead><tr><th>#</th><th>{{ t('名称') }}</th><th>{{ t('类型') }}</th><th>{{ t('可信度') }}</th><th>{{ t('状态') }}</th><th>{{ t('来源') }}</th><th>{{ t('操作') }}</th></tr></thead><tbody>
-          <template v-for="term in terms" :key="term.id"><tr :class="{ expanded: expanded === term.id }" @click="toggleEvidence(term)"><td>{{ term.rank || '-' }}</td><td><strong>{{ term.canonical_name }}</strong><small v-if="term.aliases?.length">{{ term.aliases.join(', ') }}</small></td><td><code>{{ term.term_type }}</code></td><td><span class="score">{{ Math.round(Number(term.confidence_score || 0) * 100) }}%</span><small>{{ term.confidence_band }}</small></td><td><span class="status" :class="term.status">{{ term.status }}</span></td><td>{{ term.source }}</td><td class="row-actions"><button v-if="term.status !== 'accepted'" class="link" @click.stop="review(term, 'accept')">{{ term.status === 'rejected' ? t('恢复') : t('接纳') }}</button><button v-if="term.status !== 'rejected'" class="link danger" @click.stop="review(term, 'reject')">{{ t('排除') }}</button></td></tr><tr v-if="expanded === term.id" class="evidence-row"><td colspan="7"><div v-if="evidenceLoading" class="muted">{{ t('加载证据中...') }}</div><ul v-else><li v-for="item in evidence" :key="item.id"><code>{{ item.evidence_type }}</code> {{ item.evidence_value }} <small>{{ item.source_location?.file_path || '' }}:{{ item.source_location?.line || '' }}</small></li></ul></td></tr></template>
+          <template v-for="term in terms" :key="term.id"><tr :class="{ expanded: expanded === term.id }" @click="toggleEvidence(term)"><td>{{ term.rank || '-' }}</td><td><strong>{{ term.canonical_name }}</strong><small v-if="term.aliases?.length">{{ term.aliases.join(', ') }}</small></td><td><code>{{ termTypeLabel(term.term_type) }}</code></td><td><span class="score">{{ Math.round(Number(term.confidence_score || 0) * 100) }}%</span><small>{{ term.confidence_band }}</small></td><td><span class="status" :class="term.status">{{ term.status }}</span></td><td>{{ term.source }}</td><td class="row-actions"><button v-if="term.status !== 'accepted'" class="link" @click.stop="review(term, 'accept')">{{ term.status === 'rejected' ? t('恢复') : t('接纳') }}</button><button v-if="term.status !== 'rejected'" class="link danger" @click.stop="review(term, 'reject')">{{ t('排除') }}</button></td></tr><tr v-if="expanded === term.id" class="evidence-row"><td colspan="7"><div v-if="evidenceLoading" class="muted">{{ t('加载证据中...') }}</div><ul v-else><li v-for="item in evidence" :key="item.id"><code>{{ item.evidence_type }}</code> {{ item.evidence_value }} <small>{{ item.source_location?.file_path || '' }}:{{ item.source_location?.line || '' }}</small></li></ul></td></tr></template>
         </tbody></table></div>
         <p v-else class="empty">{{ t('暂无术语，请先执行识别或人工补充。') }}</p>
       </section>
@@ -69,7 +69,8 @@ export default {
       servicePairs: [], excludedServices: [], alignments: [], alignmentLoading: false,
       evidenceLoading: false, manualOpen: false, saving: false, locale: locale.value, loadTimer: null,
       filters: { status: '', type: '', name: '' },
-      manual: { canonical_name: '', term_type: 'entity', definition: '', author: '' },
+      termTypes: ['ENTITY', 'BUSINESS_EVENT', 'BUSINESS_ACTION', 'BUSINESS_ATTRIBUTE', 'BUSINESS_ENUM', 'COMMAND', 'API_RESOURCE', 'DTO', 'TECHNICAL_COMPONENT', 'PAGE'],
+      manual: { canonical_name: '', term_type: 'ENTITY', definition: '', author: '' },
     }
   },
   created() { window.addEventListener(LOCALE_EVENT, this.refreshLocale); this.load() },
@@ -80,6 +81,14 @@ export default {
   },
   methods: {
     t,
+    termTypeLabel(type) {
+      const labels = {
+        ENTITY: '实体', BUSINESS_EVENT: '业务事件', BUSINESS_ACTION: '业务动作',
+        BUSINESS_ATTRIBUTE: '业务属性', BUSINESS_ENUM: '业务枚举', COMMAND: '命令',
+        API_RESOURCE: 'API 资源', DTO: '数据传输对象', TECHNICAL_COMPONENT: '技术组件', PAGE: '页面',
+      }
+      return labels[type] ? this.t(labels[type]) : type || '-'
+    },
     refreshLocale(event) { this.locale = event?.detail || locale.value },
     async load() {
       if (this.viewId) {
@@ -125,7 +134,7 @@ export default {
     },
     async addManual() {
       this.saving = true
-      try { await this.$api.request('/api/terms/manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot_id: this.snapshotId, ...this.manual }) }); this.manual = { canonical_name: '', term_type: 'entity', definition: '', author: '' }; this.manualOpen = false; await this.load() } finally { this.saving = false }
+      try { await this.$api.request('/api/terms/manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot_id: this.snapshotId, ...this.manual }) }); this.manual = { canonical_name: '', term_type: 'ENTITY', definition: '', author: '' }; this.manualOpen = false; await this.load() } finally { this.saving = false }
     },
   },
 }

@@ -691,7 +691,11 @@ export default {
   methods: {
     t,
     termTypeLabel(type) {
-      const labels = { entity: '实体', value_object: '值对象', state: '状态', event: '事件', action: '动作', page: '页面' }
+      const labels = {
+        ENTITY: '实体', BUSINESS_EVENT: '业务事件', BUSINESS_ACTION: '业务动作',
+        BUSINESS_ATTRIBUTE: '业务属性', BUSINESS_ENUM: '业务枚举', COMMAND: '命令',
+        API_RESOURCE: 'API 资源', DTO: '数据传输对象', TECHNICAL_COMPONENT: '技术组件', PAGE: '页面',
+      }
       return labels[type] ? this.t(labels[type]) : type || '-'
     },
     termConfidenceBandLabel(band) {

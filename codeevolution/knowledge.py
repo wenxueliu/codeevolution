@@ -19,6 +19,7 @@ from .analysis.knowledge.module_topology import (
     serialize_module_topology,
 )
 from .analysis.knowledge.semantic import SemanticExtractor
+from .analysis.knowledge.term_facts import TermFactExtractor
 from .codegraph_reader import CodeGraphReader, FunctionDef
 from .domain.knowledge import (
     ApiContract,
@@ -78,6 +79,7 @@ class KnowledgeExtractor:
         self._semantic = SemanticExtractor(
             reader, self.source_provider, self.extract_core_entities, self._layers.classify_file
         )
+        self._term_facts = TermFactExtractor(reader, self.source_provider)
 
     def extract_api_contract(self) -> ApiContract:
         return self._api.extract()
@@ -123,6 +125,7 @@ class KnowledgeExtractor:
         modules = self.extract_module_topology()
         entities = self.extract_core_entities(30)
         violations = self.extract_layer_violations()
+        term_facts = self._term_facts.extract()
         disabled = {"note": "Set --llm flag to enable LLM analysis"}
         return {
             "api_contract": {
@@ -157,6 +160,7 @@ class KnowledgeExtractor:
                 },
             },
             "module_topology": serialize_module_topology(modules),
+            "term_facts": term_facts,
             "core_entities": [
                 {
                     "name": item.name,

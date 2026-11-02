@@ -100,6 +100,7 @@ def test_knowledge_api_returns_all_endpoints_in_report():
     extractor.extract_authorization_model = lambda: []
     extractor.extract_heat_map = lambda: []
     extractor.extract_frontend_pages = lambda: []
+    extractor._term_facts = SimpleNamespace(extract=lambda: {})
 
     client = TestClient(create_app({"knowledge_service": KnowledgeService(extractor)}))
     response = client.get("/api/knowledge")

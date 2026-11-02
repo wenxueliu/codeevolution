@@ -1816,7 +1816,9 @@ def _term_snapshot_context(snapshot_id: str) -> tuple[dict, str]:
 def extract_terms(request: TermExtractionRequest):
     """Extract and persist ranked terms from one immutable repository snapshot."""
     facts, repository_id = _term_snapshot_context(request.snapshot_id)
-    allowed = {"resource", "entity", "value_object", "state", "event", "action", "technical", "page"}
+    from .domain.term_types import LEGACY_TERM_TYPES, TERM_TYPES
+
+    allowed = set(TERM_TYPES) | set(LEGACY_TERM_TYPES)
     if any(item not in allowed for item in request.types):
         raise HTTPException(422, "unsupported term type")
     return get_term_service().extract(request.snapshot_id, repository_id, facts, request.types or None)
@@ -1851,6 +1853,18 @@ def list_term_alignments(
     return get_term_service().list_alignments(view_id, status=status, limit=limit, offset=offset)
 
 
+@app.get("/api/terms/conflicts")
+def list_term_conflicts(snapshot_id: str = Query(..., min_length=1)):
+    _term_snapshot_context(snapshot_id)
+    return {"conflicts": get_term_service().conflicts(snapshot_id)}
+
+
+@app.get("/api/terms/assets")
+def list_term_assets(snapshot_id: str = Query(..., min_length=1), asset_type: str = Query("")):
+    _term_snapshot_context(snapshot_id)
+    return {"assets": get_term_service().assets(snapshot_id, asset_type)}
+
+
 @app.get("/api/terms/{term_id}")
 def get_term(term_id: str, snapshot_id: str = Query(..., min_length=1)):
     _term_snapshot_context(snapshot_id)
@@ -1866,6 +1880,15 @@ def get_term_evidence(term_id: str, snapshot_id: str = Query(..., min_length=1))
     if get_term_service().get(snapshot_id, term_id) is None:
         raise HTTPException(404, "term not found")
     return {"evidence": get_term_service().evidence(snapshot_id, term_id)}
+
+
+@app.get("/api/terms/{term_id}/evidence-package")
+def get_term_evidence_package(term_id: str, snapshot_id: str = Query(..., min_length=1)):
+    _term_snapshot_context(snapshot_id)
+    package = get_term_service().evidence_package(snapshot_id, term_id)
+    if package is None:
+        raise HTTPException(404, "term not found")
+    return {"package": package}
 
 
 @app.post("/api/terms/{term_id}/review")

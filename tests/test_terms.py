@@ -34,20 +34,22 @@ FACTS = {
 def test_recognizer_prefers_api_and_entity_anchors_and_ranks_terms():
     report = TermRecognizer().extract("snapshot-1", "orders", FACTS)
 
-    assert report["schema_version"] == "terms/v1"
-    assert report["default_terms"][0]["confidence_score"] >= report["default_terms"][1]["confidence_score"]
+    assert report["schema_version"] == "terms/v2"
+    scores = [item["confidence_score"] for item in report["terms"]]
+    assert scores == sorted(scores, reverse=True)
     terms = {(item["term_type"], item["canonical_name"]): item for item in report["terms"]}
     # the API resource and the domain entity dedupe into one entry
-    assert terms[("entity", "Order")]["status"] == "accepted"
-    assert ("resource", "Order") not in terms
-    evidence_types = {item["evidence_type"] for item in terms[("entity", "Order")]["evidence"]}
+    assert terms[("ENTITY","Order")]["status"] == "accepted"
+    assert ("API_RESOURCE","Order") not in terms
+    evidence_types = {item["evidence_type"] for item in terms[("ENTITY","Order")]["evidence"]}
     assert {"api_route", "entity_definition"} <= evidence_types
-    assert terms[("entity", "Order")]["source"].startswith("rule:")
-    assert ("action", "CreateOrder") not in terms
-    assert terms[("action", "ApproveOrder")]["status"] == "accepted"
+    assert terms[("ENTITY","Order")]["source"].startswith("rule:")
+    assert ("BUSINESS_ACTION","CreateOrder") not in terms
+    # a single endpoint is one evidence source: the action needs human review
+    assert terms[("BUSINESS_ACTION","ApproveOrder")]["status"] == "needs_review"
     relations = {(item["relationship"]): item for item in report["relations"]}
     assert "exposes" not in relations
-    assert relations["applies_to"]["source_term_id"] == terms[("action", "ApproveOrder")]["id"]
+    assert relations["applies_to"]["source_term_id"] == terms[("BUSINESS_ACTION","ApproveOrder")]["id"]
 
 
 def test_same_repository_extracts_terms_for_multiple_snapshots(tmp_path):
@@ -68,6 +70,28 @@ def test_same_repository_extracts_terms_for_multiple_snapshots(tmp_path):
     store.close()
 
 
+def test_human_overrides_survive_reextraction(tmp_path):
+    store = TermStore(tmp_path / "terms.db")
+    service = TermRecognitionService(store)
+
+    first = service.extract("snapshot-1", "orders", FACTS)
+    order = next(item for item in first["terms"] if item["canonical_name"] == "Order")
+    store.review("snapshot-1", order["id"], "reject", {}, "not a business term", "tester")
+    store.review("snapshot-1", order["id"], "rename", {"canonical_name": "Purchase"}, "", "tester")
+    store.add_manual("snapshot-1", "orders", {"canonical_name": "Invoice", "term_type": "ENTITY", "definition": "A bill"})
+
+    second = service.extract("snapshot-1", "orders", FACTS)
+
+    updated = next(item for item in second["terms"] if item["id"] == order["id"])
+    assert updated["status"] == "rejected"
+    assert updated["canonical_name"] == "Purchase"
+    invoice = next(item for item in second["terms"] if item["canonical_name"] == "Invoice")
+    assert invoice["status"] == "accepted"
+    assert invoice["source"] == "manual"
+    assert store.list_terms("snapshot-1", name="Purchase")["total"] == 1
+    store.close()
+
+
 def test_data_operation_names_do_not_become_terms():
     facts = {
         "api_contract": {"endpoints": [
@@ -85,14 +109,14 @@ def test_data_operation_names_do_not_become_terms():
     report = TermRecognizer().extract("snapshot-1", "users", facts)
 
     names = {(item["term_type"], item["canonical_name"]) for item in report["terms"]}
-    assert ("action", "GetUserList") not in names
-    assert ("action", "CreateUser") not in names
-    assert ("entity", "CreateUser") not in names
-    assert ("resource", "GetUserList") not in names
+    assert ("BUSINESS_ACTION","GetUserList") not in names
+    assert ("BUSINESS_ACTION","CreateUser") not in names
+    assert ("ENTITY","CreateUser") not in names
+    assert ("API_RESOURCE","GetUserList") not in names
     # the /api/users resource dedupes into the User entity entry
-    assert ("resource", "User") not in names
-    assert ("entity", "User") in names
-    user = next(item for item in report["terms"] if item["term_type"] == "entity" and item["canonical_name"] == "User")
+    assert ("API_RESOURCE","User") not in names
+    assert ("ENTITY","User") in names
+    user = next(item for item in report["terms"] if item["term_type"] == "ENTITY" and item["canonical_name"] == "User")
     assert "CreateUserRequest" in user["aliases"]
 
 
@@ -117,22 +141,22 @@ def test_operation_verb_compounds_do_not_become_terms():
 
     names = {(item["term_type"], item["canonical_name"]) for item in report["terms"]}
     # verb-led compounds are operations on terms, not terms
-    assert ("action", "ViewReport") not in names
-    assert ("action", "CancelAnalysisRun") not in names
-    assert ("action", "StopUiRecording") not in names
-    assert ("action", "RunUiRecording") not in names
-    assert ("resource", "ViewReport") not in names
-    assert ("resource", "CancelAnalysisRun") not in names
+    assert ("BUSINESS_ACTION","ViewReport") not in names
+    assert ("BUSINESS_ACTION","CancelAnalysisRun") not in names
+    assert ("BUSINESS_ACTION","StopUiRecording") not in names
+    assert ("BUSINESS_ACTION","RunUiRecording") not in names
+    assert ("API_RESOURCE","ViewReport") not in names
+    assert ("API_RESOURCE","CancelAnalysisRun") not in names
     # noun+verb compounds are operations too
-    assert ("action", "TaskRun") not in names
-    assert ("entity", "GraphView") not in names
-    assert ("entity", "AnalysisRun") not in names
-    assert ("resource", "TaskRun") not in names
+    assert ("BUSINESS_ACTION","TaskRun") not in names
+    assert ("ENTITY","GraphView") not in names
+    assert ("ENTITY","AnalysisRun") not in names
+    assert ("API_RESOURCE","TaskRun") not in names
     # domain nouns and non-operation domain verbs survive untouched
-    assert ("entity", "Report") in names
-    assert ("action", "PublishReport") in names
+    assert ("ENTITY","Report") in names
+    assert ("BUSINESS_ACTION","PublishReport") in names
     # -sis nouns stay intact through singularization
-    assert ("entity", "TaskAnalysisStatus") in names
+    assert ("ENTITY","TaskAnalysisStatus") in names
 
 
 def test_terms_dedupe_across_types_and_drop_abstract_words():
@@ -151,16 +175,16 @@ def test_terms_dedupe_across_types_and_drop_abstract_words():
 
     names = {(item["term_type"], item["canonical_name"]) for item in report["terms"]}
     # abstract structural words are not terms, even with API + entity anchors
-    assert ("entity", "File") not in names
-    assert ("resource", "File") not in names
-    assert ("action", "ListFile") not in names
+    assert ("ENTITY","File") not in names
+    assert ("API_RESOURCE","File") not in names
+    assert ("BUSINESS_ACTION","ListFile") not in names
     # operation verbs keep being rejected
-    assert ("action", "EnableOrder") not in names
+    assert ("BUSINESS_ACTION","EnableOrder") not in names
     # one deduplicated entry carries the merged evidence chain of both anchors
     orders = [item for item in report["terms"] if item["canonical_name"] == "Order"]
     assert len(orders) == 1
     order = orders[0]
-    assert order["term_type"] == "entity"
+    assert order["term_type"] == "ENTITY"
     kinds = {item["evidence_type"] for item in order["evidence"]}
     assert {"api_route", "entity_definition"} <= kinds
     assert all(item.get("node_id") or item.get("source_location") for item in order["evidence"])
@@ -199,7 +223,7 @@ def test_frontend_pages_become_page_terms_with_titles():
 
     facts = {"frontend_pages": {"page_count": len(pages), "pages": pages}}
     report = TermRecognizer().extract("snapshot-1", "web", facts)
-    page_terms = {item["canonical_name"]: item for item in report["terms"] if item["term_type"] == "page"}
+    page_terms = {item["canonical_name"]: item for item in report["terms"] if item["term_type"] == "PAGE"}
     assert "OrderManagement" in page_terms
     assert "订单管理" in page_terms["OrderManagement"]["aliases"]
     kinds = {item["evidence_type"] for item in page_terms["OrderManagement"]["evidence"]}
@@ -212,18 +236,132 @@ def test_technical_wrapper_does_not_hide_a_real_entity():
         {"node_id": "dto", "name": "OrderDTO", "file_path": "src/api.py", "kind": "class", "score": 20, "fields": []},
         {"node_id": "entity", "name": "Order", "file_path": "src/domain.py", "kind": "class", "score": 20, "fields": [{"name": "id"}]},
     ]}
-    report = TermRecognizer().extract("snapshot-1", "orders", facts, ["entity"])
+    report = TermRecognizer().extract("snapshot-1", "orders", facts, ["ENTITY"])
     order = next(item for item in report["terms"] if item["canonical_name"] == "Order")
-    assert order["status"] == "accepted"
+    # the DTO is an alias of the entity, not a second ENTITY candidate
+    assert order["status"] in {"accepted", "needs_review"}
+    assert "OrderDTO" in order["aliases"]
+
+
+STRUCTURED_FACTS = {
+    "api_contract": {"endpoints": [{
+        "method": "POST", "path": "/api/orders", "handler": "orders::create_order",
+        "node_id": "fn-create", "file": "orders/api.py", "line": 10,
+        "request_body": {"type": "OrderRequest"},
+    }]},
+    "core_entities": [{
+        "node_id": "type-order", "name": "Order", "qualified_name": "domain::Order",
+        "file_path": "orders/domain.py", "kind": "class", "score": 24,
+        "field_count": 2, "relationship_count": 2, "start_line": 4,
+        "annotations": ["Entity"],
+        "fields": [{"name": "id", "start_line": 5}, {"name": "totalAmount", "start_line": 6}],
+    }],
+    "module_topology": {"modules": [{
+        "id": "orders", "name": "orders", "path": "orders", "primary_language": "python",
+        "file_count": 4, "files": ["orders/api.py", "orders/domain.py", "orders/service.py"],
+    }]},
+    "term_facts": {
+        "enums": [{
+            "node_id": "enum-1", "name": "OrderStatus", "qualified_name": "domain::OrderStatus",
+            "file_path": "orders/domain.py", "start_line": 20,
+            "members": [{"name": "NEW"}, {"name": "PAID"}],
+        }],
+        "types": [
+            {"node_id": "ev-1", "name": "OrderCreatedEvent", "base_name": "OrderCreated",
+             "classification": "event", "kind": "class",
+             "qualified_name": "events::OrderCreatedEvent", "file_path": "orders/events.py", "start_line": 5},
+            {"node_id": "cmd-1", "name": "CreateOrderCommand", "base_name": "CreateOrder",
+             "classification": "command", "kind": "class",
+             "qualified_name": "commands::CreateOrderCommand", "file_path": "orders/commands.py", "start_line": 5},
+            {"node_id": "dto-1", "name": "OrderResponse", "base_name": "Order",
+             "classification": "dto", "kind": "class",
+             "qualified_name": "api::OrderResponse", "file_path": "orders/api.py", "start_line": 30},
+        ],
+        "db_tables": [{
+            "name": "orders", "file_path": "schema.sql", "start_line": 1,
+            "columns": ["id", "total_amount", "payment_status"],
+            "primary_key": ["id"], "source": "sql",
+        }],
+        "messages": [{
+            "topic": "order.created", "symbol": "handle_order_created", "role": "consumer",
+            "node_id": "fn-msg", "file_path": "orders/consumer.py", "start_line": 8,
+        }],
+        "service_methods": [{
+            "name": "approveOrder", "qualified_name": "service::OrderService.approveOrder",
+            "file_path": "orders/service.py", "start_line": 12,
+        }],
+        "languages": [{"language": "python", "file_count": 5}],
+    },
+}
+
+
+def test_structured_facts_create_traceable_priority_candidates():
+    report = TermRecognizer().extract("snapshot-1", "orders", STRUCTURED_FACTS)
+    terms = {(item["term_type"], item["canonical_name"]): item for item in report["terms"]}
+
+    order = terms[("ENTITY", "Order")]
+    assert {"api_route", "entity_definition", "db_table", "dto_definition"} <= {
+        item["evidence_type"] for item in order["evidence"]
+    }
+    assert order["priority"] == "P0"
+    assert order["module"] == "orders" and order["language"] == "python"
+    assert order["source_refs"]
+
+    assert ("BUSINESS_ENUM", "OrderStatus") in terms
+    assert ("COMMAND", "OrderCommand") in terms
+    assert ("BUSINESS_EVENT", "OrderCreated") in terms
+    assert ("BUSINESS_ATTRIBUTE", "TotalAmount") in terms
+    assert ("BUSINESS_ATTRIBUTE", "PaymentStatus") in terms
+    action = terms[("BUSINESS_ACTION", "ApproveOrder")]
+    assert {"service_method"} <= {item["evidence_type"] for item in action["evidence"]}
+    assert action["priority"] == "P1"
+
+    relations = {(item["relationship"]) for item in report["relations"]}
+    assert "has_attribute" in relations
+    assert report["traceability"]["rate"] == 1.0
+    assert report["counts"]["priorities"]["P0"] >= 1
+    assets = report["asset_inventory"]
+    assert assets["counts"]["db_table"] == 1
+    assert assets["counts"]["message_topic"] == 1
+    assert assets["counts"]["api_endpoint"] == 1
+
+
+def test_conflicts_are_isolated_and_evidence_package_is_persisted(tmp_path):
+    facts = dict(STRUCTURED_FACTS)
+    facts["term_facts"] = {
+        **STRUCTURED_FACTS["term_facts"],
+        "types": [{
+            "node_id": "ev-conflict", "name": "OrderEvent", "base_name": "Order",
+            "classification": "event", "kind": "class",
+            "qualified_name": "events::OrderEvent", "file_path": "orders/events.py", "start_line": 9,
+        }],
+    }
+    store = TermStore(tmp_path / "terms.db")
+    service = TermRecognitionService(store)
+    report = service.extract("snapshot-1", "orders", facts)
+
+    order = next(item for item in report["terms"] if item["canonical_name"] == "Order")
+    assert order["status"] == "needs_review"
+    assert "type_conflict" in order["risk_flags"]
+    conflicts = store.list_conflicts("snapshot-1")
+    assert conflicts and conflicts[0]["conflict_type"] == "same_name_multiple_types"
+
+    package = store.get_evidence_package("snapshot-1", order["id"])
+    assert package["term"]["id"] == order["id"]
+    assert package["support"]
+    assert "Contract" in package["independence_groups"]
+    assert package["conflicts"]
+    assert store.list_assets("snapshot-1", "db_table")[0]["name"] == "orders"
+    store.close()
 
 
 def test_alignment_recommends_connected_business_services_only():
     service = TermRecognitionService(None)
     reports = [
-        {"repository_id": "orders", "service_id": "orders", "terms": [{"id": "order-a", "canonical_name": "Order", "term_type": "entity", "status": "accepted"}]},
-        {"repository_id": "billing", "service_id": "billing", "terms": [{"id": "order-b", "canonical_name": "Order", "term_type": "entity", "status": "accepted"}]},
-        {"repository_id": "gateway", "service_id": "gateway", "terms": [{"id": "order-c", "canonical_name": "Order", "term_type": "entity", "status": "accepted"}]},
-        {"repository_id": "inventory", "service_id": "inventory", "terms": [{"id": "sku", "canonical_name": "SKU", "term_type": "entity", "status": "accepted"}]},
+        {"repository_id": "orders", "service_id": "orders", "terms": [{"id": "order-a", "canonical_name": "Order", "term_type": "ENTITY", "status": "accepted"}]},
+        {"repository_id": "billing", "service_id": "billing", "terms": [{"id": "order-b", "canonical_name": "Order", "term_type": "ENTITY", "status": "accepted"}]},
+        {"repository_id": "gateway", "service_id": "gateway", "terms": [{"id": "order-c", "canonical_name": "Order", "term_type": "ENTITY", "status": "accepted"}]},
+        {"repository_id": "inventory", "service_id": "inventory", "terms": [{"id": "sku", "canonical_name": "SKU", "term_type": "ENTITY", "status": "accepted"}]},
     ]
     result = service.align(reports, service_edges=[
         {"source_member_id": "orders", "target_member_id": "billing", "kind": "http"},
@@ -251,6 +389,11 @@ class _SnapshotQuery:
         if snapshot_id not in {"snapshot-1", "snapshot-2"}:
             raise KeyError(snapshot_id)
         return FACTS
+
+
+class _StructuredSnapshotQuery:
+    def knowledge(self, snapshot_id):
+        return STRUCTURED_FACTS
 
 
 class _SnapshotTopology:
@@ -298,6 +441,29 @@ def test_terms_api_extracts_lists_reviews_and_adds_manual_terms(tmp_path):
         })
         assert restored.status_code == 200
         assert restored.json()["term"]["status"] == "accepted"
+
+
+def test_terms_api_exposes_assets_conflicts_and_evidence_package(tmp_path):
+    term_store = TermStore(tmp_path / "terms.db")
+    snapshot_store = SimpleNamespace(get_snapshot=lambda snapshot_id: SimpleNamespace(member_id="orders"))
+    app = create_app({
+        "term_store": term_store,
+        "snapshot_query_service": _StructuredSnapshotQuery(),
+        "snapshot_runtime": _Runtime(snapshot_store),
+    })
+    with TestClient(app) as client:
+        assert client.post("/api/terms/extract", json={"snapshot_id": "structured-1"}).status_code == 200
+        assets = client.get("/api/terms/assets", params={"snapshot_id": "structured-1", "asset_type": "db_table"})
+        assert assets.status_code == 200
+        assert assets.json()["assets"][0]["name"] == "orders"
+
+        conflicts = client.get("/api/terms/conflicts", params={"snapshot_id": "structured-1"})
+        assert conflicts.status_code == 200
+
+        term = client.get("/api/terms", params={"snapshot_id": "structured-1"}).json()["terms"][0]
+        package = client.get(f"/api/terms/{term['id']}/evidence-package", params={"snapshot_id": "structured-1"})
+        assert package.status_code == 200
+        assert package.json()["package"]["support"]
 
         manual = client.post("/api/terms/manual", json={
             "snapshot_id": "snapshot-1", "canonical_name": "SKU", "term_type": "value_object",

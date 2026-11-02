@@ -15,6 +15,18 @@ class TermEvidence:
     rule_id: str = ""
     node_id: str | None = None
     id: str = ""
+    # Domain Evidence Graph contract: evidence must stay traceable, dedupable
+    # and classifiable as support/against before it can influence a score.
+    polarity: str = "SUPPORT"
+    reliability: float = 0.0
+    independence_group: str = ""
+    content_hash: str = ""
+    derived_from: str = ""
+    source_version: str = ""
+    observed_at: str = ""
+    subject_id: str = ""
+    predicate: str = ""
+    object_value: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -25,6 +37,16 @@ class TermEvidence:
             "source_location": self.source_location,
             "rule_id": self.rule_id,
             "node_id": self.node_id,
+            "polarity": self.polarity,
+            "reliability": round(self.reliability, 4),
+            "independence_group": self.independence_group,
+            "content_hash": self.content_hash,
+            "derived_from": self.derived_from,
+            "source_version": self.source_version,
+            "observed_at": self.observed_at,
+            "subject_id": self.subject_id,
+            "predicate": self.predicate,
+            "object_value": self.object_value,
         }
 
 
@@ -47,6 +69,19 @@ class TermCandidate:
     evidence: list[TermEvidence] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
     risk_flags: list[str] = field(default_factory=list)
+    # Candidate provenance and governance fields.
+    display_name: str = ""
+    domain_id: str = ""
+    module: str = ""
+    language: str = ""
+    priority: str = "P1"
+    source_refs: list[dict[str, Any]] = field(default_factory=list)
+    source_of_truth: str = ""
+    term_confidence: float = 0.0
+    definition_confidence: float = 0.0
+    decision_band: str = "noise"
+    lifecycle_status: str = "DISCOVERED"
+    version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,13 +89,25 @@ class TermCandidate:
             "repository_id": self.repository_id,
             "snapshot_id": self.snapshot_id,
             "canonical_name": self.canonical_name,
+            "display_name": self.display_name or self.canonical_name,
             "normalized_name": self.normalized_name,
             "term_type": self.term_type,
             "bounded_context": self.bounded_context,
+            "domain_id": self.domain_id or self.repository_id,
+            "module": self.module,
+            "language": self.language,
+            "priority": self.priority,
+            "source_refs": self.source_refs,
+            "source_of_truth": self.source_of_truth,
             "domain_score": round(self.domain_score, 4),
             "confidence_score": round(self.confidence_score, 4),
+            "term_confidence": round(self.term_confidence or self.confidence_score, 4),
+            "definition_confidence": round(self.definition_confidence, 4),
+            "decision_band": self.decision_band,
             "confidence_band": self.confidence_band,
             "status": self.status,
+            "lifecycle_status": self.lifecycle_status,
+            "version": self.version,
             "source": self.source,
             "definition": self.definition,
             "mentions": self.mentions,
