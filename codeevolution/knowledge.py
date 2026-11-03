@@ -11,7 +11,7 @@ from .analysis.knowledge.config_usage import ConfigUsageExtractor
 from .analysis.knowledge.core_entities import CoreEntityExtractor
 from .analysis.knowledge.dependencies import DependencyExtractor
 from .analysis.knowledge.frontend_pages import FrontendPageExtractor
-from .analysis.knowledge.heatmap import HeatmapExtractor
+from .analysis.knowledge.heatmap import HEATMAP_VERSION, HeatmapExtractor
 from .analysis.knowledge.layer_config import LayerConfig, load_repo_layers_config
 from .analysis.knowledge.layer_rules import LayerRuleExtractor
 from .analysis.knowledge.module_topology import (
@@ -220,7 +220,12 @@ class KnowledgeExtractor:
         return self._modules.build_graph()
 
     def _get_call_graph(self):
-        return self._entities.call_graph()
+        graph = nx.DiGraph()
+        for function in self.reader.functions():
+            graph.add_node(function.node_id)
+        for edge in self.reader.call_edges():
+            graph.add_edge(edge["source"], edge["target"])
+        return graph
 
     def _extract_config_keys(self, file_path):
         return self._config.extract_keys(file_path)
@@ -273,6 +278,7 @@ class KnowledgeExtractor:
         for item in data:
             counts[item["heat"]] += 1
         return {
+            "version": HEATMAP_VERSION,
             "total_functions": len(data),
             "hot": counts["hot"],
             "warm": counts["warm"],

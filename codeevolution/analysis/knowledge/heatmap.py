@@ -2,6 +2,8 @@
 
 from collections.abc import Callable
 
+HEATMAP_VERSION = 1
+
 
 class HeatmapExtractor:
     def __init__(
@@ -14,16 +16,18 @@ class HeatmapExtractor:
         if callable(self.source) and self.graph_provider is None:
             return self.source()
         graph = self.graph_provider()
-        degrees = sorted(
-            ((node, graph.in_degree(node), graph.out_degree(node)) for node in graph.nodes()),
-            key=lambda item: -(item[1] + item[2]),
-        )
+        # Resolve before ranking: call edges may point outside this repository,
+        # and the graph may carry non-function nodes.
+        degrees = []
+        for node_id in graph.nodes():
+            function = self.source.get_function_by_id(node_id)
+            if function is None or function.kind not in ("function", "method"):
+                continue
+            degrees.append((graph.in_degree(node_id), graph.out_degree(node_id), function))
+        degrees.sort(key=lambda item: -(item[0] + item[1]))
         hot, warm = max(1, int(len(degrees) * 0.1)), max(2, int(len(degrees) * 0.6))
         results = []
-        for index, (node_id, incoming, outgoing) in enumerate(degrees):
-            function = self.source.get_function_by_id(node_id)
-            if function is None:
-                continue
+        for index, (incoming, outgoing, function) in enumerate(degrees):
             heat = "hot" if index < hot else "warm" if index < warm else "cold"
             results.append(
                 {

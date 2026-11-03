@@ -75,6 +75,9 @@ class SnapshotQueryService:
             # extractor that changed after this snapshot was published can be
             # projected at the read boundary rather than republishing facts.
             facts = self._with_module_topology(handle, facts)
+            # Heat maps persisted before the call-graph fix ranked type nodes.
+            # The call graph is frozen in the snapshot, so recompute at read.
+            facts = self._with_heat_map(handle, facts)
             if section is None:
                 # API contracts were historically persisted with only the
                 # first 100 endpoints.  Keep the normal knowledge boundary
@@ -146,6 +149,21 @@ class SnapshotQueryService:
                 "issues": (taxonomy or {}).get("issues", []),
             }
         return {**facts, "module_topology": serialized}
+
+    def _with_heat_map(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
+        from codeevolution.analysis.knowledge.heatmap import HEATMAP_VERSION
+
+        existing = facts.get("heat_map")
+        if isinstance(existing, dict) and existing.get("version") == HEATMAP_VERSION:
+            return facts
+        from codeevolution.knowledge import KnowledgeExtractor
+
+        try:
+            extractor = KnowledgeExtractor(handle.graph, handle.sources)
+            heat_map = KnowledgeExtractor._serialize_heat_map(extractor.extract_heat_map())
+        except Exception:
+            return facts
+        return {**facts, "heat_map": heat_map}
 
     @staticmethod
     def _taxonomy_stats(stored: dict | None, modules: list[dict]) -> dict:
