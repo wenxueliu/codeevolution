@@ -996,6 +996,19 @@ class TermStore:
                 if row is None:
                     raise KeyError(term_id)
                 source_rows.append(row)
+            # Terms are global rows linked to snapshots via term_snapshot_results;
+            # a merge may only touch terms that belong to the requested snapshot.
+            term_ids = [target_term_id, *sources]
+            placeholders = ",".join("?" for _ in term_ids)
+            linked = {
+                row["term_id"] for row in connection.execute(
+                    f"SELECT term_id FROM term_snapshot_results WHERE snapshot_id=? AND term_id IN ({placeholders})",
+                    (snapshot_id, *term_ids),
+                )
+            }
+            for term_id in term_ids:
+                if term_id not in linked:
+                    raise KeyError(term_id)
             hard = self._hard_constraints(connection, sources, target_term_id)
             if hard and not confirm_hard_constraints:
                 raise ValueError(

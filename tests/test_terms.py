@@ -602,6 +602,21 @@ def test_merge_requires_confirmation_for_hard_constraints(tmp_path):
     store.close()
 
 
+def test_merge_rejects_terms_outside_the_snapshot(tmp_path):
+    store = TermStore(tmp_path / "terms.db")
+    service = TermRecognitionService(store)
+    other = service.extract("snapshot-2", "other-repo", PAIR_FACTS)
+    current = service.extract("snapshot-1", "orders", PAIR_FACTS)
+    by_name = {item["canonical_name"]: item for item in current["terms"]}
+    other_by_name = {item["canonical_name"]: item for item in other["terms"]}
+    with pytest.raises(KeyError):
+        service.merge_terms(
+            "snapshot-1", [other_by_name["OrderPayment"]["id"]], by_name["Order"]["id"],
+            reason="cross-snapshot merge", reviewer="steward",
+        )
+    store.close()
+
+
 def _definition_llm(evidence_id, model="fake-model"):
     class _LLM:
         model_name = model
