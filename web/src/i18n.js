@@ -574,6 +574,15 @@ const zh = {
   '发布后快照不可修改；回滚通过发布新版本完成。': '发布后快照不可修改；回滚通过发布新版本完成。',
   '每个版本保留完整内容与快照指纹。': '每个版本保留完整内容与快照指纹。',
   '暂无发布版本。': '暂无发布版本。',
+  术语置信度: '术语置信度',
+  定义置信度: '定义置信度',
+  证据: '证据',
+  支持: '支持',
+  反对: '反对',
+  冲突: '冲突',
+  已解决: '已解决',
+  未解决: '未解决',
+  '支持 {support} · 反对 {against}': '支持 {support} · 反对 {against}',
 }
 
 const en = {
@@ -1146,6 +1155,15 @@ const en = {
   '发布后快照不可修改；回滚通过发布新版本完成。': 'A published snapshot is immutable; roll back by publishing a new version.',
   '每个版本保留完整内容与快照指纹。': 'Each version keeps its full content and snapshot hash.',
   '暂无发布版本。': 'No releases yet.',
+  术语置信度: 'Term confidence',
+  定义置信度: 'Definition confidence',
+  证据: 'Evidence',
+  支持: 'Support',
+  反对: 'Against',
+  冲突: 'Conflicts',
+  已解决: 'Resolved',
+  未解决: 'Unresolved',
+  '支持 {support} · 反对 {against}': '{support} support · {against} against',
 }
 
 export const locale = ref(readLocale())
