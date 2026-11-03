@@ -365,6 +365,78 @@
           <LayerRules :snapshot-id="snapshotId" />
         </template>
 
+        <template v-else-if="activeSection === 'config_consumption'">
+          <div class="metrics">
+            <div class="metric">{{ activeData.config_files ?? 0 }} <small>{{ t('个配置文件') }}</small></div>
+            <div class="metric">{{ activeData.total_keys ?? 0 }} <small>{{ t('个配置键') }}</small></div>
+            <div class="metric">{{ activeData.consumed_keys ?? 0 }} <small>{{ t('个已消费键') }}</small></div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('配置文件') }}</th><th>{{ t('键数') }}</th><th>{{ t('已消费') }}</th><th>{{ t('消费者') }}</th></tr></thead><tbody>
+            <tr v-for="file in activeData.files || []" :key="file.config_file">
+              <td><code>{{ file.config_file }}</code></td>
+              <td>{{ file.key_count }}</td>
+              <td>{{ file.consumed_keys }}</td>
+              <td>
+                <div v-for="(use, index) in file.consumers || []" :key="index">
+                  <code>{{ use.config_key }}</code> → <b>{{ use.consumer_name }}</b><br><small class="muted">{{ use.consumer_file }}:{{ use.consumer_line }}</small>
+                </div>
+              </td>
+            </tr>
+          </tbody></table></div>
+        </template>
+
+        <template v-else-if="activeSection === 'external_dependencies'">
+          <div class="metrics">
+            <div class="metric">{{ activeData.categories ?? 0 }} <small>{{ t('个分类') }}</small></div>
+            <div class="metric">{{ activeData.total_dependencies ?? 0 }} <small>{{ t('个外部依赖') }}</small></div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('分类') }}</th><th>{{ t('依赖') }}</th><th>{{ t('文件数') }}</th><th>{{ t('文件') }}</th></tr></thead><tbody>
+            <tr v-for="row in dependencyRows" :key="row.key">
+              <td>{{ row.category }}</td>
+              <td><b>{{ row.label }}</b></td>
+              <td>{{ row.file_count }}</td>
+              <td><code v-for="path in row.files || []" :key="path" class="block">{{ path }}</code></td>
+            </tr>
+          </tbody></table></div>
+        </template>
+
+        <template v-else-if="activeSection === 'authorization_model'">
+          <div class="metrics">
+            <div class="metric">{{ activeData.protected_endpoints ?? 0 }} <small>{{ t('个受保护端点') }}</small></div>
+            <div class="metric">{{ activeData.middleware_count ?? 0 }} <small>{{ t('个中间件') }}</small></div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('函数') }}</th><th>{{ t('文件') }}</th><th>{{ t('认证级别') }}</th><th>{{ t('角色') }}</th><th>{{ t('权限') }}</th></tr></thead><tbody>
+            <tr v-for="(item, index) in activeData.entries || []" :key="index">
+              <td><b>{{ item.function }}</b></td>
+              <td><code>{{ item.file }}:{{ item.line }}</code></td>
+              <td>{{ authLevelLabel(item.auth_level) }}</td>
+              <td>{{ item.roles?.join(', ') || '-' }}</td>
+              <td>{{ item.permissions?.join(', ') || '-' }}</td>
+            </tr>
+          </tbody></table></div>
+        </template>
+
+        <template v-else-if="activeSection === 'heat_map'">
+          <div class="metrics">
+            <div class="metric">{{ activeData.total_functions ?? 0 }} <small>{{ t('个函数') }}</small></div>
+            <div class="metric">{{ activeData.hot ?? 0 }} <small>{{ t('热点') }}</small></div>
+            <div class="metric">{{ activeData.warm ?? 0 }} <small>{{ t('温点') }}</small></div>
+            <div class="metric">{{ activeData.cold ?? 0 }} <small>{{ t('冷点') }}</small></div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>{{ t('函数') }}</th><th>{{ t('文件') }}</th><th>{{ t('类型') }}</th><th>{{ t('分层') }}</th><th>{{ t('调用方') }}</th><th>{{ t('被调用') }}</th><th>{{ t('总度数') }}</th><th>{{ t('热度') }}</th></tr></thead><tbody>
+            <tr v-for="row in heatRows" :key="row.key">
+              <td><b>{{ row.name }}</b><br><small class="muted">{{ row.qualified_name }}</small></td>
+              <td><code>{{ row.file_path }}</code></td>
+              <td>{{ row.kind }}</td>
+              <td>{{ row.layer || '-' }}</td>
+              <td>{{ row.callers }}</td>
+              <td>{{ row.callees }}</td>
+              <td>{{ row.total_degree }}</td>
+              <td>{{ heatLabel(row.heat) }}</td>
+            </tr>
+          </tbody></table></div>
+        </template>
+
         <template v-else-if="activeSection !== 'terms'">
           <div v-if="isDisabled(activeData)" class="empty-semantic">
             <p>{{ activeData.note }}</p><button class="primary" @click="loadLlm">{{ t('现在抽取') }}</button>
@@ -600,6 +672,14 @@ export default {
       if (counts.shared) stats.push({ key: 'shared', label: this.t('个公共模块'), value: counts.shared })
       if (!stats.length) stats.push({ key: 'module', label: this.t('个模块'), value: this.activeData?.module_count || 0 })
       return stats
+    },
+    dependencyRows() {
+      return (this.activeData?.by_category || []).flatMap(category =>
+        (category.dependencies || []).map(dep => ({ key: `${category.category}:${dep.label}`, category: category.category, ...dep })))
+    },
+    heatRows() {
+      return [...(this.activeData?.hot_functions || []), ...(this.activeData?.warm_functions || [])]
+        .map((row, index) => ({ key: `${index}:${row.qualified_name}`, ...row }))
     },
     llmJobActive() { return ['pending', 'running'].includes(this.llmJob?.status) },
     topologySource() { return this.activeData?.source || 'paths' },
@@ -920,6 +1000,14 @@ export default {
       }
     },
     isDisabled(value) { return Boolean(value && !Array.isArray(value) && value.note) },
+    authLevelLabel(level) {
+      const labels = { authenticated: '已认证', public: '公开', middleware: '中间件', denied: '拒绝', unknown: '未知' }
+      return labels[level] ? this.t(labels[level]) : level || '-'
+    },
+    heatLabel(heat) {
+      const labels = { hot: '热点', warm: '温点', cold: '冷点' }
+      return labels[heat] ? this.t(labels[heat]) : heat || '-'
+    },
     moduleKindLabel(kind) {
       const labels = { domain: '业务域', entity: '实体', shared: '公共', root: '根模块' }
       return labels[kind] ? this.t(labels[kind]) : ''
@@ -1529,6 +1617,7 @@ td code { color: #666; word-break: break-all; }
 .sequence-zoom-stage :deep(svg) { width: 100% !important; max-width: none !important; height: auto; }
 .frontend-call { border-left: 3px solid #e94560; padding: 5px 9px; margin: 6px 0; font-size: 11px; }
 .muted { color: #aaa; font-size: 11px; }
+.block { display: block; }
 .repo-badge { display: inline-block; margin-right: 5px; padding: 1px 5px; border-radius: 8px; background: #fff0f2; color: #c82d48; font-size: 9px; }
 .api-explanation-section { margin-top: 16px; border-top: 1px solid #e2e2e8; padding-top: 12px; }
 .api-prompt-panel, .batch-card { margin: 0 0 16px; padding: 13px; border: 1px solid #e2e5eb; border-radius: 7px; background: #fafafd; }
