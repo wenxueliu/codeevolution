@@ -2,7 +2,14 @@
 
 from collections.abc import Callable
 
-HEATMAP_VERSION = 1
+HEATMAP_VERSION = 2
+
+
+def _is_public(function) -> bool:
+    """Language-neutral public check: explicit visibility, or no private naming."""
+    return function.visibility not in ("private", "protected") and not function.name.startswith(
+        ("_", "#")
+    )
 
 
 class HeatmapExtractor:
@@ -17,14 +24,28 @@ class HeatmapExtractor:
             return self.source()
         graph = self.graph_provider()
         # Resolve before ranking: call edges may point outside this repository,
-        # and the graph may carry non-function nodes.
-        degrees = []
+        # and the graph may carry non-function nodes.  Test and non-public
+        # functions are dropped with their edges so they do not inflate
+        # production call counts.
+        functions = {}
         for node_id in graph.nodes():
             function = self.source.get_function_by_id(node_id)
-            if function is None or function.kind not in ("function", "method"):
+            if (
+                function is None
+                or function.kind not in ("function", "method")
+                or function.is_test
+                or not _is_public(function)
+            ):
                 continue
-            degrees.append((graph.in_degree(node_id), graph.out_degree(node_id), function))
-        degrees.sort(key=lambda item: -(item[0] + item[1]))
+            functions[node_id] = function
+        graph = graph.subgraph(functions)
+        degrees = sorted(
+            (
+                (graph.in_degree(node_id), graph.out_degree(node_id), function)
+                for node_id, function in functions.items()
+            ),
+            key=lambda item: -(item[0] + item[1]),
+        )
         hot, warm = max(1, int(len(degrees) * 0.1)), max(2, int(len(degrees) * 0.6))
         results = []
         for index, (incoming, outgoing, function) in enumerate(degrees):
