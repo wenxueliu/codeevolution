@@ -583,6 +583,17 @@ const zh = {
   已解决: '已解决',
   未解决: '未解决',
   '支持 {support} · 反对 {against}': '支持 {support} · 反对 {against}',
+  接地校验明细: '接地校验明细',
+  证据存在: '证据存在',
+  版本一致: '版本一致',
+  定位有效: '定位有效',
+  矛盾检查: '矛盾检查',
+  通过: '通过',
+  未通过: '未通过',
+  '缺失证据：{ids}': '缺失证据：{ids}',
+  '版本问题：{issues}': '版本问题：{issues}',
+  '定位无效：{ids}': '定位无效：{ids}',
+  '未解决冲突：{count}': '未解决冲突：{count}',
 }
 
 const en = {
@@ -1164,6 +1175,17 @@ const en = {
   已解决: 'Resolved',
   未解决: 'Unresolved',
   '支持 {support} · 反对 {against}': '{support} support · {against} against',
+  接地校验明细: 'Grounding checks',
+  证据存在: 'Evidence existence',
+  版本一致: 'Version consistency',
+  定位有效: 'Locator validity',
+  矛盾检查: 'Contradiction check',
+  通过: 'Passed',
+  未通过: 'Failed',
+  '缺失证据：{ids}': 'Missing evidence: {ids}',
+  '版本问题：{issues}': 'Version issues: {issues}',
+  '定位无效：{ids}': 'Invalid locator: {ids}',
+  '未解决冲突：{count}': 'Unresolved conflicts: {count}',
 }
 
 export const locale = ref(readLocale())
