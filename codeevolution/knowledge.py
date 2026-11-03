@@ -7,7 +7,7 @@ import networkx as nx
 
 from .analysis.knowledge.api_contract import ApiContractExtractor
 from .analysis.knowledge.authorization import AuthorizationExtractor
-from .analysis.knowledge.config_usage import ConfigUsageExtractor
+from .analysis.knowledge.config_usage import CONFIG_USAGE_VERSION, ConfigUsageExtractor
 from .analysis.knowledge.core_entities import CoreEntityExtractor
 from .analysis.knowledge.dependencies import DependencyExtractor
 from .analysis.knowledge.frontend_pages import FrontendPageExtractor
@@ -245,6 +245,7 @@ class KnowledgeExtractor:
     @staticmethod
     def _serialize_config_consumption(data):
         return {
+            "version": CONFIG_USAGE_VERSION,
             "config_files": len(data),
             "total_keys": sum(item["key_count"] for item in data),
             "consumed_keys": sum(item["consumed_keys"] for item in data),

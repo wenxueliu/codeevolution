@@ -891,7 +891,8 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
 
     def config_candidate_nodes(self) -> list[dict[str, Any]]:
         return self.query(
-            """SELECT id, name, qualified_name, file_path, kind, start_line, decorators
+            """SELECT id, name, qualified_name, file_path, kind,
+                      start_line, end_line, decorators
                FROM nodes WHERE kind IN ('variable', 'constant', 'function', 'method')"""
         )
 

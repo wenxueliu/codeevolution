@@ -78,6 +78,9 @@ class SnapshotQueryService:
             # Heat maps persisted before the call-graph fix ranked type nodes.
             # The call graph is frozen in the snapshot, so recompute at read.
             facts = self._with_heat_map(handle, facts)
+            # Older snapshots matched config keys by name substrings; rebuild
+            # from real read sites when the frozen payload predates this.
+            facts = self._with_config_consumption(handle, facts)
             if section is None:
                 # API contracts were historically persisted with only the
                 # first 100 endpoints.  Keep the normal knowledge boundary
@@ -164,6 +167,23 @@ class SnapshotQueryService:
         except Exception:
             return facts
         return {**facts, "heat_map": heat_map}
+
+    def _with_config_consumption(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
+        from codeevolution.analysis.knowledge.config_usage import CONFIG_USAGE_VERSION
+
+        existing = facts.get("config_consumption")
+        if isinstance(existing, dict) and existing.get("version") == CONFIG_USAGE_VERSION:
+            return facts
+        from codeevolution.knowledge import KnowledgeExtractor
+
+        try:
+            extractor = KnowledgeExtractor(handle.graph, handle.sources)
+            config = KnowledgeExtractor._serialize_config_consumption(
+                extractor.extract_config_consumption()
+            )
+        except Exception:
+            return facts
+        return {**facts, "config_consumption": config}
 
     @staticmethod
     def _taxonomy_stats(stored: dict | None, modules: list[dict]) -> dict:
