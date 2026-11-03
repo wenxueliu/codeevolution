@@ -677,6 +677,13 @@ describe('repository and knowledge pages', () => {
     expect(api.get).toHaveBeenCalledWith('/api/api-explanations/statuses', { repository_snapshot_id: 'test-snapshot' })
     expect(wrapper.find('[data-testid="explanation-status-summary"]').text()).toBe('已解释 1 · 待刷新 1 · 待解释 1')
     expect(wrapper.findAll('tbody td .explanation-status').map(node => node.text())).toEqual(['已解释', '待刷新', '待解释'])
+    expect(wrapper.vm.partialWarning({ status: 'partial', coverage: { truncated: true, issues: [{}, {}] } }))
+      .toContain('解释不完整')
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await wrapper.find('[data-testid="explanation-refresh-stale"]').trigger('click')
+    await flushPromises()
+    const batchCall = api.request.mock.calls.find(([path]) => path === '/api/api-explanations/batches')
+    expect(JSON.parse(batchCall[1].body).mode).toBe('stale')
   })
 
   it('enlarges and zooms the sequence diagram for each API endpoint', async () => {

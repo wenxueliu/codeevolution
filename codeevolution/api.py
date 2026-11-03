@@ -277,7 +277,7 @@ class NodeRuleGenerateRequest(BaseModel):
 
 class ApiExplanationGenerateRequest(BaseModel):
     repository_snapshot_id: str = Field(default="", max_length=200)
-    repo: str = Field(min_length=1, max_length=200)
+    repo: str = Field(default="", max_length=200)
     member: str = Field(default="", max_length=200)
     method: str = Field(min_length=1, max_length=16)
     path: str = Field(min_length=1, max_length=1000)
@@ -297,7 +297,7 @@ class ApiExplanationPromptRequest(BaseModel):
 class ApiExplanationBatchRequest(BaseModel):
     repository_snapshot_id: str = Field(min_length=1, max_length=200)
     prompt_profile_id: str = Field(default="", max_length=300)
-    mode: str = Field(default="all", pattern="^all$")
+    mode: str = Field(default="all", pattern="^(all|stale)$")
     concurrency: int = Field(default=2, ge=1, le=5)
 
 
@@ -603,9 +603,13 @@ def get_api_explanation_batch_scheduler():
             ApiExplanationBatchScheduler,
             ApiExplanationBatchService,
         )
+        from .application.api_explanation_status_service import ApiExplanationStatusService
+        from .infrastructure.explanation_source import SnapshotExplanationSource
+
         captured = dict(dependencies)
         store = captured.get("explanation_snapshot_store") or get_explanation_snapshot_store()
         queries = captured.get("snapshot_query_service") or get_snapshot_query_service()
+        source_loader = captured.get("explanation_source_loader") or SnapshotExplanationSource(queries)
         if captured.get("snapshot_runtime"):
             central = captured["snapshot_runtime"].store
         elif captured.get("snapshot_query_service"):
@@ -614,7 +618,9 @@ def get_api_explanation_batch_scheduler():
             central = get_snapshot_runtime().store
         _api_explanation_batch_scheduler = ApiExplanationBatchScheduler(
             ApiExplanationBatchService(
-                store, queries, lambda: _build_explanation_service(captured), central
+                store, queries, lambda: _build_explanation_service(captured), central,
+                status_service=ApiExplanationStatusService(store),
+                source_loader=source_loader,
             )
         )
     return _api_explanation_batch_scheduler
@@ -2656,12 +2662,13 @@ def generate_api_explanation(request: ApiExplanationGenerateRequest):
         member = _explanation_member(request.repo, request.member)
     else:
         raise HTTPException(400, "repository_snapshot_id is required")
+    repo_name = member if request.repository_snapshot_id else request.repo
     key = api_key(request.method, request.path, request.handler)
     with _explanation_generation_lock:
         active = next(
             (
                 item
-                for item in store.list_snapshots(request.repo, member, key)
+                for item in store.list_snapshots(repo_name, member, key)
                 if item.status in {"pending", "running", "validating"}
             ),
             None,
@@ -2733,6 +2740,7 @@ def create_api_explanation_batch(request: ApiExplanationBatchRequest):
             request.repository_snapshot_id,
             prompt_profile_id=request.prompt_profile_id,
             concurrency=request.concurrency,
+            mode=request.mode,
         )
     except KeyError as error:
         raise HTTPException(404, "repository snapshot not found") from error
@@ -2775,6 +2783,54 @@ def retry_api_explanation_batch(batch_id: str):
         raise HTTPException(409, str(error)) from error
     scheduler.submit(batch["id"])
     return {"batch": batch}
+
+
+@app.get("/api/api-explanations/export")
+def export_api_explanations(
+    repository_snapshot_id: str = Query(..., min_length=1),
+    format: str = Query("markdown", pattern="^(markdown|json)$"),
+):
+    """Export one contract document per endpoint, including its current explanation."""
+    queries = get_snapshot_query_service()
+    try:
+        contract = queries.api_contract(repository_snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
+    # Reuse the CLI exporter so the HTTP and file-system outputs cannot drift.
+    from .cli import (
+        _api_contract_document,
+        _endpoint_filename,
+        _local_main_node_explanation,
+        _render_api_contract_markdown,
+    )
+
+    store = get_explanation_snapshot_store()
+    extension = "json" if format == "json" else "md"
+    documents = []
+    for endpoint in contract.get("endpoints", []):
+        if not isinstance(endpoint, dict):
+            continue
+        document = _api_contract_document(
+            endpoint, _local_main_node_explanation(store, repository_snapshot_id, endpoint)
+        )
+        content = (
+            json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+            if format == "json"
+            else _render_api_contract_markdown(document)
+        )
+        documents.append(
+            {
+                "filename": _endpoint_filename(document, len(documents) + 1, extension),
+                "content": content,
+            }
+        )
+    return {
+        "repository_snapshot_id": repository_snapshot_id,
+        "format": format,
+        "documents": documents,
+    }
 
 
 @app.get("/api/api-explanations/current")

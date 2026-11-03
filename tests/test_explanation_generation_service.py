@@ -103,3 +103,54 @@ def test_regeneration_reuses_unchanged_node_and_chunk_explanations(tmp_path):
     assert snapshot.statistics["reused_local_nodes"] == 2
     assert store.get_current("shop", "orders", snapshot.api_key).id == second_id
     store.close()
+
+
+class FlakySemantic(SemanticStub):
+    def __init__(self, failures, message="connection reset by peer"):
+        super().__init__()
+        self.failures = failures
+        self.message = message
+        self.attempts = 0
+
+    def explain_chunk(self, node, chunk):
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise RuntimeError(self.message)
+        return super().explain_chunk(node, chunk)
+
+
+def test_transient_llm_failure_is_retried_and_publishes(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "codeevolution.application.explanation_generation_service.time.sleep",
+        lambda _seconds: None,
+    )
+    store = ExplanationSnapshotStore(tmp_path / "explanations.db")
+    semantic = FlakySemantic(failures=1)
+    service = ExplanationGenerationService(store, SourceStub(), semantic, "test-model")
+    snapshot_id, frozen = service.prepare(
+        {"repo": "shop", "member": "orders", "method": "POST",
+         "path": "/orders", "handler": "create_order"}
+    )
+
+    service.generate(snapshot_id, frozen)
+
+    assert store.get_snapshot(snapshot_id).status == "completed"
+    # One retried call plus the two successful node explanations.
+    assert semantic.attempts == 3
+    store.close()
+
+
+def test_non_transient_llm_failure_is_not_retried(tmp_path):
+    store = ExplanationSnapshotStore(tmp_path / "explanations.db")
+    semantic = FlakySemantic(failures=1, message="invalid API key")
+    service = ExplanationGenerationService(store, SourceStub(), semantic, "test-model")
+    snapshot_id, frozen = service.prepare(
+        {"repo": "shop", "member": "orders", "method": "POST",
+         "path": "/orders", "handler": "create_order"}
+    )
+
+    service.generate(snapshot_id, frozen)
+
+    assert store.get_snapshot(snapshot_id).status == "failed"
+    assert semantic.attempts == 1
+    store.close()

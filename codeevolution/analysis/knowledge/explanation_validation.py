@@ -243,8 +243,3 @@ def validate_explanation_coverage(
         truncated=truncated,
         issues=unique,
     )
-
-
-class ExplanationCoverageValidator:
-    def validate(self, nodes: Iterable[Mapping[str, Any]], **kwargs: Any) -> ExplanationCoverage:
-        return validate_explanation_coverage(nodes, **kwargs)

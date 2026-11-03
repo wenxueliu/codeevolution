@@ -113,6 +113,7 @@ def test_openapi_path_snapshot():
         "/api/api-explanations/batches/{batch_id}/cancel",
         "/api/api-explanations/batches/{batch_id}/retry-failed",
         "/api/api-explanations/current",
+        "/api/api-explanations/export",
         "/api/api-explanations/generate",
         "/api/api-explanations/snapshots",
         "/api/api-explanations/snapshots/{snapshot_id}",

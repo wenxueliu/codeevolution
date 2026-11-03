@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from codeevolution.application.api_explanation_batch_service import ApiExplanationBatchService
 from codeevolution.api import create_app
+from codeevolution.application.api_explanation_batch_service import ApiExplanationBatchService
 from codeevolution.domain.explanation import ExplanationSnapshot
 from codeevolution.infrastructure.explanation_snapshot_store import ExplanationSnapshotStore
 
@@ -144,3 +144,85 @@ def test_cancel_batch_api_marks_running_candidate_and_queued_items(tmp_path):
     assert store.get_snapshot(candidate.id).status == "cancelled"
     assert {item["status"] for item in store.get_batch(batch["id"])["items"]} == {"running", "cancelled"}
     store.close()
+
+
+def test_stale_mode_only_enqueues_outdated_endpoints(tmp_path):
+    from contextlib import nullcontext
+
+    from codeevolution.application.api_explanation_batch_service import endpoint_key
+
+    store = ExplanationSnapshotStore(tmp_path / "api.db")
+    endpoints = [
+        {"method": "GET", "path": "/fresh", "handler": "fresh"},
+        {"method": "GET", "path": "/stale", "handler": "stale"},
+    ]
+
+    class Queries:
+        def api_contract(self, _snapshot_id):
+            return {"endpoints": endpoints}
+
+        def open(self, _snapshot_id):
+            return nullcontext(SimpleNamespace(snapshot=SimpleNamespace(member_id="shop")))
+
+    class StatusService:
+        def statuses(self, _snapshot_id, items, *, member_id, source_loader):
+            assert member_id == "shop"
+            assert source_loader is not None
+            return {
+                "endpoints": [
+                    {
+                        "api_key": endpoint_key(item),
+                        "status": "stale" if item["path"] == "/stale" else "explained",
+                    }
+                    for item in items
+                ]
+            }
+
+    service = ApiExplanationBatchService(
+        store, Queries(), lambda: SimpleNamespace(),
+        status_service=StatusService(), source_loader=object(),
+    )
+
+    batch = service.create("snapshot-1", mode="stale")
+
+    assert [item["endpoint_key"] for item in batch["items"]] == ["GET|/stale|stale"]
+    store.close()
+
+
+def test_retry_failed_requeues_only_failed_items(tmp_path):
+    store = ExplanationSnapshotStore(tmp_path / "api.db")
+    batch = store.create_batch(
+        "snapshot-1", "prompt-1", "digest-1",
+        [
+            {"endpoint_key": "GET|/a|a", "method": "GET", "path": "/a", "handler": "a"},
+            {"endpoint_key": "GET|/b|b", "method": "GET", "path": "/b", "handler": "b"},
+        ],
+    )
+    failed = batch["items"][0]
+    store.update_batch_item(failed["id"], "failed", error_message="boom")
+    store.update_batch_item(batch["items"][1]["id"], "completed")
+    service = ApiExplanationBatchService(store, object(), lambda: SimpleNamespace())
+
+    retried = service.retry_failed(batch["id"])
+
+    assert retried["retry_of_job_id"] == batch["id"]
+    assert [item["endpoint_key"] for item in retried["items"]] == [failed["endpoint_key"]]
+    store.close()
+
+
+def test_scheduler_start_resubmits_interrupted_batches():
+    from codeevolution.application.api_explanation_batch_service import (
+        ApiExplanationBatchScheduler,
+    )
+
+    class Service:
+        store = SimpleNamespace(recover_interrupted_batches=lambda: ["batch-1", "batch-2"])
+
+    scheduler = ApiExplanationBatchScheduler(Service())
+    submitted = []
+    scheduler.submit = submitted.append
+
+    scheduler.start()
+
+    assert submitted == ["batch-1", "batch-2"]
+    scheduler.close()

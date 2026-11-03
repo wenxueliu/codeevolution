@@ -13,11 +13,7 @@ from ..semantic.explanation_templates import (
     normalize_prompt_templates,
     prompt_digest,
 )
-
-TRANSIENT_MARKERS = (
-    "timeout", "timed out", "超时", "rate limit", "限流", "429", "temporarily",
-    "temporary", "connection", "network", "503", "502",
-)
+from .explanation_generation_service import is_transient_error
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +23,31 @@ def endpoint_key(endpoint: dict) -> str:
 
 
 class ApiExplanationBatchService:
-    def __init__(self, store, snapshot_queries, generation_factory, reference_store=None):
+    def __init__(
+        self,
+        store,
+        snapshot_queries,
+        generation_factory,
+        reference_store=None,
+        *,
+        status_service=None,
+        source_loader=None,
+    ):
         self.store = store
         self.snapshot_queries = snapshot_queries
         self.generation_factory = generation_factory
         self.reference_store = reference_store
+        self.status_service = status_service
+        self.source_loader = source_loader
 
-    def create(self, repository_snapshot_id: str, *, prompt_profile_id: str = "", concurrency: int = 2) -> dict:
+    def create(
+        self,
+        repository_snapshot_id: str,
+        *,
+        prompt_profile_id: str = "",
+        concurrency: int = 2,
+        mode: str = "all",
+    ) -> dict:
         profile = self._resolve_profile(repository_snapshot_id, prompt_profile_id)
         digest = (
             prompt_digest(profile["prompt_text"], normalize_prompt_templates(profile.get("prompt_templates")))
@@ -47,8 +61,13 @@ class ApiExplanationBatchService:
         # persisted knowledge payload may be a legacy snapshot whose endpoint
         # list was capped at 100 entries.
         report = {"api_contract": self.snapshot_queries.api_contract(repository_snapshot_id)}
+        endpoints = report.get("api_contract", {}).get("endpoints", [])
+        if mode == "stale":
+            endpoints = self._stale_endpoints(repository_snapshot_id, endpoints)
+        elif mode != "all":
+            raise ValueError(f"unknown batch mode: {mode}")
         items = []
-        for raw in report.get("api_contract", {}).get("endpoints", []):
+        for raw in endpoints:
             if not isinstance(raw, dict):
                 items.append({
                     "endpoint_key": f"invalid-{len(items)}",
@@ -65,6 +84,25 @@ class ApiExplanationBatchService:
             items,
             concurrency=concurrency,
         )
+
+    def _stale_endpoints(self, repository_snapshot_id: str, endpoints: list[dict]) -> list[dict]:
+        """Keep only endpoints whose current explanation no longer matches the frozen code."""
+        if self.status_service is None or self.source_loader is None:
+            raise ValueError("stale mode requires explanation status projection")
+        with self.snapshot_queries.open(repository_snapshot_id) as handle:
+            member_id = handle.snapshot.member_id
+        projection = self.status_service.statuses(
+            repository_snapshot_id,
+            endpoints,
+            member_id=member_id,
+            source_loader=self.source_loader,
+        )
+        stale = {
+            item["api_key"]
+            for item in projection.get("endpoints", [])
+            if item.get("status") == "stale"
+        }
+        return [endpoint for endpoint in endpoints if endpoint_key(endpoint) in stale]
 
     def retry_failed(self, batch_id: str, *, concurrency: int | None = None) -> dict:
         source = self.store.get_batch(batch_id)
@@ -206,7 +244,7 @@ class ApiExplanationBatchService:
                 self._failed_or_retry(item, str(error)[:1000])
 
     def _failed_or_retry(self, item: dict, error: str) -> None:
-        transient = any(marker in error.lower() for marker in TRANSIENT_MARKERS)
+        transient = is_transient_error(error)
         attempts = int(item.get("attempt_count") or 0)
         if transient and attempts < 3:
             logger.warning(

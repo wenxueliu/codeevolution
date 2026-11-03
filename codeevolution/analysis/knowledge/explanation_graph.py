@@ -185,10 +185,3 @@ def build_explanation_plan(
         truncated=bool(truncated or reasons),
         truncation_reasons=reasons,
     )
-
-
-class ExplanationGraphAnalyzer:
-    """Small callable facade for dependency injection in application services."""
-
-    def build(self, nodes: Iterable, edges: Iterable, **kwargs: Any) -> ExplanationGraphPlan:
-        return build_explanation_plan(nodes, edges, **kwargs)

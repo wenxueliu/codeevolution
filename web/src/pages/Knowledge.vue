@@ -106,7 +106,7 @@
             <label class="prompt-field"><span class="prompt-field-heading"><span>{{ t('多代码块合并模板') }}</span><button class="link-button" type="button" :disabled="promptSaving || !promptDefaults.synthesis" @click="restorePromptTemplate('synthesis')">{{ t('恢复默认') }}</button></span><textarea v-model="promptTemplates.synthesis" rows="8"></textarea></label>
             <label class="prompt-field"><span class="prompt-field-heading"><span>{{ t('节点聚合模板') }}</span><button class="link-button" type="button" :disabled="promptSaving || !promptDefaults.aggregate" @click="restorePromptTemplate('aggregate')">{{ t('恢复默认') }}</button></span><textarea v-model="promptTemplates.aggregate" rows="10"></textarea></label>
             <p class="prompt-hint">{{ t('可用变量：{qualified_name}、{source}、{local_explanation}、{children_explanations}、{guidance} 等；JSON 输出约束不可删除。') }}</p>
-            <div class="api-prompt-actions"><button class="secondary sm" :disabled="promptSaving || !promptReady" @click="savePrompt">{{ promptSaving ? t('保存中...') : t('保存提示词') }}</button><button class="primary sm" :disabled="promptSaving || batchActive || !promptReady" @click="saveAndApplyBatch">{{ batchActive ? t('批量任务进行中') : t('保存并应用到全部端点') }}</button></div>
+            <div class="api-prompt-actions"><button class="secondary sm" :disabled="promptSaving || !promptReady" @click="savePrompt">{{ promptSaving ? t('保存中...') : t('保存提示词') }}</button><button class="primary sm" :disabled="promptSaving || batchActive || !promptReady" @click="saveAndApplyBatch">{{ batchActive ? t('批量任务进行中') : t('保存并应用到全部端点') }}</button><button class="secondary sm" data-testid="explanation-refresh-stale" :disabled="promptSaving || batchActive || !explanationStatusSummary.stale" @click="refreshStaleBatch">{{ t('刷新过期端点（{count}）', { count: explanationStatusSummary.stale }) }}</button><button class="secondary sm" data-testid="explanation-export" :disabled="exporting || !snapshotId" @click="exportApiExplanations">{{ exporting ? t('导出中...') : t('导出 API 契约') }}</button></div>
             <div v-if="promptError" class="explanation-error">{{ promptError }}</div>
             <details v-if="promptProfiles.length" class="prompt-history"><summary>{{ t('历史提示词版本（{count}）', { count: promptProfiles.length }) }}</summary><div v-for="profile in promptProfiles" :key="profile.id" class="prompt-history-item"><code>v{{ profile.version }}</code><span>{{ profile.prompt_text }}</span><small>{{ profile.is_current ? t('当前') : '' }}</small></div></details>
           </section>
@@ -205,6 +205,7 @@
                         <span v-if="coverageValue(explanationState(item).current, 'partial_nodes')">{{ t('部分') }} {{ coverageValue(explanationState(item).current, 'partial_nodes') }}</span>
                         <span v-if="coverageValue(explanationState(item).current, 'failed_nodes')">{{ t('失败') }} {{ coverageValue(explanationState(item).current, 'failed_nodes') }}</span>
                       </div>
+                      <p v-if="partialWarning(explanationState(item).current)" class="explanation-warning" data-testid="explanation-partial-warning">{{ partialWarning(explanationState(item).current) }}</p>
                       <details v-if="snapshotNodes(explanationState(item).current).length" class="node-explanations">
                         <summary>{{ t('节点解释状态（{count}）', { count: snapshotNodes(explanationState(item).current).length }) }}</summary>
                         <article v-for="node in snapshotNodes(explanationState(item).current)" :key="node.node_key" class="node-explanation">
@@ -602,7 +603,7 @@ export default {
       explanationStatusSummary: { explained: 0, stale: 0, pending: 0, running: 0 },
       explanationStatusLoading: false,
       promptText: DEFAULT_ENDPOINT_GUIDANCE, promptDefaults: { ...DEFAULT_PROMPT_TEMPLATES }, promptTemplates: { ...DEFAULT_PROMPT_TEMPLATES }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
-      batchJob: null, batchPollTimer: null,
+      batchJob: null, batchPollTimer: null, exporting: false,
       endpointCustomPrompts: {}, endpointPromptEditor: null,
     }
   },
@@ -910,6 +911,31 @@ export default {
         if (this.batchActive) this.scheduleBatchPoll()
       } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('创建批量任务失败') }
       finally { this.promptSaving = false }
+    },
+    async refreshStaleBatch() {
+      if (!this.snapshotId || this.batchActive) return
+      const count = this.explanationStatusSummary.stale || 0
+      if (!count || !window.confirm(this.t('将为 {count} 个过期端点重新生成解释，是否继续？', { count }))) return
+      this.promptSaving = true; this.promptError = ''
+      try {
+        const response = await this.$api.request('/api/api-explanations/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository_snapshot_id: this.snapshotId, prompt_profile_id: this.promptCurrent?.id || '', mode: 'stale', concurrency: 2 }) })
+        this.batchJob = response?.batch || response
+        if (this.batchActive) this.scheduleBatchPoll()
+      } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('创建批量任务失败') }
+      finally { this.promptSaving = false }
+    },
+    async exportApiExplanations() {
+      if (!this.snapshotId || this.exporting) return
+      this.exporting = true; this.promptError = ''
+      try {
+        const data = await this.$api.get('/api/api-explanations/export', { repository_snapshot_id: this.snapshotId, format: 'markdown' })
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url; link.download = `api-explanations-${this.snapshotId}.json`
+        link.click(); URL.revokeObjectURL(url)
+      } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('导出 API 契约失败') }
+      finally { this.exporting = false }
     },
     async loadBatchStatus() {
       if (!this.snapshotId) return
@@ -1296,6 +1322,17 @@ export default {
       const total = this.coverageValue(snapshot, 'total_nodes', 'nodes_total'); const completed = this.coverageValue(snapshot, 'completed_nodes', 'translated_nodes')
       return total ? `${Math.round(completed / total * 100)}%` : '-'
     },
+    partialWarning(snapshot) {
+      const coverage = this.snapshotCoverage(snapshot) || {}
+      const issues = Array.isArray(coverage.issues) ? coverage.issues.length : 0
+      const partial = Number(coverage.partial_nodes || 0)
+      if (snapshot?.status !== 'partial' && !coverage.truncated && !issues && !partial) return ''
+      const reasons = []
+      if (coverage.truncated) reasons.push(this.t('调用图被截断'))
+      if (partial) reasons.push(this.t('部分节点 {count} 个', { count: partial }))
+      if (issues) reasons.push(this.t('覆盖问题 {count} 项', { count: issues }))
+      return this.t('解释不完整：{reason}。结果仍会发布，请结合源码核对。', { reason: reasons.join(this.t('、')) || this.t('存在未完全覆盖的节点') })
+    },
     snapshotNodes(snapshot) { return snapshot?.nodes || snapshot?.node_explanations || [] },
     nodeSummary(node) {
       const value = node.aggregate_explanation || node.local_explanation || node.explanation
@@ -1652,6 +1689,7 @@ td code { color: #666; word-break: break-all; }
 .batch-counts { margin: 8px 0; color: #666; font-size: 11px; }
 .batch-cancelling { color: #8a6500; font-size: 11px; }
 .batch-cancel-hint { margin: 7px 0 0; color: #8a6500; font-size: 11px; }
+.explanation-warning { margin: 8px 0 0; padding: 7px 9px; border-radius: 5px; background: #fff8e6; color: #8a6500; font-size: 11px; }
 .batch-item code { min-width: 210px; }
 .api-explanation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .api-explanation-heading h4 { margin-bottom: 3px; font-size: 13px; color: #333; }

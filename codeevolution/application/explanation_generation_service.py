@@ -23,7 +23,16 @@ from ..domain.explanation import (
 PROMPT_VERSION = "api-explanation-v2"
 SCHEMA_VERSION = "api-explanation-v2"
 CHUNKER_VERSION = "semantic-lines-v1"
+MAX_ATTEMPTS = 3
+TRANSIENT_MARKERS = (
+    "timeout", "timed out", "超时", "rate limit", "限流", "429", "temporarily",
+    "temporary", "connection", "network", "503", "502",
+)
 logger = logging.getLogger(__name__)
+
+
+def is_transient_error(message: str) -> bool:
+    return any(marker in (message or "").lower() for marker in TRANSIENT_MARKERS)
 
 
 def _digest(*values) -> str:
@@ -447,4 +456,16 @@ class ExplanationGenerationService:
                 kwargs["guidance"] = guidance
             if templates:
                 kwargs["templates"] = templates
-        return method(*args, **kwargs)
+        # A provider timeout or 429 should not discard an otherwise healthy
+        # candidate; retry only the calls that are safe to repeat.
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                return method(*args, **kwargs)
+            except Exception as error:
+                if attempt == MAX_ATTEMPTS or not is_transient_error(str(error)):
+                    raise
+                logger.warning(
+                    "api explanation transient LLM failure attempt=%s/%s error=%s",
+                    attempt, MAX_ATTEMPTS, error,
+                )
+                time.sleep(2 if attempt == 1 else 5)

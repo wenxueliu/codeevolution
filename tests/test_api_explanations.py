@@ -122,6 +122,115 @@ def test_manual_generation_current_listing_and_confirmed_delete(tmp_path):
     store.close()
 
 
+def _published_snapshot(store):
+    snapshot = ExplanationSnapshot(
+        id="current-snapshot", repo_name="shop", member_name="orders",
+        api_key="POST|/orders|create_order", method="POST", path="/orders",
+        handler="create_order", entry_node_key="orders::create_order",
+        source_revision="rev", source_digest="source", graph_digest="graph",
+        model_id="test-model", prompt_version="v1", schema_version="v1",
+    )
+    store.create_snapshot(snapshot)
+    store.update_snapshot(snapshot.id, "completed", explanation={"summary": "创建订单"})
+    store.publish(snapshot.id)
+    return snapshot
+
+
+class SourceLoaderStub:
+    def __init__(self, source_digest):
+        self.source_digest = source_digest
+
+    def load(self, _spec):
+        return {"source_digest": self.source_digest, "graph_digest": "graph"}
+
+
+def test_current_explanation_reports_current_or_outdated_freshness(tmp_path):
+    for expected, digest in (("current", "source"), ("outdated", "changed")):
+        store = ExplanationSnapshotStore(tmp_path / f"{expected}.db")
+        _published_snapshot(store)
+        app = create_app({
+            "explanation_snapshot_store": store,
+            "explanation_source_loader": SourceLoaderStub(digest),
+        })
+        with TestClient(app) as client:
+            response = client.get("/api/api-explanations/current", params={
+                "repo": "shop", "member": "orders",
+                "api_key": "POST|/orders|create_order",
+            })
+        assert response.status_code == 200
+        assert response.json()["freshness"] == expected
+        store.close()
+
+
+def test_generate_accepts_repository_snapshot_without_repo(tmp_path):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    store = ExplanationSnapshotStore(tmp_path / "api.db")
+    service = GenerationStub(store)
+
+    class Queries:
+        def open(self, snapshot_id):
+            assert snapshot_id == "repo-snapshot"
+            return nullcontext(SimpleNamespace(snapshot=SimpleNamespace(member_id="orders")))
+
+    class Runtime:
+        store = SimpleNamespace(add_snapshot_reference=lambda *_args, **_kwargs: None)
+
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+
+    app = create_app({
+        "explanation_snapshot_store": store,
+        "explanation_generation_service_factory": lambda: service,
+        "snapshot_query_service": Queries(),
+        "snapshot_runtime": Runtime(),
+        "background_submit": lambda fn, *args: fn(*args),
+    })
+    with TestClient(app) as client:
+        response = client.post("/api/api-explanations/generate", json={
+            "repository_snapshot_id": "repo-snapshot", "method": "POST",
+            "path": "/orders", "handler": "create_order",
+        })
+
+    assert response.status_code == 202
+    assert service.specs[0]["repo"] == "orders"
+    assert service.specs[0]["member"] == "orders"
+
+
+def test_export_returns_one_document_per_endpoint(tmp_path):
+    store = ExplanationSnapshotStore(tmp_path / "api.db")
+
+    class Queries:
+        def api_contract(self, snapshot_id):
+            assert snapshot_id == "repo-snapshot"
+            return {"endpoints": [{
+                "method": "GET", "path": "/orders", "handler": "orders.list",
+                "call_chain": [], "request_headers": [], "path_params": [],
+                "query_params": [], "request_body": None, "response_body": None,
+            }]}
+
+    app = create_app({
+        "explanation_snapshot_store": store,
+        "snapshot_query_service": Queries(),
+    })
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/api-explanations/export",
+            params={"repository_snapshot_id": "repo-snapshot", "format": "markdown"},
+        )
+
+    assert response.status_code == 200
+    documents = response.json()["documents"]
+    assert len(documents) == 1
+    assert documents[0]["filename"].endswith(".md")
+    assert documents[0]["content"].startswith("# GET /orders")
+    assert "## Main Node Explanation" in documents[0]["content"]
+
+
 def test_call_tree_node_rule_returns_frozen_source_context():
     app = create_app({
         "snapshot_query_service": NodeRuleQueryStub(),

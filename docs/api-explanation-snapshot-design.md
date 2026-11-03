@@ -472,8 +472,13 @@ semantic/
 
 ```text
 POST   /api/api-explanations/generate
-POST   /api/api-explanations/generate-batch
+POST   /api/api-explanations/batches            # mode=all|stale
+GET    /api/api-explanations/batches/{batch_id}
+POST   /api/api-explanations/batches/{batch_id}/cancel
+POST   /api/api-explanations/batches/{batch_id}/retry-failed
 GET    /api/api-explanations/current?repo=<repo>&api_key=<api_key>
+GET    /api/api-explanations/statuses?repository_snapshot_id=<id>
+GET    /api/api-explanations/export?repository_snapshot_id=<id>&format=markdown|json
 GET    /api/api-explanations/snapshots?repo=<repo>&api_key=<api_key>
 GET    /api/api-explanations/snapshots/{snapshot_id}
 DELETE /api/api-explanations/snapshots/{snapshot_id}
