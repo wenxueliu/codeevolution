@@ -1,5 +1,7 @@
+import json
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from codeevolution.analysis.knowledge.terms import TermRecognizer
@@ -509,3 +511,253 @@ def test_terms_api_aligns_accepted_entities_from_a_view(tmp_path):
         assert reviewed.status_code == 200
         assert reviewed.json()["alignment"]["status"] == "accepted"
     term_store.close()
+
+
+PAIR_FACTS = {
+    "core_entities": [
+        {"node_id": "t-order", "name": "Order", "file_path": "src/order.py",
+         "kind": "class", "score": 30, "fields": [{"name": "id"}]},
+        {"node_id": "t-payment", "name": "OrderPayment", "file_path": "src/payment.py",
+         "kind": "class", "score": 26, "fields": [{"name": "paidAmount"}]},
+    ],
+}
+
+
+class _PairSnapshotQuery:
+    def knowledge(self, snapshot_id):
+        return PAIR_FACTS
+
+
+def test_pair_judgments_merge_and_reverse_via_api(tmp_path):
+    term_store = TermStore(tmp_path / "terms.db")
+    snapshot_store = SimpleNamespace(get_snapshot=lambda snapshot_id: SimpleNamespace(member_id="orders"))
+    app = create_app({
+        "term_store": term_store,
+        "snapshot_query_service": _PairSnapshotQuery(),
+        "snapshot_runtime": _Runtime(snapshot_store),
+    })
+    with TestClient(app) as client:
+        assert client.post("/api/terms/extract", json={"snapshot_id": "snapshot-1"}).status_code == 200
+        judged = client.post("/api/terms/pair-judgments", json={"snapshot_id": "snapshot-1"})
+        assert judged.status_code == 200
+        judgments = judged.json()["judgments"]
+        pair = next(item for item in judgments if item["judgment"] == "SPECIALIZATION")
+        names = judged.json()["term_names"]
+        assert {names[pair["source_term_id"]], names[pair["target_term_id"]]} == {"Order", "OrderPayment"}
+
+        terms = client.get("/api/terms", params={"snapshot_id": "snapshot-1"}).json()["terms"]
+        by_name = {item["canonical_name"]: item for item in terms}
+        merged = client.post("/api/terms/merge", json={
+            "snapshot_id": "snapshot-1",
+            "source_term_ids": [by_name["OrderPayment"]["id"]],
+            "target_term_id": by_name["Order"]["id"],
+            "reason": "payment is part of order",
+            "reviewer": "steward",
+            "role": "Terminology Steward",
+        })
+        assert merged.status_code == 200
+        operation = merged.json()["merge"]
+        assert operation["operation"] == "MERGE" and operation["status"] == "applied"
+        merged_term = client.get(
+            f"/api/terms/{by_name['OrderPayment']['id']}", params={"snapshot_id": "snapshot-1"}
+        ).json()["term"]
+        assert merged_term["lifecycle_status"] == "MERGED"
+
+        reversed_ = client.post(f"/api/terms/merge/{operation['id']}/reverse", json={
+            "reason": "payment is a separate concept", "reviewer": "steward",
+        })
+        assert reversed_.status_code == 200
+        restored = client.get(
+            f"/api/terms/{by_name['OrderPayment']['id']}", params={"snapshot_id": "snapshot-1"}
+        ).json()["term"]
+        assert restored["lifecycle_status"] != "MERGED"
+        records = client.get("/api/terms/review-records", params={"snapshot_id": "snapshot-1"}).json()["records"]
+        assert {"MERGE"} <= {item["item_type"] for item in records}
+        assert {item["action"] for item in records} >= {"merge", "reverse_merge"}
+
+
+def test_merge_requires_confirmation_for_hard_constraints(tmp_path):
+    store = TermStore(tmp_path / "terms.db")
+    service = TermRecognitionService(store)
+    report = service.extract("snapshot-1", "orders", PAIR_FACTS)
+    by_name = {item["canonical_name"]: item for item in report["terms"]}
+    service.review("snapshot-1", by_name["OrderPayment"]["id"], "reject", {}, "not a term", "steward")
+    service.pair_judgments("snapshot-1")
+    judgment = next(
+        item for item in store.list_pair_judgments(snapshot_id="snapshot-1")["judgments"]
+        if {item["source_term_id"], item["target_term_id"]}
+        == {by_name["Order"]["id"], by_name["OrderPayment"]["id"]}
+    )
+    assert any(item["code"] == "lifecycle_conflict" for item in judgment["constraints"])
+    with pytest.raises(ValueError):
+        service.merge_terms(
+            "snapshot-1", [by_name["OrderPayment"]["id"]], by_name["Order"]["id"],
+            reason="forced", reviewer="steward",
+        )
+    merged = service.merge_terms(
+        "snapshot-1", [by_name["OrderPayment"]["id"]], by_name["Order"]["id"],
+        reason="forced", reviewer="steward", confirm_hard_constraints=True,
+    )
+    assert merged["status"] == "applied"
+    store.close()
+
+
+def _definition_llm(evidence_id, model="fake-model"):
+    class _LLM:
+        model_name = model
+
+        def complete(self, prompt, **kwargs):
+            return json.dumps({
+                "canonical_name": "Order",
+                "term_type": "ENTITY",
+                "business_definition": "A customer order with an identifier.",
+                "business_context": "orders",
+                "attributes": ["id"],
+                "lifecycle": [],
+                "operations": [],
+                "events": [],
+                "relationships": [],
+                "facts": [{"claim": "Order has an id field", "evidence_ids": [evidence_id]}],
+                "inferences": [{"claim": "Order is a persisted entity", "supporting_evidence_ids": [evidence_id]}],
+                "unknowns": ["whether partial cancellation is supported"],
+            })
+
+    return _LLM()
+
+
+def test_definition_generation_grounding_and_review(tmp_path):
+    term_store = TermStore(tmp_path / "terms.db")
+    snapshot_store = SimpleNamespace(get_snapshot=lambda snapshot_id: SimpleNamespace(member_id="orders"))
+    app = create_app({
+        "term_store": term_store,
+        "snapshot_query_service": _StructuredSnapshotQuery(),
+        "snapshot_runtime": _Runtime(snapshot_store),
+    })
+    with TestClient(app) as client:
+        assert client.post("/api/terms/extract", json={"snapshot_id": "structured-1"}).status_code == 200
+        term = next(
+            item for item in client.get("/api/terms", params={"snapshot_id": "structured-1"}).json()["terms"]
+            if item["canonical_name"] == "Order"
+        )
+        package = client.get(
+            f"/api/terms/{term['id']}/evidence-package", params={"snapshot_id": "structured-1"}
+        ).json()["package"]
+        evidence_id = package["support"][0]["id"]
+
+    llm_app = create_app({
+        "term_store": term_store,
+        "snapshot_query_service": _StructuredSnapshotQuery(),
+        "snapshot_runtime": _Runtime(snapshot_store),
+        "term_llm_client": _definition_llm(evidence_id),
+    })
+    with TestClient(llm_app) as client:
+        generated = client.post(
+            f"/api/terms/{term['id']}/definition", params={"snapshot_id": "structured-1"}
+        )
+        assert generated.status_code == 200
+        definition = generated.json()["definition"]
+        assert definition["status"] == "pending_review"
+        assert definition["grounding"]["passed"] is True
+        assert definition["facts"][0]["evidence_ids"] == [evidence_id]
+        assert definition["input_hash"] and definition["prompt_version"] == "term-definition-v1"
+
+        reviewed = client.post(f"/api/terms/definitions/{definition['id']}/review", json={
+            "action": "accept", "reviewer": "domain-expert", "role": "Domain Expert",
+        })
+        assert reviewed.status_code == 200
+        assert reviewed.json()["definition"]["status"] == "approved"
+        listed = client.get("/api/terms/definitions", params={"snapshot_id": "structured-1"})
+        assert listed.status_code == 200 and listed.json()["definitions"]
+
+
+def test_definition_grounding_rejects_missing_evidence(tmp_path):
+    term_store = TermStore(tmp_path / "terms.db")
+    snapshot_store = SimpleNamespace(get_snapshot=lambda snapshot_id: SimpleNamespace(member_id="orders"))
+    app = create_app({
+        "term_store": term_store,
+        "snapshot_query_service": _StructuredSnapshotQuery(),
+        "snapshot_runtime": _Runtime(snapshot_store),
+    })
+    with TestClient(app) as client:
+        assert client.post("/api/terms/extract", json={"snapshot_id": "structured-1"}).status_code == 200
+        term = next(
+            item for item in client.get("/api/terms", params={"snapshot_id": "structured-1"}).json()["terms"]
+            if item["canonical_name"] == "Order"
+        )
+    bad_app = create_app({
+        "term_store": term_store,
+        "snapshot_query_service": _StructuredSnapshotQuery(),
+        "snapshot_runtime": _Runtime(snapshot_store),
+        "term_llm_client": _definition_llm("ev-does-not-exist"),
+    })
+    with TestClient(bad_app) as client:
+        generated = client.post(
+            f"/api/terms/{term['id']}/definition", params={"snapshot_id": "structured-1"}
+        )
+        definition = generated.json()["definition"]
+        assert definition["status"] == "draft"
+        assert definition["grounding"]["checks"]["evidence_existence"]["passed"] is False
+        rejected = client.post(f"/api/terms/definitions/{definition['id']}/review", json={"action": "accept"})
+        assert rejected.status_code == 422
+
+
+def test_release_snapshot_is_immutable_and_diffable(tmp_path):
+    term_store = TermStore(tmp_path / "terms.db")
+    snapshot_store = SimpleNamespace(get_snapshot=lambda snapshot_id: SimpleNamespace(member_id="orders"))
+    app = create_app({
+        "term_store": term_store,
+        "snapshot_query_service": _StructuredSnapshotQuery(),
+        "snapshot_runtime": _Runtime(snapshot_store),
+    })
+    with TestClient(app) as client:
+        assert client.post("/api/terms/extract", json={"snapshot_id": "structured-1"}).status_code == 200
+        created = client.post("/api/releases", json={
+            "snapshot_id": "structured-1", "version": "v1.0.0",
+            "name": "Orders dictionary", "created_by": "steward",
+        })
+        assert created.status_code == 201
+        release = created.json()["release"]
+        assert release["status"] == "published" and release["snapshot_hash"]
+        assert release["items"] and {item["item_type"] for item in release["items"]} == {"TERM"}
+
+        duplicate = client.post("/api/releases", json={
+            "snapshot_id": "structured-1", "version": "v1.0.0", "created_by": "steward",
+        })
+        assert duplicate.status_code == 422
+
+        listed = client.get("/api/releases").json()["releases"]
+        assert listed[0]["release_id"] == release["release_id"]
+
+        unchanged = client.get(f"/api/releases/{release['release_id']}/diff")
+        assert unchanged.status_code == 200
+        assert unchanged.json()["added"] == [] and unchanged.json()["changed"] == []
+
+        term = next(
+            item for item in client.get("/api/terms", params={"snapshot_id": "structured-1"}).json()["terms"]
+            if item["canonical_name"] == "Order"
+        )
+        assert client.post(f"/api/terms/{term['id']}/review", json={
+            "snapshot_id": "structured-1", "action": "reject", "reviewer": "owner",
+        }).status_code == 200
+        after = client.get(f"/api/releases/{release['release_id']}/diff").json()
+        assert term["id"] in {item["item_id"] for item in after["removed"]}
+
+
+def test_term_analysis_runs_are_idempotent(tmp_path):
+    term_store = TermStore(tmp_path / "terms.db")
+    snapshot_store = SimpleNamespace(get_snapshot=lambda snapshot_id: SimpleNamespace(member_id="orders"))
+    app = create_app({
+        "term_store": term_store,
+        "snapshot_query_service": _StructuredSnapshotQuery(),
+        "snapshot_runtime": _Runtime(snapshot_store),
+    })
+    with TestClient(app) as client:
+        first = client.post("/api/terms/analysis-runs", json={"snapshot_id": "structured-1", "commit_id": "abc"})
+        assert first.status_code == 201
+        run = first.json()
+        assert run["status"] == "completed" and run["reused"] is False
+        second = client.post("/api/terms/analysis-runs", json={"snapshot_id": "structured-1", "commit_id": "abc"})
+        assert second.status_code == 201
+        assert second.json()["id"] == run["id"] and second.json()["reused"] is True
+        fetched = client.get(f"/api/terms/analysis-runs/{run['id']}")
+        assert fetched.status_code == 200 and fetched.json()["run"]["result"]["counts"]["total"] >= 1

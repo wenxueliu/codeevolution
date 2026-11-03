@@ -127,6 +127,11 @@ class TermRelation:
     status: str = "candidate"
     score_breakdown: dict[str, float] = field(default_factory=dict)
     llm_status: str = "not_requested"
+    direction: str = "forward"
+    cardinality: str = ""
+    evidence_refs: list[str] = field(default_factory=list)
+    review_status: str = "proposed"
+    version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -137,4 +142,9 @@ class TermRelation:
             "status": self.status,
             "score_breakdown": self.score_breakdown,
             "llm_status": self.llm_status,
+            "direction": self.direction,
+            "cardinality": self.cardinality,
+            "evidence_refs": self.evidence_refs,
+            "review_status": self.review_status,
+            "version": self.version,
         }

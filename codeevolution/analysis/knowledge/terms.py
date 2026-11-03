@@ -134,6 +134,23 @@ def _singular(token: str) -> str:
     return token
 
 
+def _verb_stems(normalized_name: str) -> set[str]:
+    """Token set plus simple de-inflected forms (cancelled → cancel)."""
+    stems: set[str] = set()
+    for token in normalized_name.split("_"):
+        stems.add(token)
+        if len(token) > 4 and token.endswith("ing"):
+            token = token[:-3]
+        elif len(token) > 4 and token.endswith("ed"):
+            token = token[:-2]
+        elif len(token) > 3 and token.endswith("d"):
+            token = token[:-1]
+        if len(token) > 3 and token[-1] == token[-2]:
+            token = token[:-1]
+        stems.add(token)
+    return {item for item in stems if item}
+
+
 def _domain_parts(parts: list[str]) -> list[str]:
     """Strip operation ingredients: trailing technical wrappers, leading CRUD
     verbs and trailing generic query nouns leave the domain noun phrase."""
@@ -879,9 +896,33 @@ class TermRecognizer:
             target = nouns.get(residue_key)
             if target is None or target.id == action.id:
                 continue
+            confidence = min(action.confidence_score, target.confidence_score)
+            status = "accepted" if action.status == target.status == "accepted" else "candidate"
             relations.append(TermRelation(
-                action.id, target.id, "applies_to", min(action.confidence_score, target.confidence_score),
-                "accepted" if action.status == target.status == "accepted" else "candidate",
+                action.id, target.id, "applies_to", confidence, status,
                 {"operation_residue": 1.0},
+                evidence_refs=[item.id for item in action.evidence if item.id],
             ))
+            # A domain entity that an action operates on is the actor of that
+            # business operation; keep the technical applies_to link upstream.
+            if target.term_type == TERM_ENTITY:
+                relations.append(TermRelation(
+                    target.id, action.id, "performs", confidence, status,
+                    {"applies_to": 1.0},
+                    evidence_refs=[item.id for item in target.evidence if item.id],
+                ))
+        events = [item for item in candidates if item.term_type == TERM_BUSINESS_EVENT]
+        actions = [item for item in candidates if item.term_type == TERM_BUSINESS_ACTION]
+        for event in events:
+            event_stems = _verb_stems(event.normalized_name)
+            for action in actions:
+                action_tokens = set(action.normalized_name.split("_"))
+                if len(action_tokens) < 2 or not action_tokens <= event_stems:
+                    continue
+                relations.append(TermRelation(
+                    event.id, action.id, "triggers",
+                    min(event.confidence_score, action.confidence_score) * 0.6,
+                    "candidate", {"name_stem_match": 1.0}, review_status="proposed",
+                    evidence_refs=[item.id for item in event.evidence if item.id],
+                ))
         return relations

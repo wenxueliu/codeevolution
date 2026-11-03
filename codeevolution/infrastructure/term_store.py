@@ -321,7 +321,19 @@ class TermStore:
                     "bounded_context_id": "TEXT NOT NULL DEFAULT ''",
                     "review_status": "TEXT NOT NULL DEFAULT 'proposed'",
                     "version": "INTEGER NOT NULL DEFAULT 1",
+                    "evidence_refs_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "effective_time": "TEXT NOT NULL DEFAULT ''",
                 },
+            )
+            self._ensure_columns(
+                connection,
+                "term_definition",
+                {"payload_json": "TEXT NOT NULL DEFAULT '{}'"},
+            )
+            self._ensure_columns(
+                connection,
+                "release_snapshot",
+                {"snapshot_id": "TEXT NOT NULL DEFAULT ''", "previous_release_id": "TEXT NOT NULL DEFAULT ''"},
             )
 
     @staticmethod
@@ -343,6 +355,10 @@ class TermStore:
             connection.execute("DELETE FROM asset_inventory WHERE snapshot_id=?", (snapshot_id,))
             connection.execute("DELETE FROM evidence_package WHERE snapshot_id=?", (snapshot_id,))
             connection.execute("DELETE FROM evidence_conflict WHERE snapshot_id=?", (snapshot_id,))
+            connection.execute(
+                "DELETE FROM term_pair_judgment WHERE snapshot_id=? AND status='proposed'",
+                (snapshot_id,),
+            )
             for asset in (report.get("asset_inventory") or {}).get("assets", []):
                 asset_type = str(asset.get("asset_type") or "")
                 name = str(asset.get("name") or "")
@@ -458,14 +474,17 @@ class TermStore:
                 connection.execute(
                     """INSERT OR REPLACE INTO term_relations
                        (id,snapshot_id,source_term_id,target_term_id,relationship,confidence,status,
-                        score_breakdown_json,llm_status,direction,cardinality,bounded_context_id,review_status,version)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        score_breakdown_json,llm_status,direction,cardinality,bounded_context_id,review_status,version,
+                        evidence_refs_json,effective_time)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     ("rel-" + uuid4().hex, snapshot_id, relation["source_term_id"], relation["target_term_id"],
                      relation["relationship"], relation.get("confidence", 0), relation.get("status", "candidate"),
                      json.dumps(relation.get("score_breakdown", {}), ensure_ascii=False),
                      relation.get("llm_status", "not_requested"), relation.get("direction", "forward"),
                      relation.get("cardinality", ""), relation.get("bounded_context_id", ""),
-                     relation.get("review_status", "proposed"), relation.get("version", 1)),
+                     relation.get("review_status", "proposed"), relation.get("version", 1),
+                     json.dumps(relation.get("evidence_refs", []), ensure_ascii=False),
+                     relation.get("effective_time", "")),
                 )
         return self.get_summary(snapshot_id)
 
@@ -659,6 +678,10 @@ class TermStore:
                 "INSERT INTO term_overrides (id,snapshot_id,term_id,scope,matcher,action,value_json,reason,author,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 ("override-" + uuid4().hex, view_id, None, "view", alignment_id, action, "{}", reason, author, now),
             )
+            self._record_review(
+                connection, snapshot_id=view_id, item_type="ALIGNMENT", item_id=alignment_id,
+                item_version=1, action=action, reason=reason, reviewer=author,
+            )
         result = self.list_alignments(view_id)
         return next(item for item in result["alignments"] if item["id"] == alignment_id)
 
@@ -755,6 +778,20 @@ class TermStore:
             "locator": json.loads(row["locator_json"]), "source_version": row["source_version"],
         } for row in rows]
 
+    @staticmethod
+    def _record_review(
+        connection: sqlite3.Connection, *, snapshot_id: str, item_type: str, item_id: str,
+        item_version: int, action: str, reason: str, reviewer: str, role: str = "",
+        release_id: str = "",
+    ) -> None:
+        connection.execute(
+            """INSERT INTO review_record
+               (id,snapshot_id,release_id,item_type,item_id,item_version,action,reason,reviewer,role,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            ("review-" + uuid4().hex, snapshot_id, release_id, item_type, item_id,
+             item_version, action, reason, reviewer, role, utc_now()),
+        )
+
     def review(self, snapshot_id: str, term_id: str, action: str, value: dict[str, Any], reason: str, author: str) -> dict[str, Any]:
         allowed = {"accept", "reject", "rename", "reclassify", "alias", "relate"}
         if action not in allowed:
@@ -769,6 +806,10 @@ class TermStore:
             if action in {"accept", "reject"}:
                 status = "accepted" if action == "accept" else "rejected"
                 connection.execute("UPDATE term_snapshot_results SET status=?,source='user_override',reviewed_at=? WHERE snapshot_id=? AND term_id=?", (status, now, snapshot_id, term_id))
+                connection.execute(
+                    "UPDATE terms SET lifecycle_status=?,version=version+1,updated_at=? WHERE id=?",
+                    ("APPROVED" if action == "accept" else "REJECTED", now, term_id),
+                )
             elif action == "rename":
                 name = str(value.get("canonical_name") or "").strip()
                 if not name:
@@ -794,6 +835,14 @@ class TermStore:
             connection.execute(
                 "INSERT INTO term_overrides (id,snapshot_id,term_id,scope,matcher,action,value_json,reason,author,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 ("override-" + uuid4().hex, snapshot_id, term_id, "snapshot", term_id, action, json.dumps(value, ensure_ascii=False), reason, author, now),
+            )
+            current = connection.execute(
+                "SELECT version FROM terms WHERE id=?", (term_id,)
+            ).fetchone()
+            self._record_review(
+                connection, snapshot_id=snapshot_id, item_type="TERM", item_id=term_id,
+                item_version=int((current or {"version": 1})["version"]), action=action,
+                reason=reason, reviewer=author, role=str(value.get("role") or ""),
             )
         result = self.get_term(snapshot_id, term_id)
         return result or {}
@@ -831,6 +880,745 @@ class TermStore:
             )
         return self.get_term(snapshot_id, term_id) or {}
 
+    # ── Concept normalization: pair judgments and merges ──
+
+    def replace_pair_judgments(
+        self, snapshot_id: str, view_id: str, judgments: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Persist matcher output without overwriting human decisions."""
+        now = utc_now()
+        with self._connection() as connection:
+            connection.execute(
+                "DELETE FROM term_pair_judgment WHERE snapshot_id=? AND view_id=? AND status='proposed'",
+                (snapshot_id, view_id),
+            )
+            for item in judgments:
+                existing = connection.execute(
+                    "SELECT status FROM term_pair_judgment WHERE snapshot_id=? AND view_id=? AND source_term_id=? AND target_term_id=?",
+                    (snapshot_id, view_id, item["source_term_id"], item["target_term_id"]),
+                ).fetchone()
+                if existing and existing["status"] in {"accepted", "rejected"}:
+                    continue
+                connection.execute(
+                    """INSERT INTO term_pair_judgment
+                       (id,snapshot_id,view_id,source_term_id,target_term_id,judgment,confidence,
+                        support_evidence_json,against_evidence_json,constraints_json,algorithm_version,status,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(snapshot_id,view_id,source_term_id,target_term_id) DO UPDATE SET
+                       judgment=excluded.judgment,confidence=excluded.confidence,
+                       support_evidence_json=excluded.support_evidence_json,
+                       against_evidence_json=excluded.against_evidence_json,
+                       constraints_json=excluded.constraints_json,
+                       algorithm_version=excluded.algorithm_version""",
+                    (item["id"], snapshot_id, view_id, item["source_term_id"], item["target_term_id"],
+                     item["judgment"], item["confidence"],
+                     json.dumps(item.get("support_evidence", []), ensure_ascii=False),
+                     json.dumps(item.get("against_evidence", []), ensure_ascii=False),
+                     json.dumps(item.get("constraints", []), ensure_ascii=False),
+                     item.get("algorithm_version", "pair-v1"), "proposed", now),
+                )
+        return self.list_pair_judgments(snapshot_id=snapshot_id, view_id=view_id)
+
+    def list_pair_judgments(
+        self, *, snapshot_id: str = "", view_id: str = "", status: str = "",
+        judgment: str = "", limit: int = 500, offset: int = 0,
+    ) -> dict[str, Any]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if snapshot_id:
+            clauses.append("snapshot_id=?")
+            params.append(snapshot_id)
+        if view_id:
+            clauses.append("view_id=?")
+            params.append(view_id)
+        for column, value in (("status", status), ("judgment", judgment)):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        with self._connection() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM term_pair_judgment WHERE {where}", params
+            ).fetchone()[0]
+            rows = connection.execute(
+                f"SELECT * FROM term_pair_judgment WHERE {where} ORDER BY confidence DESC,id LIMIT ? OFFSET ?",
+                (*params, min(max(limit, 1), 1000), max(offset, 0)),
+            ).fetchall()
+        return {
+            "total": total,
+            "judgments": [self._pair_row(row) for row in rows],
+            "snapshot_id": snapshot_id, "view_id": view_id,
+        }
+
+    def review_pair_judgment(
+        self, judgment_id: str, action: str, reason: str = "", reviewer: str = "",
+        role: str = "", snapshot_id: str = "", view_id: str = "",
+    ) -> dict[str, Any]:
+        if action not in {"accept", "reject"}:
+            raise ValueError("unsupported pair judgment review action")
+        now = utc_now()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM term_pair_judgment WHERE id=?", (judgment_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(judgment_id)
+            connection.execute(
+                "UPDATE term_pair_judgment SET status=?,reviewer=?,reviewed_at=? WHERE id=?",
+                ("accepted" if action == "accept" else "rejected", reviewer, now, judgment_id),
+            )
+            self._record_review(
+                connection, snapshot_id=str(row["snapshot_id"] or view_id),
+                item_type="PAIR_JUDGMENT", item_id=judgment_id, item_version=1,
+                action=action, reason=reason, reviewer=reviewer, role=role,
+            )
+        return self._pair_row(self._fetch_one("term_pair_judgment", judgment_id))
+
+    def merge_terms(
+        self, snapshot_id: str, source_term_ids: list[str], target_term_id: str,
+        *, reason: str = "", reviewer: str = "", role: str = "",
+        evidence_refs: list[str] | None = None, confirm_hard_constraints: bool = False,
+    ) -> dict[str, Any]:
+        """Merge terms in one transaction, keeping a reversible audit record."""
+        sources = [item for item in dict.fromkeys(source_term_ids) if item and item != target_term_id]
+        if not sources:
+            raise ValueError("source_term_ids must contain at least one other term")
+        now = utc_now()
+        with self._connection() as connection:
+            target = connection.execute(
+                "SELECT * FROM terms WHERE id=?", (target_term_id,)
+            ).fetchone()
+            if target is None:
+                raise KeyError(target_term_id)
+            source_rows = []
+            for term_id in sources:
+                row = connection.execute("SELECT * FROM terms WHERE id=?", (term_id,)).fetchone()
+                if row is None:
+                    raise KeyError(term_id)
+                source_rows.append(row)
+            hard = self._hard_constraints(connection, sources, target_term_id)
+            if hard and not confirm_hard_constraints:
+                raise ValueError(
+                    "merge blocked by hard constraints: "
+                    + ", ".join(sorted({item["code"] for item in hard}))
+                )
+            relation_rows = connection.execute(
+                f"""SELECT * FROM term_relations WHERE snapshot_id=?
+                    AND (source_term_id IN ({','.join('?' for _ in sources)})
+                         OR target_term_id IN ({','.join('?' for _ in sources)}))""",
+                (snapshot_id, *sources, *sources),
+            ).fetchall()
+            before = [dict(row) for row in relation_rows]
+            connection.execute(
+                f"DELETE FROM term_relations WHERE snapshot_id=? AND "
+                f"(source_term_id IN ({','.join('?' for _ in sources)}) "
+                f"OR target_term_id IN ({','.join('?' for _ in sources)}))",
+                (snapshot_id, *sources, *sources),
+            )
+            migrated = []
+            for row in before:
+                source_id = target_term_id if row["source_term_id"] in sources else row["source_term_id"]
+                target_id = target_term_id if row["target_term_id"] in sources else row["target_term_id"]
+                if source_id == target_id:
+                    continue
+                new_id = "rel-" + uuid4().hex
+                connection.execute(
+                    """INSERT OR IGNORE INTO term_relations
+                       (id,snapshot_id,source_term_id,target_term_id,relationship,confidence,status,
+                        score_breakdown_json,llm_status,direction,cardinality,bounded_context_id,
+                        review_status,version,evidence_refs_json,effective_time)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (new_id, row["snapshot_id"], source_id, target_id, row["relationship"],
+                     row["confidence"], row["status"], row["score_breakdown_json"],
+                     row["llm_status"], row["direction"], row["cardinality"],
+                     row["bounded_context_id"], row["review_status"], row["version"],
+                     row["evidence_refs_json"], row["effective_time"]),
+                )
+                migrated.append({**dict(row), "id": new_id, "source_term_id": source_id,
+                                 "target_term_id": target_id})
+            for term_id in sources:
+                connection.execute(
+                    "UPDATE terms SET lifecycle_status='MERGED',replaced_by=?,version=version+1,updated_at=? WHERE id=?",
+                    (target_term_id, now, term_id),
+                )
+                connection.execute(
+                    "UPDATE term_snapshot_results SET lifecycle_status='MERGED' WHERE snapshot_id=? AND term_id=?",
+                    (snapshot_id, term_id),
+                )
+            connection.execute(
+                "UPDATE terms SET version=version+1,updated_at=? WHERE id=?",
+                (now, target_term_id),
+            )
+            merge_id = "merge-" + uuid4().hex
+            affected = {
+                "before": before,
+                "after": migrated,
+                "terms": [{key: row[key] for key in ("id", "canonical_name", "lifecycle_status", "version")}
+                          for row in source_rows],
+            }
+            connection.execute(
+                """INSERT INTO merge_operation
+                   (id,snapshot_id,source_term_ids_json,target_term_id,operation,reason,
+                    evidence_refs_json,affected_relations_json,reviewer,status,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (merge_id, snapshot_id, json.dumps(sources), target_term_id, "MERGE",
+                 reason, json.dumps(evidence_refs or []), json.dumps(affected, ensure_ascii=False),
+                 reviewer, "applied", now),
+            )
+            self._record_review(
+                connection, snapshot_id=snapshot_id, item_type="MERGE", item_id=merge_id,
+                item_version=1, action="merge", reason=reason, reviewer=reviewer, role=role,
+            )
+        return self._merge_row(self._fetch_one("merge_operation", merge_id))
+
+    def reverse_merge(
+        self, merge_id: str, *, reason: str = "", reviewer: str = "", role: str = "",
+    ) -> dict[str, Any]:
+        """Compensate a merge; the original record is kept and marked reversed."""
+        now = utc_now()
+        with self._connection() as connection:
+            merge = connection.execute(
+                "SELECT * FROM merge_operation WHERE id=?", (merge_id,)
+            ).fetchone()
+            if merge is None:
+                raise KeyError(merge_id)
+            if merge["operation"] != "MERGE" or merge["status"] != "applied":
+                raise ValueError("only an applied MERGE can be reversed")
+            affected = json.loads(merge["affected_relations_json"] or "{}")
+            after = affected.get("after", [])
+            if after:
+                connection.execute(
+                    f"DELETE FROM term_relations WHERE id IN ({','.join('?' for _ in after)})",
+                    tuple(row["id"] for row in after),
+                )
+            for row in affected.get("before", []):
+                connection.execute(
+                    """INSERT OR IGNORE INTO term_relations
+                       (id,snapshot_id,source_term_id,target_term_id,relationship,confidence,status,
+                        score_breakdown_json,llm_status,direction,cardinality,bounded_context_id,
+                        review_status,version,evidence_refs_json,effective_time)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (row.get("id") or "rel-" + uuid4().hex, row["snapshot_id"],
+                     row["source_term_id"], row["target_term_id"], row["relationship"],
+                     row["confidence"], row["status"], row["score_breakdown_json"],
+                     row["llm_status"], row["direction"], row["cardinality"],
+                     row["bounded_context_id"], row["review_status"], row["version"],
+                     row["evidence_refs_json"], row["effective_time"]),
+                )
+            for term in affected.get("terms", []):
+                connection.execute(
+                    "UPDATE terms SET lifecycle_status=?,replaced_by='',version=version+1,updated_at=? WHERE id=?",
+                    (term.get("lifecycle_status") or "DISCOVERED", now, term["id"]),
+                )
+                connection.execute(
+                    "UPDATE term_snapshot_results SET lifecycle_status=? WHERE snapshot_id=? AND term_id=?",
+                    (term.get("lifecycle_status") or "DISCOVERED", merge["snapshot_id"], term["id"]),
+                )
+            reverse_id = "merge-" + uuid4().hex
+            connection.execute(
+                """INSERT INTO merge_operation
+                   (id,snapshot_id,source_term_ids_json,target_term_id,operation,reason,
+                    evidence_refs_json,affected_relations_json,reviewer,status,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (reverse_id, merge["snapshot_id"], merge["source_term_ids_json"],
+                 merge["target_term_id"], "REVERSE_MERGE", reason, "[]",
+                 json.dumps(affected, ensure_ascii=False), reviewer, "applied", now),
+            )
+            connection.execute(
+                "UPDATE merge_operation SET status='reversed',reversed_by=? WHERE id=?",
+                (reverse_id, merge_id),
+            )
+            self._record_review(
+                connection, snapshot_id=merge["snapshot_id"], item_type="MERGE",
+                item_id=reverse_id, item_version=1, action="reverse_merge",
+                reason=reason, reviewer=reviewer, role=role,
+            )
+        return self._merge_row(self._fetch_one("merge_operation", reverse_id))
+
+    def list_merges(self, snapshot_id: str = "", limit: int = 200) -> dict[str, Any]:
+        query = "SELECT * FROM merge_operation"
+        params: list[Any] = []
+        if snapshot_id:
+            query += " WHERE snapshot_id=?"
+            params.append(snapshot_id)
+        with self._connection() as connection:
+            rows = connection.execute(
+                query + " ORDER BY created_at DESC,id LIMIT ?", (*params, min(max(limit, 1), 500))
+            ).fetchall()
+        return {"merges": [self._merge_row(row) for row in rows]}
+
+    @staticmethod
+    def _hard_constraints(
+        connection: sqlite3.Connection, source_ids: list[str], target_term_id: str,
+    ) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        for source_id in source_ids:
+            rows = connection.execute(
+                "SELECT constraints_json FROM term_pair_judgment WHERE "
+                "(source_term_id=? AND target_term_id=?) OR (source_term_id=? AND target_term_id=?)",
+                (source_id, target_term_id, target_term_id, source_id),
+            ).fetchall()
+            for row in rows:
+                found.extend(
+                    item for item in json.loads(row["constraints_json"] or "[]")
+                    if item.get("kind") == "hard"
+                )
+        return found
+
+    # ── Semantic definitions ──
+
+    def save_definition(self, snapshot_id: str, definition: dict[str, Any]) -> dict[str, Any]:
+        definition_id = "def-" + uuid4().hex
+        now = utc_now()
+        with self._connection() as connection:
+            connection.execute(
+                """INSERT INTO term_definition
+                   (id,snapshot_id,term_id,canonical_name,definition,facts_json,inferences_json,
+                    unknowns_json,evidence_ids_json,confidence,grounding_json,model_name,prompt_version,
+                    analysis_version,input_hash,status,created_at,payload_json)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (definition_id, snapshot_id, definition.get("term_id", ""),
+                 definition.get("canonical_name", ""), definition.get("definition", ""),
+                 json.dumps(definition.get("facts", []), ensure_ascii=False),
+                 json.dumps(definition.get("inferences", []), ensure_ascii=False),
+                 json.dumps(definition.get("unknowns", []), ensure_ascii=False),
+                 json.dumps(definition.get("evidence_ids", []), ensure_ascii=False),
+                 definition.get("confidence", 0),
+                 json.dumps(definition.get("grounding", {}), ensure_ascii=False),
+                 definition.get("model_name", ""), definition.get("prompt_version", ""),
+                 definition.get("analysis_version", ""), definition.get("input_hash", ""),
+                 definition.get("status", "draft"), now,
+                 json.dumps(definition, ensure_ascii=False)),
+            )
+            self._record_review(
+                connection, snapshot_id=snapshot_id, item_type="DEFINITION",
+                item_id=definition_id, item_version=1, action="generate",
+                reason="grounding: " + ("passed" if (definition.get("grounding") or {}).get("passed") else "failed"),
+                reviewer=definition.get("model_name", ""),
+            )
+        return self.get_definition(snapshot_id, definition.get("term_id", "")) or {}
+
+    def get_definition(self, snapshot_id: str, term_id: str) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM term_definition WHERE snapshot_id=? AND term_id=? "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (snapshot_id, term_id),
+            ).fetchone()
+        return self._definition_row(row) if row else None
+
+    def list_definitions(self, snapshot_id: str, status: str = "") -> list[dict[str, Any]]:
+        query = "SELECT * FROM term_definition WHERE snapshot_id=?"
+        params: list[Any] = [snapshot_id]
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        with self._connection() as connection:
+            rows = connection.execute(
+                query + " ORDER BY created_at DESC,rowid DESC", params
+            ).fetchall()
+        seen: set[str] = set()
+        latest = []
+        for row in rows:
+            if row["term_id"] in seen:
+                continue
+            seen.add(row["term_id"])
+            latest.append(self._definition_row(row))
+        return latest
+
+    def review_definition(
+        self, definition_id: str, action: str, reason: str = "", reviewer: str = "",
+        role: str = "",
+    ) -> dict[str, Any]:
+        if action not in {"accept", "reject"}:
+            raise ValueError("unsupported definition review action")
+        now = utc_now()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM term_definition WHERE id=?", (definition_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(definition_id)
+            grounding = json.loads(row["grounding_json"] or "{}")
+            if action == "accept" and not grounding.get("passed"):
+                raise ValueError("grounding failed: definition can only remain a draft")
+            connection.execute(
+                "UPDATE term_definition SET status=? WHERE id=?",
+                ("approved" if action == "accept" else "rejected", definition_id),
+            )
+            self._record_review(
+                connection, snapshot_id=row["snapshot_id"], item_type="DEFINITION",
+                item_id=definition_id, item_version=1, action=action,
+                reason=reason, reviewer=reviewer, role=role,
+            )
+        return self._definition_row(self._fetch_one("term_definition", definition_id))
+
+    # ── Governance: review history ──
+
+    def list_review_records(
+        self, snapshot_id: str = "", item_type: str = "", item_id: str = "", limit: int = 500,
+    ) -> dict[str, Any]:
+        clauses, params = [], []
+        for column, value in (("snapshot_id", snapshot_id), ("item_type", item_type), ("item_id", item_id)):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM review_record WHERE {where} ORDER BY created_at DESC,rowid DESC LIMIT ?",
+                (*params, min(max(limit, 1), 1000)),
+            ).fetchall()
+        return {"records": [dict(row) for row in rows]}
+
+    # ── Immutable dictionary releases ──
+
+    def create_release(
+        self, snapshot_id: str, *, version: str, name: str = "", description: str = "",
+        created_by: str = "", role: str = "", term_ids: list[str] | None = None,
+        previous_release_id: str = "",
+    ) -> dict[str, Any]:
+        """Build an immutable release snapshot after gate checks."""
+        version = version.strip()
+        if not version:
+            raise ValueError("version is required")
+        with self._connection() as connection:
+            if connection.execute(
+                "SELECT 1 FROM release_snapshot WHERE version=?", (version,)
+            ).fetchone():
+                raise ValueError("release version already exists")
+            selected = self._release_candidates(connection, snapshot_id, term_ids)
+            gates = self._release_gates(connection, snapshot_id, selected)
+            if gates:
+                raise ValueError("release gates failed: " + "; ".join(gates))
+            term_items = []
+            for term in selected:
+                content = self._release_term_content(connection, snapshot_id, term)
+                term_items.append(("TERM", term["id"], int(term.get("version") or 1), content))
+            term_id_set = {item[1] for item in term_items}
+            relations = connection.execute(
+                f"""SELECT * FROM term_relations WHERE snapshot_id=?
+                    AND source_term_id IN ({','.join('?' for _ in term_id_set)})
+                    AND target_term_id IN ({','.join('?' for _ in term_id_set)})""",
+                (snapshot_id, *term_id_set, *term_id_set),
+            ).fetchall() if term_id_set else []
+            relation_items = []
+            for row in relations:
+                if row["status"] != "accepted" and row["review_status"] != "accepted":
+                    continue
+                content = {key: row[key] for key in row.keys()}
+                content["score_breakdown"] = json.loads(content.pop("score_breakdown_json", "{}"))
+                content["evidence_refs"] = json.loads(content.pop("evidence_refs_json", "[]"))
+                relation_items.append(("RELATION", row["id"], int(row["version"] or 1), content))
+            items = term_items + relation_items
+            if not items:
+                raise ValueError("no publishable terms")
+            release_id = "release-" + uuid4().hex
+            item_hashes = []
+            for item_type, item_id, item_version, content in items:
+                content_json = json.dumps(content, ensure_ascii=False, sort_keys=True)
+                item_hashes.append(sha256(content_json.encode("utf-8")).hexdigest())
+                connection.execute(
+                    """INSERT INTO release_item
+                       (release_id,item_type,item_id,item_version,snapshot_content_json,content_hash)
+                       VALUES(?,?,?,?,?,?)""",
+                    (release_id, item_type, item_id, item_version, content_json, item_hashes[-1]),
+                )
+            snapshot_hash = sha256("|".join(sorted(item_hashes)).encode("utf-8")).hexdigest()
+            connection.execute(
+                """INSERT INTO release_snapshot
+                   (release_id,release_name,version,status,created_by,description,snapshot_hash,
+                    snapshot_id,previous_release_id,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (release_id, name or version, version, "published", created_by,
+                 description, snapshot_hash, snapshot_id, previous_release_id, utc_now()),
+            )
+            self._record_review(
+                connection, snapshot_id=snapshot_id, release_id=release_id,
+                item_type="RELEASE", item_id=release_id, item_version=1,
+                action="publish", reason=description, reviewer=created_by, role=role,
+            )
+        return self.get_release(release_id) or {}
+
+    def list_releases(self, limit: int = 200) -> dict[str, Any]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM release_snapshot ORDER BY created_at DESC,rowid DESC LIMIT ?",
+                (min(max(limit, 1), 500),),
+            ).fetchall()
+        releases = []
+        for row in rows:
+            data = dict(row)
+            with self._connection() as connection:
+                data["item_count"] = connection.execute(
+                    "SELECT COUNT(*) FROM release_item WHERE release_id=?", (row["release_id"],)
+                ).fetchone()[0]
+            releases.append(data)
+        return {"releases": releases}
+
+    def get_release(self, release_id: str) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM release_snapshot WHERE release_id=?", (release_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            items = connection.execute(
+                "SELECT * FROM release_item WHERE release_id=? ORDER BY item_type,item_id",
+                (release_id,),
+            ).fetchall()
+        return {
+            **dict(row),
+            "items": [{
+                "item_type": item["item_type"], "item_id": item["item_id"],
+                "item_version": item["item_version"],
+                "content": json.loads(item["snapshot_content_json"]),
+                "content_hash": item["content_hash"],
+            } for item in items],
+        }
+
+    def release_diff(self, release_id: str, compare_to: str = "") -> dict[str, Any]:
+        release = self.get_release(release_id)
+        if release is None:
+            raise KeyError(release_id)
+        current = {
+            item["item_id"]: item for item in release["items"]
+            if compare_to or item["item_type"] == "TERM"
+        }
+        if compare_to:
+            other = self.get_release(compare_to)
+            if other is None:
+                raise KeyError(compare_to)
+            baseline = {item["item_id"]: item for item in other["items"]}
+            baseline_label = compare_to
+        else:
+            baseline, baseline_label = self._live_release_baseline(release), "live"
+        added = sorted(set(baseline) - set(current))
+        removed = sorted(set(current) - set(baseline))
+        changed = sorted(
+            item_id for item_id in set(current) & set(baseline)
+            if current[item_id]["content_hash"] != baseline[item_id]["content_hash"]
+        )
+        return {
+            "release_id": release_id, "compare_to": baseline_label,
+            "added": [baseline[item] for item in added],
+            "removed": [current[item] for item in removed],
+            "changed": [{
+                "release_item": current[item],
+                "baseline_item": baseline[item],
+                "fields": _changed_fields(current[item]["content"], baseline[item]["content"]),
+            } for item in changed],
+        }
+
+    def _live_release_baseline(self, release: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        snapshot_id = str(release.get("snapshot_id") or "")
+        if not snapshot_id:
+            return {}
+        with self._connection() as connection:
+            terms = [dict(row) for row in connection.execute(
+                "SELECT t.*,r.source_refs_json,r.term_confidence,r.aliases_json "
+                "FROM terms t JOIN term_snapshot_results r ON r.term_id=t.id "
+                "WHERE r.snapshot_id=? AND r.status='accepted' ORDER BY t.id",
+                (snapshot_id,),
+            ).fetchall()]
+            baseline = {}
+            for term in terms:
+                content = self._release_term_content(connection, snapshot_id, term)
+                baseline[term["id"]] = {
+                    "item_type": "TERM", "item_id": term["id"],
+                    "item_version": int(term.get("version") or 1),
+                    "content": content,
+                    "content_hash": sha256(
+                        json.dumps(content, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                    ).hexdigest(),
+                }
+        return baseline
+
+    def _release_candidates(
+        self, connection: sqlite3.Connection, snapshot_id: str, term_ids: list[str] | None,
+    ) -> list[dict[str, Any]]:
+        query = (
+            "SELECT t.*,r.status AS snapshot_status,r.lifecycle_status AS snapshot_lifecycle,"
+            "r.source_refs_json,r.term_confidence,r.aliases_json FROM terms t JOIN term_snapshot_results r "
+            "ON r.term_id=t.id WHERE r.snapshot_id=?"
+        )
+        params: list[Any] = [snapshot_id]
+        if term_ids:
+            query += f" AND t.id IN ({','.join('?' for _ in term_ids)})"
+            params.extend(term_ids)
+        rows = [dict(row) for row in connection.execute(query, params).fetchall()]
+        selected = [
+            row for row in rows
+            if row.get("snapshot_status") == "accepted"
+            and row.get("lifecycle_status") not in {"MERGED", "REJECTED", "DEPRECATED"}
+            and row.get("snapshot_lifecycle") not in {"MERGED", "REJECTED", "DEPRECATED"}
+        ]
+        if term_ids:
+            rejected = sorted(set(term_ids) - {row["id"] for row in selected})
+            if rejected:
+                raise ValueError("terms are not publishable: " + ", ".join(rejected))
+        return selected
+
+    @staticmethod
+    def _release_gates(
+        connection: sqlite3.Connection, snapshot_id: str, terms: list[dict[str, Any]]
+    ) -> list[str]:
+        from ..analysis.knowledge.definitions import SENSITIVE_PATTERN
+
+        gates: list[str] = []
+        for term in terms:
+            term_id = term["id"]
+            conflicts = connection.execute(
+                "SELECT COUNT(*) FROM evidence_conflict WHERE snapshot_id=? AND term_id=? AND resolved=0",
+                (snapshot_id, term_id),
+            ).fetchone()[0]
+            if conflicts:
+                gates.append(f"{term_id}: unresolved conflicts")
+            if not (term.get("bounded_context") or "").strip():
+                gates.append(f"{term_id}: bounded context is missing")
+            evidence_count = connection.execute(
+                "SELECT COUNT(*) FROM term_evidence WHERE snapshot_id=? AND term_id=?",
+                (snapshot_id, term_id),
+            ).fetchone()[0]
+            if not evidence_count:
+                gates.append(f"{term_id}: no evidence")
+            definition = connection.execute(
+                "SELECT grounding_json,payload_json FROM term_definition WHERE snapshot_id=? AND term_id=? "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (snapshot_id, term_id),
+            ).fetchone()
+            if definition is not None:
+                if not json.loads(definition["grounding_json"] or "{}").get("passed"):
+                    gates.append(f"{term_id}: definition grounding failed")
+                if SENSITIVE_PATTERN.search(json.loads(definition["payload_json"] or "{}").get("definition", "")):
+                    gates.append(f"{term_id}: definition contains sensitive data")
+        return gates
+
+    @staticmethod
+    def _release_term_content(
+        connection: sqlite3.Connection, snapshot_id: str, term: dict[str, Any]
+    ) -> dict[str, Any]:
+        evidence = connection.execute(
+            "SELECT id,evidence_type,evidence_value,content_hash,source_version "
+            "FROM term_evidence WHERE snapshot_id=? AND term_id=? ORDER BY id",
+            (snapshot_id, term["id"]),
+        ).fetchall()
+        definition = connection.execute(
+            "SELECT id,definition,status,prompt_version FROM term_definition "
+            "WHERE snapshot_id=? AND term_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (snapshot_id, term["id"]),
+        ).fetchone()
+        return {
+            "term_id": term["id"], "canonical_name": term["canonical_name"],
+            "display_name": term.get("display_name") or term["canonical_name"],
+            "term_type": term["term_type"], "bounded_context": term["bounded_context"],
+            "source_of_truth": term.get("source_of_truth", ""),
+            "term_confidence": term.get("term_confidence", 0),
+            "definition": (definition["definition"] if definition else term.get("definition", "")),
+            "definition_id": definition["id"] if definition else "",
+            "definition_status": definition["status"] if definition else "",
+            "aliases": json.loads(term.get("aliases_json") or "[]")
+            if isinstance(term.get("aliases_json"), str) else term.get("aliases", []),
+            "evidence": [dict(row) for row in evidence],
+            "source_refs": json.loads(term.get("source_refs_json") or "[]"),
+            "version": int(term.get("version") or 1),
+        }
+
+    # ── Incremental analysis runs (idempotent) ──
+
+    def create_or_reuse_analysis_run(
+        self, *, repository_id: str, commit_id: str, analysis_version: str,
+        input_hash: str, scope: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        now = utc_now()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM analysis_run WHERE repository_id=? AND commit_id=? "
+                "AND analysis_version=? AND input_hash=?",
+                (repository_id, commit_id, analysis_version, input_hash),
+            ).fetchone()
+            if row is not None and row["status"] == "completed":
+                return dict(row), True
+            if row is not None:
+                connection.execute(
+                    "UPDATE analysis_run SET status='running',started_at=?,finished_at=NULL,error_message='' WHERE id=?",
+                    (now, row["id"]),
+                )
+                run_id = row["id"]
+            else:
+                run_id = "run-" + uuid4().hex
+                connection.execute(
+                    """INSERT INTO analysis_run
+                       (id,repository_id,commit_id,analysis_version,input_hash,status,scope_json,started_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (run_id, repository_id, commit_id, analysis_version, input_hash,
+                     "running", json.dumps(scope or {}, ensure_ascii=False), now),
+                )
+            current = connection.execute(
+                "SELECT * FROM analysis_run WHERE id=?", (run_id,)
+            ).fetchone()
+        return dict(current), False
+
+    def finish_analysis_run(
+        self, run_id: str, *, status: str, result: dict[str, Any] | None = None,
+        error_message: str = "",
+    ) -> dict[str, Any]:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                "UPDATE analysis_run SET status=?,result_json=?,error_message=?,finished_at=? WHERE id=?",
+                (status, json.dumps(result or {}, ensure_ascii=False), error_message, utc_now(), run_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(run_id)
+        return self.get_analysis_run(run_id) or {}
+
+    def get_analysis_run(self, run_id: str) -> dict[str, Any] | None:
+        row = self._fetch_one("analysis_run", run_id)
+        if row is None:
+            return None
+        data = dict(row)
+        data["scope"] = json.loads(data.pop("scope_json", "{}"))
+        data["result"] = json.loads(data.pop("result_json", "{}"))
+        return data
+
+    # ── Row conversion helpers ──
+
+    def _fetch_one(self, table: str, row_id: str) -> sqlite3.Row | None:
+        with self._connection() as connection:
+            return connection.execute(
+                f"SELECT * FROM {table} WHERE id=?", (row_id,)
+            ).fetchone()
+
+    @staticmethod
+    def _pair_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["support_evidence"] = json.loads(data.pop("support_evidence_json", "[]"))
+        data["against_evidence"] = json.loads(data.pop("against_evidence_json", "[]"))
+        data["constraints"] = json.loads(data.pop("constraints_json", "[]"))
+        data["merge_allowed"] = data.get("status") != "rejected" and not any(
+            item.get("kind") == "hard" for item in data["constraints"]
+        ) and data.get("judgment") in {"SAME_CONCEPT", "ALIAS"}
+        return data
+
+    @staticmethod
+    def _merge_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["source_term_ids"] = json.loads(data.pop("source_term_ids_json", "[]"))
+        data["evidence_refs"] = json.loads(data.pop("evidence_refs_json", "[]"))
+        data["affected_relations"] = json.loads(data.pop("affected_relations_json", "{}"))
+        return data
+
+    @staticmethod
+    def _definition_row(row: sqlite3.Row) -> dict[str, Any]:
+        data = json.loads(row["payload_json"] or "{}") or dict(row)
+        data.update({
+            "id": row["id"], "snapshot_id": row["snapshot_id"], "term_id": row["term_id"],
+            "status": row["status"], "confidence": row["confidence"],
+            "grounding": json.loads(row["grounding_json"] or "{}"),
+            "created_at": row["created_at"],
+        })
+        return data
+
     @staticmethod
     def _term_row(row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
@@ -852,3 +1640,24 @@ class TermStore:
         data["score_breakdown"] = json.loads(data.pop("score_breakdown_json", "{}"))
         data["service_relation_reasons"] = json.loads(data.pop("service_relation_reasons_json", "[]"))
         return data
+
+
+def _changed_fields(current: dict[str, Any], baseline: dict[str, Any]) -> list[dict[str, Any]]:
+    """Field-level diff between a release item and its live/previous value."""
+    fields = []
+    for key in sorted(set(current) | set(baseline)):
+        if current.get(key) != baseline.get(key):
+            fields.append({
+                "field": key,
+                "current": _truncate(current.get(key)),
+                "baseline": _truncate(baseline.get(key)),
+            })
+    return fields
+
+
+def _truncate(value: Any, limit: int = 300) -> Any:
+    if isinstance(value, (list, dict)):
+        return value if len(json.dumps(value, ensure_ascii=False)) <= limit else f"<{type(value).__name__} {len(value)}>"
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + "…"
+    return value

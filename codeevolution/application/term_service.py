@@ -5,7 +5,11 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Iterable
 
-from ..analysis.knowledge.terms import TermRecognizer
+import json
+
+from ..analysis.knowledge.definitions import generate_definition
+from ..analysis.knowledge.normalization import pair_terms
+from ..analysis.knowledge.terms import TERM_ANALYSIS_VERSION, TermRecognizer
 from ..analysis.topology.matching import EntitySimilarity
 from ..domain.term_types import TERM_API_RESOURCE, TERM_BUSINESS_EVENT, TERM_ENTITY, canonical_term_type
 
@@ -31,9 +35,10 @@ def _is_technical_service(service_id: str, display_name: str = "") -> bool:
 
 
 class TermRecognitionService:
-    def __init__(self, store, recognizer: TermRecognizer | None = None):
+    def __init__(self, store, recognizer: TermRecognizer | None = None, llm_client=None):
         self.store = store
         self.recognizer = recognizer or TermRecognizer()
+        self.llm_client = llm_client
 
     def extract(
         self, snapshot_id: str, repository_id: str, facts: dict[str, Any], term_types: Iterable[str] | None = None
@@ -76,6 +81,145 @@ class TermRecognitionService:
 
     def review_alignment(self, view_id: str, alignment_id: str, action: str, reason: str, author: str) -> dict[str, Any]:
         return self.store.review_alignment(view_id, alignment_id, action, reason, author)
+
+    # ── Concept normalization ──
+
+    def pair_judgments(self, snapshot_id: str) -> dict[str, Any]:
+        terms = self.store.list_terms(snapshot_id, limit=500)["terms"]
+        evidence = {item["id"]: self.store.list_evidence(snapshot_id, item["id"]) for item in terms}
+        conflicts = self._conflicts_by_term(snapshot_id)
+        judgments = pair_terms(
+            terms,
+            evidence_by_term=evidence,
+            conflicts_by_term=conflicts,
+            analysis_version_by_term={item["id"]: TERM_ANALYSIS_VERSION for item in terms},
+        )
+        judgments = [_scoped_pair(item, f"snapshot|{snapshot_id}") for item in judgments]
+        result = self.store.replace_pair_judgments(snapshot_id, "", judgments)
+        return {**result, "term_names": {item["id"]: item.get("canonical_name", "")
+                                         for item in terms}}
+
+    def pair_judgments_for_view(self, view_id: str, snapshots: dict[str, str]) -> dict[str, Any]:
+        """Compare accepted terms across the member snapshots of a Graph View."""
+        terms: list[dict[str, Any]] = []
+        names: dict[str, str] = {}
+        evidence: dict[str, list[dict[str, Any]]] = {}
+        conflicts: dict[str, list[dict[str, Any]]] = {}
+        for service_id, snapshot_id in snapshots.items():
+            for term in self.store.list_terms(snapshot_id, status="accepted", limit=500)["terms"]:
+                terms.append({**term, "service_id": service_id, "snapshot_id": snapshot_id})
+                names[term["id"]] = term.get("canonical_name", "")
+                evidence[term["id"]] = self.store.list_evidence(snapshot_id, term["id"])
+                conflicts[term["id"]] = self._conflicts_by_term(snapshot_id).get(term["id"], [])
+        judgments = pair_terms(
+            terms, evidence_by_term=evidence, conflicts_by_term=conflicts,
+            analysis_version_by_term={item["id"]: TERM_ANALYSIS_VERSION for item in terms},
+        )
+        judgments = [_scoped_pair(item, f"view|{view_id}") for item in judgments]
+        result = self.store.replace_pair_judgments("", view_id, judgments)
+        return {**result, "term_names": names}
+
+    def review_pair_judgment(
+        self, judgment_id: str, action: str, reason: str = "", reviewer: str = "", role: str = "",
+    ) -> dict[str, Any]:
+        return self.store.review_pair_judgment(
+            judgment_id, action, reason, reviewer, role,
+        )
+
+    def merge_terms(
+        self, snapshot_id: str, source_term_ids: list[str], target_term_id: str,
+        reason: str = "", reviewer: str = "", role: str = "", evidence_refs: list[str] | None = None,
+        confirm_hard_constraints: bool = False,
+    ) -> dict[str, Any]:
+        return self.store.merge_terms(
+            snapshot_id, source_term_ids, target_term_id, reason=reason, reviewer=reviewer,
+            role=role, evidence_refs=evidence_refs,
+            confirm_hard_constraints=confirm_hard_constraints,
+        )
+
+    def reverse_merge(self, merge_id: str, reason: str = "", reviewer: str = "", role: str = "") -> dict[str, Any]:
+        return self.store.reverse_merge(merge_id, reason=reason, reviewer=reviewer, role=role)
+
+    def list_merges(self, snapshot_id: str = "") -> dict[str, Any]:
+        return self.store.list_merges(snapshot_id)
+
+    # ── Semantic definitions ──
+
+    def generate_definition(self, snapshot_id: str, term_id: str) -> dict[str, Any]:
+        package = self.store.get_evidence_package(snapshot_id, term_id)
+        if package is None:
+            raise KeyError(term_id)
+        definition = generate_definition(
+            package, self.llm_client, analysis_version=TERM_ANALYSIS_VERSION,
+        )
+        definition["term_id"] = term_id
+        return self.store.save_definition(snapshot_id, definition)
+
+    def get_definition(self, snapshot_id: str, term_id: str) -> dict[str, Any] | None:
+        return self.store.get_definition(snapshot_id, term_id)
+
+    def list_definitions(self, snapshot_id: str, status: str = "") -> list[dict[str, Any]]:
+        return self.store.list_definitions(snapshot_id, status)
+
+    def review_definition(
+        self, definition_id: str, action: str, reason: str = "", reviewer: str = "", role: str = "",
+    ) -> dict[str, Any]:
+        return self.store.review_definition(definition_id, action, reason, reviewer, role)
+
+    # ── Governance and release ──
+
+    def review_records(self, snapshot_id: str = "", item_type: str = "", item_id: str = "") -> dict[str, Any]:
+        return self.store.list_review_records(snapshot_id, item_type, item_id)
+
+    def create_release(self, snapshot_id: str, **value) -> dict[str, Any]:
+        return self.store.create_release(snapshot_id, **value)
+
+    def list_releases(self) -> dict[str, Any]:
+        return self.store.list_releases()
+
+    def get_release(self, release_id: str) -> dict[str, Any] | None:
+        return self.store.get_release(release_id)
+
+    def release_diff(self, release_id: str, compare_to: str = "") -> dict[str, Any]:
+        return self.store.release_diff(release_id, compare_to)
+
+    # ── Incremental analysis ──
+
+    def analysis_run(
+        self, snapshot_id: str, repository_id: str, facts: dict[str, Any], commit_id: str = "",
+    ) -> dict[str, Any]:
+        input_hash = hashlib.sha256(
+            json.dumps(facts, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:32]
+        run, reused = self.store.create_or_reuse_analysis_run(
+            repository_id=repository_id, commit_id=commit_id,
+            analysis_version=TERM_ANALYSIS_VERSION, input_hash=input_hash,
+            scope={"snapshot_id": snapshot_id},
+        )
+        if reused:
+            return {**run, "reused": True}
+        try:
+            report = self.extract(snapshot_id, repository_id, facts)
+            return {
+                **self.store.finish_analysis_run(
+                    run["id"], status="completed",
+                    result={"counts": report.get("counts", {}),
+                            "analysis_version": report.get("analysis_version", "")},
+                ),
+                "reused": False,
+            }
+        except Exception as error:
+            self.store.finish_analysis_run(run["id"], status="failed", error_message=str(error)[:1000])
+            raise
+
+    def get_analysis_run(self, run_id: str) -> dict[str, Any] | None:
+        return self.store.get_analysis_run(run_id)
+
+    def _conflicts_by_term(self, snapshot_id: str) -> dict[str, list[dict[str, Any]]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for conflict in self.store.list_conflicts(snapshot_id):
+            grouped.setdefault(conflict["term_id"], []).append(conflict)
+        return grouped
 
     def align(
         self,
@@ -166,3 +310,12 @@ class TermRecognitionService:
             "mappings": mappings,
             "alternatives": alternatives,
         }
+
+
+def _scoped_pair(item: dict[str, Any], scope: str) -> dict[str, Any]:
+    """Pair ids must stay unique between a snapshot and a view scope."""
+    scoped = dict(item)
+    scoped["id"] = "pair-" + hashlib.sha256(
+        f"{scope}|{item['id']}".encode("utf-8")
+    ).hexdigest()[:24]
+    return scoped

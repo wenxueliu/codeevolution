@@ -196,6 +196,59 @@ class TermAlignmentReviewRequest(BaseModel):
     author: str = Field(default="", max_length=200)
 
 
+class PairJudgmentRequest(BaseModel):
+    snapshot_id: str = Field(default="", max_length=200)
+    view_id: str = Field(default="", max_length=200)
+    service_ids: list[str] = Field(default_factory=list, max_length=32)
+
+
+class PairJudgmentReviewRequest(BaseModel):
+    action: str = Field(pattern="^(accept|reject)$")
+    reason: str = Field(default="", max_length=2000)
+    reviewer: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=80)
+
+
+class TermMergeRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=200)
+    source_term_ids: list[str] = Field(min_length=1, max_length=32)
+    target_term_id: str = Field(min_length=1, max_length=200)
+    reason: str = Field(default="", max_length=2000)
+    reviewer: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=80)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=200)
+    confirm_hard_constraints: bool = False
+
+
+class TermMergeReverseRequest(BaseModel):
+    reason: str = Field(default="", max_length=2000)
+    reviewer: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=80)
+
+
+class DefinitionReviewRequest(BaseModel):
+    action: str = Field(pattern="^(accept|reject)$")
+    reason: str = Field(default="", max_length=2000)
+    reviewer: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=80)
+
+
+class ReleaseCreateRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=200)
+    version: str = Field(min_length=1, max_length=80)
+    name: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=2000)
+    created_by: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=80)
+    term_ids: list[str] = Field(default_factory=list, max_length=500)
+    previous_release_id: str = Field(default="", max_length=200)
+
+
+class TermAnalysisRunRequest(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=200)
+    commit_id: str = Field(default="", max_length=200)
+
+
 class BusinessRuleGenerateRequest(BaseModel):
     repository_snapshot_id: str = Field(default="", max_length=200)
     view_id: str = Field(default="", max_length=200)
@@ -397,7 +450,14 @@ def get_term_service() -> TermRecognitionService:
     dependencies = _request_dependencies.get()
     if injected := dependencies.get("term_service"):
         return injected
-    return TermRecognitionService(get_term_store())
+    llm_client = dependencies.get("term_llm_client")
+    if llm_client is None:
+        from .semantic.client import OpenAILLMClient
+        from .semantic.config import get_llm_config
+
+        config = get_llm_config()
+        llm_client = OpenAILLMClient(config) if config else None
+    return TermRecognitionService(get_term_store(), llm_client=llm_client)
 
 
 def get_ui_recording_service() -> UiRecordingService:
@@ -1863,6 +1923,192 @@ def list_term_conflicts(snapshot_id: str = Query(..., min_length=1)):
 def list_term_assets(snapshot_id: str = Query(..., min_length=1), asset_type: str = Query("")):
     _term_snapshot_context(snapshot_id)
     return {"assets": get_term_service().assets(snapshot_id, asset_type)}
+
+
+@app.post("/api/terms/pair-judgments")
+def judge_term_pairs(request: PairJudgmentRequest):
+    """Run pairwise normalization for one snapshot or a Graph View."""
+    service = get_term_service()
+    if request.view_id:
+        view = get_snapshot_store().get_view(request.view_id)
+        if view is None:
+            raise HTTPException(404, "graph view not found")
+        selected = set(request.service_ids)
+        snapshots = {
+            member.member_id: member.snapshot_id
+            for member in view.members
+            if member.snapshot_id and (not selected or member.member_id in selected)
+        }
+        return service.pair_judgments_for_view(request.view_id, snapshots)
+    if not request.snapshot_id:
+        raise HTTPException(422, "snapshot_id or view_id is required")
+    _term_snapshot_context(request.snapshot_id)
+    return service.pair_judgments(request.snapshot_id)
+
+
+@app.get("/api/terms/pair-judgments")
+def list_term_pair_judgments(
+    snapshot_id: str = Query(""),
+    view_id: str = Query(""),
+    status: str = Query(""),
+    judgment: str = Query(""),
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    if not snapshot_id and not view_id:
+        raise HTTPException(422, "snapshot_id or view_id is required")
+    return get_term_store().list_pair_judgments(
+        snapshot_id=snapshot_id, view_id=view_id, status=status,
+        judgment=judgment, limit=limit, offset=offset,
+    )
+
+
+@app.post("/api/terms/pair-judgments/{judgment_id}/review")
+def review_term_pair_judgment(judgment_id: str, request: PairJudgmentReviewRequest):
+    try:
+        judgment = get_term_service().review_pair_judgment(
+            judgment_id, request.action, request.reason, request.reviewer, request.role,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "pair judgment not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"judgment": judgment}
+
+
+@app.post("/api/terms/merge")
+def merge_terms(request: TermMergeRequest):
+    _term_snapshot_context(request.snapshot_id)
+    try:
+        merge = get_term_service().merge_terms(
+            request.snapshot_id, request.source_term_ids, request.target_term_id,
+            reason=request.reason, reviewer=request.reviewer, role=request.role,
+            evidence_refs=request.evidence_refs,
+            confirm_hard_constraints=request.confirm_hard_constraints,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "term not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"merge": merge}
+
+
+@app.post("/api/terms/merge/{merge_id}/reverse")
+def reverse_term_merge(merge_id: str, request: TermMergeReverseRequest):
+    try:
+        merge = get_term_service().reverse_merge(
+            merge_id, request.reason, request.reviewer, request.role,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "merge not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"merge": merge}
+
+
+@app.get("/api/terms/merges")
+def list_term_merges(snapshot_id: str = Query("")):
+    return get_term_service().list_merges(snapshot_id)
+
+
+@app.get("/api/terms/definitions")
+def list_term_definitions(snapshot_id: str = Query(..., min_length=1), status: str = Query("")):
+    _term_snapshot_context(snapshot_id)
+    return {"definitions": get_term_service().list_definitions(snapshot_id, status)}
+
+
+@app.post("/api/terms/{term_id}/definition")
+def generate_term_definition(term_id: str, snapshot_id: str = Query(..., min_length=1)):
+    _term_snapshot_context(snapshot_id)
+    try:
+        definition = get_term_service().generate_definition(snapshot_id, term_id)
+    except KeyError as error:
+        raise HTTPException(404, "term or evidence package not found") from error
+    except ValueError as error:
+        raise HTTPException(502, str(error)) from error
+    return {"definition": definition}
+
+
+@app.get("/api/terms/{term_id}/definition")
+def get_term_definition(term_id: str, snapshot_id: str = Query(..., min_length=1)):
+    _term_snapshot_context(snapshot_id)
+    definition = get_term_service().get_definition(snapshot_id, term_id)
+    if definition is None:
+        raise HTTPException(404, "definition not found")
+    return {"definition": definition}
+
+
+@app.post("/api/terms/definitions/{definition_id}/review")
+def review_term_definition(definition_id: str, request: DefinitionReviewRequest):
+    try:
+        definition = get_term_service().review_definition(
+            definition_id, request.action, request.reason, request.reviewer, request.role,
+        )
+    except KeyError as error:
+        raise HTTPException(404, "definition not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"definition": definition}
+
+
+@app.get("/api/terms/review-records")
+def list_term_review_records(
+    snapshot_id: str = Query(""), item_type: str = Query(""), item_id: str = Query(""),
+):
+    return get_term_service().review_records(snapshot_id, item_type, item_id)
+
+
+@app.post("/api/releases", status_code=201)
+def create_dictionary_release(request: ReleaseCreateRequest):
+    _term_snapshot_context(request.snapshot_id)
+    try:
+        release = get_term_service().create_release(
+            request.snapshot_id, version=request.version, name=request.name,
+            description=request.description, created_by=request.created_by,
+            role=request.role, term_ids=request.term_ids or None,
+            previous_release_id=request.previous_release_id,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"release": release}
+
+
+@app.get("/api/releases")
+def list_dictionary_releases():
+    return get_term_service().list_releases()
+
+
+@app.get("/api/releases/{release_id}")
+def get_dictionary_release(release_id: str):
+    release = get_term_service().get_release(release_id)
+    if release is None:
+        raise HTTPException(404, "release not found")
+    return {"release": release}
+
+
+@app.get("/api/releases/{release_id}/diff")
+def diff_dictionary_release(release_id: str, compare_to: str = Query("")):
+    try:
+        return get_term_service().release_diff(release_id, compare_to)
+    except KeyError as error:
+        raise HTTPException(404, "release not found") from error
+
+
+@app.post("/api/terms/analysis-runs", status_code=201)
+def create_term_analysis_run(request: TermAnalysisRunRequest):
+    """Idempotent term analysis keyed by repo/commit/analysis_version/input."""
+    facts, repository_id = _term_snapshot_context(request.snapshot_id)
+    return get_term_service().analysis_run(
+        request.snapshot_id, repository_id, facts, request.commit_id,
+    )
+
+
+@app.get("/api/terms/analysis-runs/{run_id}")
+def get_term_analysis_run(run_id: str):
+    run = get_term_service().get_analysis_run(run_id)
+    if run is None:
+        raise HTTPException(404, "analysis run not found")
+    return {"run": run}
 
 
 @app.get("/api/terms/{term_id}")
