@@ -725,7 +725,11 @@ describe('repository and knowledge pages', () => {
     let pollCompleted = false
     const completed = {
       id: 'snapshot-2', status: 'completed', source_revision: '1234567890abcdef', model_id: 'test-model', created_at: 1,
-      explanation: { summary: '创建订单并预占库存', main_flow: ['校验请求', { title: '预占库存', detail: '调用库存服务' }] },
+      explanation: {
+        summary: '创建订单并预占库存',
+        main_flow: ['校验请求', { title: '预占库存', detail: '调用库存服务' }],
+        business_rules: [{ rule: '仅允许已支付订单', evidence_lines: [5] }],
+      },
       coverage: { total_nodes: 2, completed_nodes: 2, partial_nodes: 0, failed_nodes: 0 },
       nodes: [
         { node_key: 'orders::OrderService.create', status: 'completed', file: 'OrderService.java', line_start: 10, local_explanation: { summary: '协调订单创建' } },
@@ -759,6 +763,11 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.text()).toContain('创建订单并预占库存')
     expect(wrapper.text()).toContain('节点 2/2')
     expect(wrapper.text()).toContain('节点解释状态（2）')
+    const ruleSection = wrapper.find('.business-rule-section')
+    expect(ruleSection.find('[data-testid="business-rule-source"]').text()).toContain('来自 API 契约解释')
+    expect(ruleSection.text()).toContain('仅允许已支付订单')
+    expect(ruleSection.text()).toContain('源码行 5')
+    expect(ruleSection.text()).not.toContain('编辑提示词')
 
     await wrapper.findAll('.api-explanation-actions button')[1].trigger('click')
     await flushPromises()

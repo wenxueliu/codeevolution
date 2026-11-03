@@ -231,6 +231,56 @@ def test_export_returns_one_document_per_endpoint(tmp_path):
     assert "## Main Node Explanation" in documents[0]["content"]
 
 
+def test_export_renders_business_description_and_rules_from_explanation(tmp_path):
+    store = ExplanationSnapshotStore(tmp_path / "api.db")
+    store.create_snapshot(ExplanationSnapshot(
+        id="explained", repo_name="orders", member_name="orders",
+        api_key="GET|/orders|orders.list", method="GET", path="/orders",
+        handler="orders.list", entry_node_key="orders::list",
+        source_revision="rev", source_digest="source", graph_digest="graph",
+        model_id="test-model", prompt_version="v1", schema_version="v1",
+        repository_snapshot_id="repo-snapshot",
+    ))
+    store.save_node(ExplanationNode(
+        "explained", "orders::list", "hash", "digest", "agg",
+        {"summary": "列出订单"},
+        {
+            "summary": "列出当前用户的订单",
+            "business_rules": [{"rule": "仅返回已支付订单", "evidence_lines": [12]}],
+            "side_effects": [],
+        },
+        "completed",
+    ))
+    store.update_snapshot("explained", "completed", explanation={"summary": "列出当前用户的订单"})
+    store.publish("explained")
+
+    class Queries:
+        def api_contract(self, snapshot_id):
+            assert snapshot_id == "repo-snapshot"
+            return {"endpoints": [{
+                "method": "GET", "path": "/orders", "handler": "orders.list",
+                "call_chain": [], "request_headers": [], "path_params": [],
+                "query_params": [], "request_body": None, "response_body": None,
+            }]}
+
+    app = create_app({
+        "explanation_snapshot_store": store,
+        "snapshot_query_service": Queries(),
+    })
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/api-explanations/export",
+            params={"repository_snapshot_id": "repo-snapshot", "format": "markdown"},
+        )
+
+    content = response.json()["documents"][0]["content"]
+    assert "## Business Description" in content
+    assert "列出当前用户的订单" in content
+    assert "## Business Rules" in content
+    assert "仅返回已支付订单 (source lines 12)" in content
+    store.close()
+
+
 def test_call_tree_node_rule_returns_frozen_source_context():
     app = create_app({
         "snapshot_query_service": NodeRuleQueryStub(),

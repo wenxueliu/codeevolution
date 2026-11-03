@@ -84,7 +84,7 @@
           </div>
           <pre v-else class="br-raw">{{ rule.result }}</pre>
           <p v-if="rule.error" class="nrr-error">{{ rule.error }}</p>
-          <div class="br-actions">
+          <div v-if="!rule?.from_contract" class="br-actions">
             <button class="secondary sm" :disabled="genLoading" @click="startEdit">{{ t('编辑提示词') }}</button>
             <button class="secondary sm" :disabled="genLoading" @click="retry">
               {{ genLoading ? t('重试中…') : t('重试') }}
@@ -137,6 +137,7 @@ const status = computed(() => {
 })
 const statusText = computed(() => {
   if (status.value === 'loading') return t('生成中')
+  if (rule.value?.from_contract) return t('来自 API 契约解释')
   if (status.value === 'completed') return t('已生成')
   if (status.value === 'failed') return t('失败')
   return ''
@@ -232,8 +233,41 @@ async function loadGraphNode() {
   }
 }
 
+function contractRuleResult() {
+  const snapshot = props.explanationSnapshot
+  const entryKey = snapshot?.entry_node_key
+  if (!entryKey) return ''
+  const node = (snapshot.nodes || []).find((item) => item.node_key === entryKey)
+  const aggregate = explanationObject(node?.aggregate_explanation)
+  if (!aggregate) return ''
+  const summary = explanationSummary(aggregate)
+  const flow = explanationSteps(aggregate)
+  const rules = aggregate.business_rules || []
+  if (!summary && !flow.length && !rules.length) return ''
+  return JSON.stringify({
+    business_purpose_zh: summary,
+    business_flow_zh: flow.map(stepText),
+    business_rules: rules.map(factText),
+    side_effects: (aggregate.side_effects || []).map(factText),
+  })
+}
+
+function factText(value) {
+  if (typeof value === 'string') return value
+  const text = value?.rule || value?.action || value?.detail || value?.summary || value?.description || JSON.stringify(value)
+  const lines = (Array.isArray(value?.evidence_lines) ? value.evidence_lines : []).filter((line) => Number.isInteger(line))
+  return lines.length ? `${text} · ${t('源码行 {lines}', { lines: lines.join(', ') })}` : text
+}
+
 async function loadRoot() {
   loading.value = true
+  const contractResult = contractRuleResult()
+  if (contractResult) {
+    rule.value = { result: contractResult, status: 'completed', from_contract: true, error: '' }
+    defaultPrompt.value = ''
+    loading.value = false
+    return
+  }
   try {
     const meta = props.target.rootMeta || {}
     const data = await apiClient.get('/api/business-rules', { repository_snapshot_id: props.snapshotId })

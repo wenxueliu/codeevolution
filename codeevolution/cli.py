@@ -417,6 +417,48 @@ def _filename_part(value: object) -> str:
     return value.strip(".-")[:100] or "endpoint"
 
 
+def _explanation_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _explanation_fact_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return str(value)
+    text = (
+        value.get("rule") or value.get("action") or value.get("detail")
+        or value.get("summary") or value.get("description")
+        or json.dumps(value, ensure_ascii=False)
+    )
+    lines = [str(line) for line in (value.get("evidence_lines") or []) if isinstance(line, int)]
+    return f"{text} (source lines {', '.join(lines)})" if lines else str(text)
+
+
+def _business_sections(aggregate, local) -> str:
+    facts = _explanation_dict(aggregate) or _explanation_dict(local)
+    description = str(
+        facts.get("summary") or facts.get("business_purpose_zh") or facts.get("business_purpose_en") or ""
+    ).strip()
+    rules = "\n".join(
+        f"- {_explanation_fact_text(rule)}" for rule in (facts.get("business_rules") or [])
+    )
+    return (
+        "## Business Description\n\n"
+        f"{description or 'Not generated.'}\n\n"
+        "## Business Rules\n\n"
+        f"{rules or 'Not generated.'}\n"
+    )
+
+
 def _render_api_contract_markdown(document: dict) -> str:
     def block(value) -> str:
         return "```json\n" + json.dumps(value, indent=2, ensure_ascii=False) + "\n```"
@@ -448,7 +490,8 @@ def _render_api_contract_markdown(document: dict) -> str:
         "### Local Explanation\n\n"
         f"{block(local)}\n\n"
         "### Aggregate Explanation\n\n"
-        f"{block(aggregate)}\n"
+        f"{block(aggregate)}\n\n"
+        f"{_business_sections(aggregate, local)}"
     )
 
 

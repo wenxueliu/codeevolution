@@ -225,6 +225,7 @@
                   </section>
                   <div class="business-rule-section">
                     <h4>{{ t('业务规则') }} <span v-if="brState(item).status" class="br-status" :class="'br-' + brState(item).status">{{ brState(item).statusText }}</span></h4>
+                    <p v-if="brState(item).fromContract" class="br-source" data-testid="business-rule-source">{{ t('来自 API 契约解释') }}</p>
                     <div v-if="brState(item).editing" class="br-prompt-edit">
                       <textarea v-model="brState(item).editPrompt" rows="5" class="br-textarea"></textarea>
                       <div class="br-prompt-actions">
@@ -249,7 +250,7 @@
                         </details>
                       </div>
                       <pre v-else class="br-raw">{{ brState(item).result }}</pre>
-                      <div class="br-actions">
+                      <div v-if="!brState(item).fromContract" class="br-actions">
                         <button class="secondary sm" @click.stop="brStartEdit(item)">{{ t('编辑提示词') }}</button>
                         <button class="secondary sm" :disabled="brState(item).loading" @click.stop="brRetry(item)">{{ brState(item).loading ? t('重试中...') : t('重试') }}</button>
                       </div>
@@ -1398,12 +1399,44 @@ export default {
       if (loading) { status = 'loading'; statusText = this.t('生成中...') }
       else if (rule?.status === 'completed') { status = 'completed'; statusText = this.t('已生成') }
       else if (rule?.status === 'failed') { status = 'failed'; statusText = this.t('失败') }
+      // The endpoint explanation snapshot is the single source of truth for the
+      // business description and rules; standalone generation is only a fallback
+      // while an endpoint has no snapshot yet.
+      const contractResult = this.contractBusinessResult(item)
+      if (contractResult) {
+        return {
+          rule: null, loading: false, status: '', statusText: '', fromContract: true,
+          result: contractResult, editing: false, editPrompt: '',
+        }
+      }
       return {
-        rule, loading, status, statusText,
+        rule, loading, status, statusText, fromContract: false,
         result: rule?.result || '',
         editing: !!edit,
         editPrompt: edit || rule?.custom_prompt || this._defaultPrompt(item),
       }
+    },
+
+    contractBusinessResult(item) {
+      const explanation = this.snapshotExplanation(this.explanationState(item).current)
+      if (!explanation) return ''
+      const summary = explanation.summary || explanation.business_purpose_zh || explanation.business_purpose_en || ''
+      const flow = explanation.business_flow || explanation.main_flow || []
+      const rules = explanation.business_rules || []
+      if (!summary && !flow.length && !rules.length) return ''
+      return JSON.stringify({
+        business_purpose_zh: summary,
+        business_flow_zh: flow.map(step => this.explanationFactText(step)),
+        business_rules: rules.map(rule => this.explanationFactText(rule)),
+        side_effects: (explanation.side_effects || []).map(effect => this.explanationFactText(effect)),
+      })
+    },
+
+    explanationFactText(value) {
+      if (typeof value === 'string') return value
+      const text = value?.rule || value?.action || value?.detail || value?.summary || value?.description || JSON.stringify(value)
+      const lines = (Array.isArray(value?.evidence_lines) ? value.evidence_lines : []).filter(line => Number.isInteger(line))
+      return lines.length ? `${text} · ${this.t('源码行 {lines}', { lines: lines.join(', ') })}` : text
     },
 
     brParsed(item) {
@@ -1411,7 +1444,7 @@ export default {
       if (!result) return null
       try {
         const parsed = JSON.parse(result)
-        if (parsed && typeof parsed === 'object' && !parsed.error && (parsed.business_purpose_en || parsed.business_purpose_zh)) {
+        if (parsed && typeof parsed === 'object' && !parsed.error && (parsed.business_purpose_en || parsed.business_purpose_zh || parsed.business_flow_zh || parsed.business_flow_en || parsed.business_rules?.length)) {
           return parsed
         }
       } catch { return null }
@@ -1723,6 +1756,7 @@ td code { color: #666; word-break: break-all; }
 .snapshot-item small { display: block; margin-top: 3px; color: #999; }
 .business-rule-section { margin-top: 16px; border-top: 1px solid #eee; padding-top: 12px; }
 .business-rule-section h4 { font-size: 13px; color: #444; margin-bottom: 8px; }
+.br-source { color: #8a6500; font-size: 10px; margin: -4px 0 6px; }
 .br-status { font-size: 10px; padding: 2px 6px; border-radius: 8px; margin-left: 6px; font-weight: 400; }
 .br-loading { background: #e3f0fc; color: #2a6496; }
 .br-completed { background: #eaf8f0; color: #23764a; }
