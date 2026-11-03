@@ -172,7 +172,6 @@ describe('repository and knowledge pages', () => {
       '/api/scopes/scope-mall/members': { members: [{ id: 'member-mall', display_name: 'mall' }] },
       '/api/repository-members/member-mall/snapshots': { items: [{ id: 'snapshot-mall' }] },
       '/api/knowledge': { api_contract: { endpoint_count: 1, endpoints: [] } },
-      '/api/business-rules': { rules: [] },
     }, {}, route)
     await flushPromises()
     expect(wrapper.find('[data-testid="knowledge-projects"]').exists()).toBe(true)

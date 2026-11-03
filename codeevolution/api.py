@@ -1,6 +1,5 @@
 """FastAPI backend for the CodeEvolution web dashboard — multi-repo support."""
 
-import hashlib
 import json
 import os
 import threading
@@ -26,15 +25,12 @@ from .application.snapshot_query_service import SnapshotQueryService
 from .application.snapshot_runtime import SnapshotRuntime
 from .application.term_service import TermRecognitionService
 from .application.ui_recording_service import UiRecordingService
-from .infrastructure.analysis_snapshot_sqlite import utc_now
 from .infrastructure.audit_store import AuditStore
-from .infrastructure.business_rule_store import BusinessRuleStore
 from .infrastructure.explanation_snapshot_store import (
     ExplanationSnapshotStore,
     SnapshotStateError,
 )
 from .infrastructure.llm_config_store import LLMConfigStore
-from .infrastructure.node_rule_store import NodeRuleStore
 from .infrastructure.term_store import TermStore
 from .infrastructure.ui_test_store import UiTestStore
 from .infrastructure.webbridge_client import WebBridgeClient, WebBridgeError
@@ -68,8 +64,6 @@ app.add_middleware(
 _stores: dict[str, EvolutionStore] = {}
 _audit_store: AuditStore | None = None
 _ui_test_store: UiTestStore | None = None
-_business_rule_store: BusinessRuleStore | None = None
-_node_rule_store: NodeRuleStore | None = None
 _explanation_snapshot_store: ExplanationSnapshotStore | None = None
 _term_store: TermStore | None = None
 _api_explanation_batch_scheduler = None
@@ -247,32 +241,6 @@ class ReleaseCreateRequest(BaseModel):
 class TermAnalysisRunRequest(BaseModel):
     snapshot_id: str = Field(min_length=1, max_length=200)
     commit_id: str = Field(default="", max_length=200)
-
-
-class BusinessRuleGenerateRequest(BaseModel):
-    repository_snapshot_id: str = Field(default="", max_length=200)
-    view_id: str = Field(default="", max_length=200)
-    repo: str = Field(min_length=1, max_length=200)
-    handler: str = Field(min_length=1, max_length=500)
-    method: str = Field(min_length=1, max_length=10)
-    path: str = Field(min_length=1, max_length=1000)
-    call_chain_mermaid: str = Field(default="", max_length=10000)
-    custom_prompt: str = Field(default="", max_length=5000)
-
-
-class BusinessRulePromptRequest(BaseModel):
-    custom_prompt: str = Field(min_length=1, max_length=5000)
-
-
-class NodeRuleGenerateRequest(BaseModel):
-    repository_snapshot_id: str = Field(default="", max_length=200)
-    view_id: str = Field(default="", max_length=200)
-    repo: str = Field(min_length=1, max_length=200)
-    member: str = Field(default="", max_length=200)
-    node_type: str = Field(default="func", pattern="^(func|cross)$")
-    node_id: str = Field(default="", max_length=200)
-    handler: str = Field(default="", max_length=500)
-    custom_prompt: str = Field(default="", max_length=5000)
 
 
 class ApiExplanationGenerateRequest(BaseModel):
@@ -1264,30 +1232,6 @@ def get_llm_config_store() -> LLMConfigStore:
     )
 
 
-def get_business_rule_store() -> BusinessRuleStore:
-    global _business_rule_store
-    dependencies = _request_dependencies.get()
-    if injected := dependencies.get("business_rule_store"):
-        return injected
-    if _business_rule_store is None:
-        _business_rule_store = BusinessRuleStore(
-            str(codeevolution_data_dir() / "business-rules.db")
-        )
-    return _business_rule_store
-
-
-def get_node_rule_store() -> NodeRuleStore:
-    global _node_rule_store
-    dependencies = _request_dependencies.get()
-    if injected := dependencies.get("node_rule_store"):
-        return injected
-    if _node_rule_store is None:
-        _node_rule_store = NodeRuleStore(
-            str(codeevolution_data_dir() / "node-rules.db")
-        )
-    return _node_rule_store
-
-
 def get_explanation_snapshot_store() -> ExplanationSnapshotStore:
     global _explanation_snapshot_store
     dependencies = _request_dependencies.get()
@@ -2226,199 +2170,6 @@ def call_tree_children(
         raise HTTPException(424, str(error)) from error
 
 
-# ── Business Rules (LLM-generated API business explanations) ──
-
-DEFAULT_BUSINESS_RULE_PROMPT = """You are a senior software architect explaining API business logic to product managers and developers.
-
-Below is the call chain sequence diagram (Mermaid sequenceDiagram) for an API endpoint. Analyze it and explain:
-
-1. **Business purpose**: What business function does this API serve? (1-2 sentences in English)
-2. **Business flow**: Walk through the call chain step by step, explaining what each step does in business terms (not code).
-3. **Key business rules**: What business constraints, validations, or decisions are embedded in this flow?
-4. **Side effects**: What external systems, databases, or services are affected?
-
-Flowchart:
-```
-{flowchart}
-```
-
-API endpoint: {method} {path}
-Handler: {handler}
-
-Output JSON:
-{{
-  "business_purpose_en": "English business purpose",
-  "business_purpose_zh": "Chinese business purpose",
-  "business_flow_en": ["Step 1: ...", "Step 2: ...", ...],
-  "business_flow_zh": ["步骤1: ...", "步骤2: ...", ...],
-  "business_rules": ["Rule 1: ...", "Rule 2: ...", ...],
-  "side_effects": ["Effect 1: ...", "Effect 2: ...", ...]
-}}
-
-JSON:"""
-
-
-@app.get("/api/business-rules")
-def list_business_rules(repo: str = Query(""), repository_snapshot_id: str = Query("")):
-    """List all saved business rules, optionally filtered by repo."""
-    if repository_snapshot_id:
-        try:
-            runtime = get_snapshot_runtime()
-            if runtime.store.get_snapshot(repository_snapshot_id) is None:
-                raise HTTPException(404, "repository snapshot not found")
-            return {"rules": runtime.store.list_current_rules(
-                rule_kind="business", snapshot_id=repository_snapshot_id
-            )}
-        except HTTPException:
-            raise
-    store = get_business_rule_store()
-    if repo:
-        return {"rules": store.list_by_repo(repo)}
-    repos = list_repos()
-    all_rules: list[dict] = []
-    for r in repos:
-        all_rules.extend(store.list_by_repo(r["name"]))
-    return {"rules": all_rules}
-
-
-@app.post("/api/business-rules/generate")
-def generate_business_rule(request: BusinessRuleGenerateRequest):
-    """Generate or regenerate a business rule for an API endpoint via LLM."""
-    from .semantic.client import OpenAILLMClient
-    from .semantic.config import get_llm_config
-    from .semantic.json_parser import parse_json
-
-    config = get_llm_config()
-    if not config:
-        raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
-
-    if request.repository_snapshot_id:
-        try:
-            if request.view_id:
-                get_snapshot_query_service().view_snapshot(request.view_id, request.repository_snapshot_id)
-            facts = get_snapshot_query_service().knowledge(request.repository_snapshot_id)
-        except (KeyError, RuntimeError) as error:
-            raise HTTPException(424, str(error)) from error
-        endpoint = next((item for item in facts.get("api_contract", {}).get("endpoints", [])
-                         if item.get("handler") == request.handler and item.get("method", "").upper() == request.method.upper()), None)
-        if endpoint is None:
-            raise HTTPException(404, "endpoint not found in snapshot facts")
-        prompt = request.custom_prompt or DEFAULT_BUSINESS_RULE_PROMPT.format(
-            flowchart="sequenceDiagram\n    participant API as " + request.handler,
-            method=endpoint.get("method", request.method), path=endpoint.get("path", request.path), handler=request.handler,
-        )
-        snapshot_store = get_snapshot_runtime().store
-        subject_key = f"{endpoint.get('method', request.method).upper()} {endpoint.get('path', request.path)} {request.handler}"
-        candidate = snapshot_store.create_rule_candidate(
-            rule_kind="business", snapshot_id=request.repository_snapshot_id, subject_key=subject_key,
-            prompt=prompt, input_digest=hashlib.sha256((request.repository_snapshot_id + request.view_id + subject_key + prompt).encode()).hexdigest(), now=utc_now(), view_id=request.view_id or None,
-        )
-        try:
-            content = OpenAILLMClient(config).complete(prompt, max_tokens=1200, temperature=0.3)
-            if not content:
-                raise RuntimeError("LLM returned empty response")
-            parsed = parse_json(content)
-            if parsed is not None and parsed.get("error"):
-                raise RuntimeError(parsed["error"])
-            result = json.dumps(parsed, ensure_ascii=False) if isinstance(parsed, dict) else content
-            completed = snapshot_store.finish_rule_candidate(candidate["id"], status="completed", result=result, now=utc_now())
-            return {"id": completed["id"], "status": "completed", "result": result, "prompt": prompt,
-                    "repository_snapshot_id": request.repository_snapshot_id}
-        except Exception as exc:
-            snapshot_store.finish_rule_candidate(candidate["id"], status="failed", error=str(exc)[:1000], now=utc_now())
-            raise HTTPException(502, f"LLM 生成失败：{exc}") from exc
-
-    raise HTTPException(400, "repository_snapshot_id is required")
-
-    store = get_business_rule_store()
-    prompt = request.custom_prompt or DEFAULT_BUSINESS_RULE_PROMPT.format(
-        flowchart=request.call_chain_mermaid or f"sequenceDiagram\n    participant N0 as {request.handler}\n    Note over N0: No downstream calls",
-        method=request.method,
-        path=request.path,
-        handler=request.handler,
-    )
-
-    # Mark as running
-    rule_id = store.upsert(
-        repo_name=request.repo,
-        handler=request.handler,
-        method=request.method,
-        path=request.path,
-        custom_prompt=request.custom_prompt,
-        status="running",
-    )
-
-    try:
-        client = OpenAILLMClient(config)
-        content = client.complete(prompt, max_tokens=1200, temperature=0.3)
-        if not content:
-            raise RuntimeError("LLM returned empty response")
-
-        # parse_json 兼容 LLM 用 ```json 围栏包裹的返回；仅当解析出完整对象时才落结构化 JSON。
-        parsed = parse_json(content)
-        if parsed is not None and parsed.get("error"):
-            raise RuntimeError(parsed["error"])
-
-        result = (
-            json.dumps(parsed, ensure_ascii=False)
-            if isinstance(parsed, dict) and "business_purpose_en" in parsed
-            else content
-        )
-        store.update_status(rule_id, status="completed", result=result)
-        return {
-            "id": rule_id,
-            "status": "completed",
-            "result": result,
-            "prompt": prompt,
-        }
-    except Exception as exc:
-        store.update_status(rule_id, status="failed", error=str(exc)[:1000])
-        raise HTTPException(502, f"LLM 生成失败：{exc}")
-
-
-@app.put("/api/business-rules/{rule_id}/prompt")
-def update_business_rule_prompt(rule_id: int, request: BusinessRulePromptRequest):
-    """Update the custom prompt for a business rule without regenerating."""
-    store = get_business_rule_store()
-    store.update_prompt(rule_id, request.custom_prompt)
-    return {"ok": True, "id": rule_id}
-
-
-# ── Per-node business rules (call-chain tree right rail) ──
-
-
-def _default_repo(repo: str) -> str:
-    """Resolve an empty repo to the first registered logical service."""
-    if repo:
-        return repo
-    repos = list_repos()
-    if not repos:
-        raise HTTPException(400, "No repos registered. Register a repo first.")
-    return repos[0]["name"]
-
-
-def _node_rule_http_error(message: str) -> HTTPException:
-    """Map a NodeRuleService resolution message to an HTTP status."""
-    if "CodeGraph" in message or "缺少" in message:
-        return HTTPException(409, message)
-    return HTTPException(404, message)
-
-
-def _resolve_node_rule(repo: str, member: str, node_type: str, node_id: str, handler: str) -> dict:
-    """Resolve a node context + stored rule, raising on bad input."""
-    repo = _default_repo(repo)
-    if node_type == "func" and not node_id:
-        raise HTTPException(400, "函数节点需要 node_id 参数")
-    if node_type == "cross" and not handler:
-        raise HTTPException(400, "跨服务节点需要 handler 参数")
-    ctx, error = NodeRuleService().resolve(
-        repo, member or None, node_type=node_type, node_id=node_id or None, handler=handler or None
-    )
-    if ctx is None:
-        raise _node_rule_http_error(error or "节点不可解析")
-    return ctx
-
-
 @app.get("/api/call-tree/rule")
 def call_tree_node_rule(
     snapshot_id: str = Query(..., min_length=1),
@@ -2463,91 +2214,6 @@ def call_tree_node_rule(
         "default_prompt": svc.default_prompt(ctx),
         "rule": rule,
     }
-
-
-@app.post("/api/call-tree/rule/generate")
-def generate_call_tree_node_rule(request: NodeRuleGenerateRequest):
-    """Generate or regenerate the business-rule explanation for one call-chain node."""
-    from .semantic.client import OpenAILLMClient
-    from .semantic.config import get_llm_config
-    from .semantic.json_parser import parse_json
-
-    config = get_llm_config()
-    if not config:
-        raise HTTPException(409, "请先在 LLM 设置中配置模型和 API Key")
-
-    if request.repository_snapshot_id:
-        try:
-            if request.view_id:
-                get_snapshot_query_service().view_snapshot(request.view_id, request.repository_snapshot_id)
-            ctx = get_snapshot_query_service().node_rule_context(
-                request.repository_snapshot_id, request.node_id
-            )
-        except KeyError as error:
-            raise HTTPException(404, "repository snapshot not found") from error
-        if ctx is None:
-            raise HTTPException(404, "snapshot node not found")
-        prompt = request.custom_prompt or NodeRuleService().default_prompt(ctx)
-        subject_key = ctx["node_key"]
-        digest = hashlib.sha256((request.repository_snapshot_id + request.view_id + subject_key + prompt).encode()).hexdigest()
-        snapshot_store = get_snapshot_runtime().store
-        candidate = snapshot_store.create_rule_candidate(
-            rule_kind="node", snapshot_id=request.repository_snapshot_id,
-            subject_key=subject_key, prompt=prompt, input_digest=digest, now=utc_now(), view_id=request.view_id or None,
-        )
-        try:
-            content = OpenAILLMClient(config).complete(prompt, max_tokens=1200, temperature=0.3)
-            if not content:
-                raise RuntimeError("LLM returned empty response")
-            parsed = parse_json(content)
-            if parsed is not None and parsed.get("error"):
-                raise RuntimeError(parsed["error"])
-            result = json.dumps(parsed, ensure_ascii=False) if isinstance(parsed, dict) else content
-            completed = snapshot_store.finish_rule_candidate(
-                candidate["id"], status="completed", result=result, now=utc_now()
-            )
-            return {"id": completed["id"], "status": "completed", "result": result,
-                    "prompt": prompt, "repository_snapshot_id": request.repository_snapshot_id}
-        except Exception as exc:
-            snapshot_store.finish_rule_candidate(candidate["id"], status="failed", error=str(exc)[:1000], now=utc_now())
-            raise HTTPException(502, f"LLM 生成失败：{exc}") from exc
-
-    raise HTTPException(400, "repository_snapshot_id is required")
-
-    ctx = _resolve_node_rule(request.repo, request.member, request.node_type, request.node_id, request.handler)
-    svc = NodeRuleService()
-    prompt = request.custom_prompt or svc.default_prompt(ctx)
-    store = get_node_rule_store()
-
-    rule_id = store.upsert(
-        repo_name=ctx["service"],
-        member=ctx["member"],
-        node_type=ctx["node_type"],
-        node_key=ctx["node_key"],
-        custom_prompt=request.custom_prompt,
-        status="running",
-    )
-
-    try:
-        client = OpenAILLMClient(config)
-        content = client.complete(prompt, max_tokens=1200, temperature=0.3)
-        if not content:
-            raise RuntimeError("LLM returned empty response")
-
-        parsed = parse_json(content)
-        if parsed is not None and parsed.get("error"):
-            raise RuntimeError(parsed["error"])
-
-        result = (
-            json.dumps(parsed, ensure_ascii=False)
-            if isinstance(parsed, dict) and "business_purpose_en" in parsed
-            else content
-        )
-        store.update_status(rule_id, status="completed", result=result)
-        return {"id": rule_id, "status": "completed", "result": result, "prompt": prompt}
-    except Exception as exc:
-        store.update_status(rule_id, status="failed", error=str(exc)[:1000])
-        raise HTTPException(502, f"LLM 生成失败：{exc}")
 
 
 def _snapshot_payload(snapshot, *, include_nodes: bool = False) -> dict:
@@ -3098,7 +2764,7 @@ _route_app = app
 
 @asynccontextmanager
 async def _lifespan(application):
-    global _audit_store, _ui_test_store, _business_rule_store, _node_rule_store
+    global _audit_store, _ui_test_store
     global _explanation_snapshot_store, _term_store
     global _api_explanation_batch_scheduler
     runtime = application.state.dependencies.get("snapshot_runtime")
@@ -3131,12 +2797,6 @@ async def _lifespan(application):
     if _ui_test_store is not None:
         _ui_test_store.close()
         _ui_test_store = None
-    if _business_rule_store is not None:
-        _business_rule_store.close()
-        _business_rule_store = None
-    if _node_rule_store is not None:
-        _node_rule_store.close()
-        _node_rule_store = None
     if _explanation_snapshot_store is not None:
         _explanation_snapshot_store.close()
         _explanation_snapshot_store = None

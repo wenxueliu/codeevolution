@@ -3,19 +3,13 @@
 While ``CallTreeService`` answers "which nodes does this node call?", this module
 answers "what business logic does *this one node* perform?" for the right-hand
 rail of the call-chain tree. It resolves a single node to its source snippet,
-produces a default LLM prompt around that snippet, and leaves persistence to
-``NodeRuleStore`` (upsert-on-generate, so a stored explanation is overwritten
-when regenerated).
+produces a default LLM prompt around that snippet.
 
 Two node kinds are explainable:
 
   * ``func``  — an intra-repo function node; identified by ``node_id`` (+ member)
   * ``cross`` — a matched downstream handler; identified by its qualified name
                 within the target logical service
-
-The default prompt asks for the same narrative JSON shape as the endpoint-level
-business rules (``business_purpose_*`` / ``business_flow_*`` / ``business_rules``
-/ ``side_effects``), so the frontend renders both with one panel.
 """
 
 from __future__ import annotations

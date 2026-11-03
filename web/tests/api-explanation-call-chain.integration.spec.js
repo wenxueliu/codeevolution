@@ -51,7 +51,6 @@ describe('API explanation call-chain rail', () => {
           }
         }
         if (path === '/api/api-explanations/snapshots') return { snapshots: [] }
-        if (path === '/api/business-rules') return { rules: [] }
         return {}
       }),
       request: vi.fn(async () => ({ id: 'explanation-2', status: 'running' })),

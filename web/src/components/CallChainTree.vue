@@ -70,12 +70,7 @@
         <aside class="ct-column ct-rail">
           <div class="ct-column-title">{{ t('节点解释与聚合') }}</div>
           <NodeRuleRail
-            :repo="repo"
-            :member="member"
-            :snapshot-id="snapshotId"
-            :mermaid="mermaid"
             :target="selected"
-            :explanation-mode="explanationMode"
             :explanation-snapshot="explanationSnapshot"
             :explanation-state="explanationState"
             :explanation-node="selectedExplanation"
@@ -121,8 +116,6 @@ const props = defineProps({
   file: { type: String, default: '' },
   line: { type: [String, Number], default: null },
   label: { type: Object, default: () => ({}) },
-  mermaid: { type: String, default: '' },
-  explanationMode: { type: Boolean, default: false },
   explanationSnapshot: { type: Object, default: null },
   explanationState: { type: Object, default: () => ({}) },
 })
