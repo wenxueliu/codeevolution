@@ -805,6 +805,47 @@ describe('repository and knowledge pages', () => {
     expect(wrapper.text()).toContain('/orders/59')
   })
 
+  it('renders the page-API map section with table rows and graph nodes', async () => {
+    const report = {
+      api_contract: { endpoint_count: 0, endpoints: [] },
+      page_api_map: {
+        version: 1, page_count: 1,
+        pages: [{ name: 'OrderList', route: '/orders', title: '', file: 'web/src/views/order/OrderList.vue', endpoints: [
+          { method: 'GET', path: '/api/orders', function: 'fetchOrders', call_site_file: 'web/src/composables/useOrders.js', call_site_line: 2, definition_file: 'web/src/api/order.js', endpoint_matched: true },
+        ] }],
+        unmapped_calls: [{ method: 'DELETE', path: '/api/cache', function: 'clearCache', definition_file: 'web/src/api/admin.js' }],
+        pages_without_calls: [{ name: 'Dashboard', unattributed: true, file: 'web/src/views/Dashboard.vue' }],
+        unresolved_imports: 1, orphan_call_count: 1,
+      },
+    }
+    const { wrapper } = mountPage(Knowledge, { '/api/knowledge': report }, { repoName: 'mall' })
+    await flushPromises()
+    wrapper.vm.activeSection = 'page_api_map'
+    await wrapper.vm.$nextTick()
+
+    const table = wrapper.find('[data-testid="page-api-table"]')
+    expect(table.exists()).toBe(true)
+    const rows = table.findAll('tbody tr')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].text()).toContain('OrderList')
+    expect(rows[0].text()).toContain('/orders')
+    expect(rows[0].text()).toContain('fetchOrders')
+    expect(rows[0].text()).toContain('web/src/composables/useOrders.js:2')
+    expect(rows[0].text()).toContain('是')
+    expect(wrapper.findAll('.graph-node').length).toBe(2)
+    expect(wrapper.findAll('.graph-edge').length).toBe(1)
+    expect(wrapper.text()).toContain('1 个调用未能归属到任何页面')
+  })
+
+  it('shows an empty page-API map when the snapshot has no frontend pages', async () => {
+    const { wrapper } = mountPage(Knowledge, { '/api/knowledge': { api_contract: { endpoint_count: 0, endpoints: [] } } }, { repoName: 'mall' })
+    await flushPromises()
+    wrapper.vm.activeSection = 'page_api_map'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('该 Snapshot 未发现前端页面')
+  })
+
   it('renders repository and knowledge empty variants', async () => {
     const { wrapper: home } = mountPage(Home, { '/api/scopes': { scopes: [{ id: 'scope-empty', name: 'empty' }] }, '/api/scopes/scope-empty/members': { members: [] } })
     await flushPromises()

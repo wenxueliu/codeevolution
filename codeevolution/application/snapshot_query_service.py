@@ -71,6 +71,10 @@ class SnapshotQueryService:
             # page facts; project them from the bundle's frozen sources so
             # every consumer (terms included) sees the same page set.
             facts = self._with_frontend_pages(handle, facts)
+            # Page-to-API attribution derives from the frozen sources plus the
+            # frozen CodeGraph import edges, so it can also be projected at
+            # the read boundary for snapshots published before this existed.
+            facts = self._with_page_api_map(handle, facts)
             # Module topology is a pure function of the frozen CodeGraph, so an
             # extractor that changed after this snapshot was published can be
             # projected at the read boundary rather than republishing facts.
@@ -88,7 +92,7 @@ class SnapshotQueryService:
                 # and topology) sees the same endpoint set.
                 api_contract = self._complete_api_contract(handle, facts)
                 return {**facts, "api_contract": api_contract}
-            aliases = {"deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map"}
+            aliases = {"deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map", "pages": "page_api_map"}
             key = aliases.get(section, section)
             if key not in facts:
                 raise KeyError(section)
@@ -109,6 +113,34 @@ class SnapshotQueryService:
         if not pages:
             return facts
         return {**facts, "frontend_pages": {"page_count": len(pages), "pages": pages}}
+
+    def _with_page_api_map(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
+        """Project page-to-API attribution from the frozen frontend sources."""
+        from codeevolution.analysis.knowledge.page_api_map import (
+            PAGE_API_MAP_VERSION,
+            extract_page_api_calls,
+        )
+
+        existing = facts.get("page_api_map")
+        if isinstance(existing, dict) and existing.get("version") == PAGE_API_MAP_VERSION:
+            return facts
+        pages = (facts.get("frontend_pages") or {}).get("pages")
+        if not pages:
+            return facts
+        endpoints = (facts.get("api_contract") or {}).get("endpoints")
+        if not isinstance(endpoints, list):
+            endpoints = []
+        try:
+            graph_edges = handle.graph.module_import_edges()
+        except Exception:
+            graph_edges = ()
+        try:
+            result = extract_page_api_calls(handle.sources, pages, endpoints, graph_edges)
+        except Exception:
+            return facts
+        if not result.get("pages"):
+            return facts
+        return {**facts, "page_api_map": result}
 
     def _with_module_topology(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
         """Serve the current module topology for an older snapshot's report.

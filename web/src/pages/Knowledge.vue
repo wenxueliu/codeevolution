@@ -424,6 +424,46 @@
           </tbody></table></div>
         </template>
 
+        <template v-else-if="activeSection === 'page_api_map'">
+          <UiState v-if="!pageApiData.pages?.length" kind="empty" :title="t('该 Snapshot 未发现前端页面')" :message="t('页面接口映射依赖快照冻结源码中的前端文件。')" />
+          <template v-else>
+            <div class="metrics">
+              <div class="metric">{{ pageApiData.page_count }} <small>{{ t('个页面有接口调用') }}</small></div>
+              <div class="metric">{{ (pageApiData.pages_without_calls || []).length }} <small>{{ t('个页面尚未发现接口调用') }}</small></div>
+              <div class="metric">{{ pageApiData.orphan_call_count }} <small>{{ t('个调用未能归属到任何页面') }}</small></div>
+              <div class="metric">{{ pageApiData.unresolved_imports }} <small>{{ t('处未解析的前端导入') }}</small></div>
+            </div>
+            <h3>{{ t('页面与接口调用关系图') }}</h3>
+            <TopologyGraph :graph="pageApiGraph" data-testid="page-api-graph" :aria-label="t('页面与接口调用关系图')" :empty-text="t('当前 Snapshot 没有可展示的页面接口连线')" />
+            <h3>{{ t('页面接口清单') }}</h3>
+            <div class="table-wrap"><table data-testid="page-api-table"><thead><tr>
+              <th>{{ t('页面') }}</th><th>{{ t('路由') }}</th><th>{{ t('方法') }}</th><th>{{ t('路径') }}</th><th>{{ t('前端函数') }}</th><th>{{ t('调用位置') }}</th><th>{{ t('匹配后端端点') }}</th>
+            </tr></thead><tbody>
+              <tr v-for="row in pageApiRows" :key="row.key">
+                <td><b>{{ row.page }}</b></td>
+                <td><code>{{ row.route || '-' }}</code></td>
+                <td><span class="method">{{ row.method }}</span></td>
+                <td><code>{{ row.path }}</code></td>
+                <td>{{ row.function }}</td>
+                <td><code>{{ row.call_site_file }}:{{ row.call_site_line }}</code></td>
+                <td>{{ row.endpoint_matched ? t('是') : t('否') }}</td>
+              </tr>
+            </tbody></table></div>
+            <details v-if="(pageApiData.unmapped_calls || []).length" class="page-api-details">
+              <summary>{{ t('{count} 个调用未能归属到任何页面', { count: pageApiData.unmapped_calls.length }) }}</summary>
+              <div class="table-wrap"><table><thead><tr>
+                <th>{{ t('方法') }}</th><th>{{ t('路径') }}</th><th>{{ t('前端函数') }}</th><th>{{ t('定义位置') }}</th>
+              </tr></thead><tbody>
+                <tr v-for="(item, index) in pageApiData.unmapped_calls" :key="index">
+                  <td><span class="method">{{ item.method }}</span></td>
+                  <td><code>{{ item.path }}</code></td>
+                  <td>{{ item.function }}</td>
+                  <td><code>{{ item.definition_file }}</code></td>
+                </tr>
+              </tbody></table></div>
+            </details>
+          </template>
+        </template>
         <template v-else-if="activeSection !== 'terms'">
           <div v-if="isDisabled(activeData)" class="empty-semantic">
             <p>{{ activeData.note }}</p><button class="primary" @click="loadLlm">{{ t('现在抽取') }}</button>
@@ -513,6 +553,7 @@
 import UiState from '../components/UiState.vue'
 import CallChainTree from '../components/CallChainTree.vue'
 import LayerRules from '../components/LayerRules.vue'
+import TopologyGraph from '../components/TopologyGraph.vue'
 import { locale, t } from '../i18n.js'
 
 function snapshotIdFromRoute(route) {
@@ -523,6 +564,7 @@ function snapshotIdFromRoute(route) {
 
 const SECTIONS = [
   ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
+  ['page_api_map', '页面接口映射', '阶段1', '路由页面与触发的 HTTP API 端点'],
   ['terms', '术语识别', '阶段1', '从 API 契约、实体定义和前端页面生成按可信度排序的业务术语'],
   ['module_topology', '模块拓扑', '阶段1', '业务域与实体划分、依赖关系与耦合度'],
   ['core_entities', '核心实体', '阶段1', '按字段、类型关系与领域语义识别核心领域对象'],
@@ -562,7 +604,7 @@ const DEFAULT_PROMPT_TEMPLATES = Object.freeze({
 })
 
 export default {
-  components: { UiState, CallChainTree, LayerRules },
+  components: { UiState, CallChainTree, LayerRules, TopologyGraph },
   props: { repoName: String },
   data() {
     // With createWebHashHistory the route query is part of the hash
@@ -598,6 +640,55 @@ export default {
     },
     activeMeta() { return this.sections.find(item => item.key === this.activeSection) || this.sections[0] },
     activeData() { return this.activeSection === 'terms' ? this.terms : (this.report?.[this.activeSection] ?? {}) },
+    pageApiData() { return this.report?.page_api_map || {} },
+    pageApiRows() {
+      const rows = []
+      for (const page of this.pageApiData.pages || []) {
+        for (const endpoint of page.endpoints || []) {
+          rows.push({ key: `${page.name}|${endpoint.method}|${endpoint.path}|${endpoint.function}|${endpoint.call_site_file}`, page: page.name, route: page.route, ...endpoint })
+        }
+      }
+      return rows
+    },
+    pageApiGraph() {
+      const pages = (this.pageApiData.pages || []).filter(page => page.endpoints?.length)
+      const endpointKey = endpoint => `${endpoint.method} ${String(endpoint.path || '').replace(/\{[^}]+\}|:[\w]+/g, '{}')}`
+      const endpointMap = new Map()
+      for (const page of pages) {
+        for (const endpoint of page.endpoints || []) {
+          const key = endpointKey(endpoint)
+          if (!endpointMap.has(key)) endpointMap.set(key, { key, method: endpoint.method, path: endpoint.path })
+          endpointMap.get(key).pages = (endpointMap.get(key).pages || new Set()).add(page.name)
+        }
+      }
+      const endpointList = [...endpointMap.values()]
+      const endpointIndex = new Map(endpointList.map((endpoint, index) => [endpoint.key, index]))
+      const nodes = [], edges = []
+      const PAGE_TOP = 30, PAGE_STEP = 72, EP_TOP = 30, EP_STEP = 60
+      pages.forEach((page, index) => {
+        nodes.push({ id: `page:${page.name}`, x: 24, y: PAGE_TOP + index * PAGE_STEP, width: 200, height: 52, kind: 'page', label: page.name, meta: page.route || '' })
+      })
+      endpointList.forEach((endpoint, index) => {
+        nodes.push({ id: `ep:${endpoint.key}`, x: 480, y: EP_TOP + index * EP_STEP, width: 240, height: 44, kind: 'resource', label: `${endpoint.method} ${endpoint.path}` })
+      })
+      pages.forEach((page, index) => {
+        const pageKeys = new Set((page.endpoints || []).map(endpointKey))
+        for (const endpoint of endpointList) {
+          if (!pageKeys.has(endpoint.key)) continue
+          edges.push({
+            id: `edge:${page.name}|${endpoint.key}`,
+            kind: 'resource',
+            x1: 224, y1: PAGE_TOP + index * PAGE_STEP + 26,
+            x2: 480, y2: EP_TOP + endpointIndex.get(endpoint.key) * EP_STEP + 22,
+          })
+        }
+      })
+      const height = Math.max(
+        PAGE_TOP + (pages.length - 1) * PAGE_STEP + 52,
+        EP_TOP + (endpointList.length - 1) * EP_STEP + 44,
+      ) + 30
+      return { nodes, edges, width: 760, height }
+    },
     moduleTree() {
       const nodes = new Map()
       for (const item of this.activeData?.modules || []) nodes.set(item.id, { ...item, childIds: [] })
