@@ -115,6 +115,39 @@ def test_extractor_uses_codegraph_import_edges_as_supplement():
     assert [item["function"] for item in by_page["Plain"]["endpoints"]] == ["clearCache"]
 
 
+def test_extractor_captures_inline_client_calls():
+    files = {
+        "web/src/pages/Users.vue": (
+            "<template><div/></template>\n"
+            "<script>\n"
+            "export default {\n"
+            "  methods: {\n"
+            "    load() { return this.$api.get('/api/users', { limit: 10 }) },\n"
+            "    save() { return this.$api.request('/api/users', { method: 'POST', body: '{}' }) },\n"
+            "    drop() { return this.$api.delete(`/api/users/${id}`) },\n"
+            "  },\n"
+            "}\n"
+            "</script>\n"
+        ),
+    }
+
+    class _InlineSource:
+        def list_files(self, categories=None, globs=None):
+            return [{"path": path} for path in files]
+
+        def read_text(self, path):
+            return files[path]
+
+    pages = [{"name": "Users", "route": "/users", "title": "", "file": "web/src/pages/Users.vue"}]
+    result = extract_page_api_calls(_InlineSource(), pages, ENDPOINTS)
+
+    by_page = {page["name"]: page for page in result["pages"]}
+    calls = {(item["method"], item["path"]) for item in by_page["Users"]["endpoints"]}
+    assert calls == {("GET", "/api/users"), ("POST", "/api/users"), ("DELETE", "/api/users/{param}")}
+    assert all(item["call_site_file"] == "web/src/pages/Users.vue" for item in by_page["Users"]["endpoints"])
+    assert result["unmapped_calls"] == []
+
+
 def test_extractor_returns_empty_result_without_frontend_sources():
     class _Empty:
         def list_files(self, categories=None, globs=None):

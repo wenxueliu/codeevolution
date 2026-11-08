@@ -26,6 +26,13 @@ _IMPORT_RE = re.compile(
     r"(?:import\s[^;]*?from\s+|import\s*\(\s*|require\s*\(\s*)['\"]([^'\"]+)['\"]"
 )
 _SCRIPT_RE = re.compile(r"<script[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
+# Inline fetch-client calls, e.g. this.$api.get('/api/x') or
+# apiClient.request('/api/x', { method: 'POST', ... }).
+_CLIENT_CALL_RE = re.compile(
+    r"(?<!\w)(?:\$api|apiClient)\.(?P<verb>get|post|put|delete|patch|request)\s*\(\s*"
+    r"(?P<quote>['\"`])(?P<path>[^'\"`]+)(?P=quote)"
+)
+_METHOD_RE = re.compile(r"\bmethod\s*:\s*['\"]([A-Za-z]+)['\"]")
 
 
 def extract_page_api_calls(
@@ -282,23 +289,48 @@ def _extract_calls(code: dict[str, str]) -> list[dict]:
     """HTTP-call extraction from frozen text, mirroring extract_frontend_calls."""
     calls: list[dict] = []
     for path, text in code.items():
-        if not _is_api_file(path):
-            continue
-        for match in HTTP_BLOCK.finditer(text):
-            config = match.group("config")
-            url_match = re.search(r"\burl\s*:\s*([^,\n]+)", config)
-            if not url_match:
-                continue
-            method_match = re.search(r"\bmethod\s*:\s*['\"]([A-Za-z]+)['\"]", config)
-            function_name = match.group("name")
+        # Config-style API-module definitions (e.g. request({url: ...}) in api/ dirs).
+        if _is_api_file(path):
+            for match in HTTP_BLOCK.finditer(text):
+                config = match.group("config")
+                url_match = re.search(r"\burl\s*:\s*([^,\n]+)", config)
+                if not url_match:
+                    continue
+                method_match = re.search(r"\bmethod\s*:\s*['\"]([A-Za-z]+)['\"]", config)
+                function_name = match.group("name")
+                calls.append(
+                    {
+                        "method": (method_match.group(1) if method_match else "GET").upper(),
+                        "path": normalize_expression(url_match.group(1)),
+                        "function": function_name,
+                        "definition_file": path,
+                        "definition_line": text[: match.start()].count("\n") + 1,
+                        "call_sites": _call_sites(function_name, path, code),
+                    }
+                )
+        # Inline fetch-client calls made directly from pages/components.
+        script = _script_code(path, text)
+        for match in _CLIENT_CALL_RE.finditer(script):
+            verb = match.group("verb")
+            if verb == "request":
+                tail = script[match.end(): match.end() + 400]
+                options = re.search(r"\{[^{}]*", tail)
+                method_match = _METHOD_RE.search(options.group(0)) if options else None
+                method = (method_match.group(1) if method_match else "GET").upper()
+            else:
+                method = verb.upper()
+            # Template-literal segments (${id}) render as {param}, matching
+            # normalize_expression's dynamic-path convention.
+            endpoint_path = re.sub(r"\$\{[^}]*\}", "{param}", match.group("path"))
             calls.append(
                 {
-                    "method": (method_match.group(1) if method_match else "GET").upper(),
-                    "path": normalize_expression(url_match.group(1)),
-                    "function": function_name,
+                    "method": method,
+                    "path": endpoint_path,
+                    "function": verb,
                     "definition_file": path,
-                    "definition_line": text[: match.start()].count("\n") + 1,
-                    "call_sites": _call_sites(function_name, path, code),
+                    "definition_line": script[: match.start()].count("\n") + 1,
+                    # The call site is inline, so the definition is the site.
+                    "call_sites": [{"file": path, "line": script[: match.start()].count("\n") + 1}],
                 }
             )
     return calls
