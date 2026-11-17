@@ -85,6 +85,7 @@ class SnapshotQueryService:
             # Older snapshots matched config keys by name substrings; rebuild
             # from real read sites when the frozen payload predates this.
             facts = self._with_config_consumption(handle, facts)
+            facts = self._with_interface_contract(handle, facts)
             if section is None:
                 # API contracts were historically persisted with only the
                 # first 100 endpoints.  Keep the normal knowledge boundary
@@ -92,7 +93,7 @@ class SnapshotQueryService:
                 # and topology) sees the same endpoint set.
                 api_contract = self._complete_api_contract(handle, facts)
                 return {**facts, "api_contract": api_contract}
-            aliases = {"deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map", "pages": "page_api_map"}
+            aliases = {"deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "interface": "interface_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map", "pages": "page_api_map"}
             key = aliases.get(section, section)
             if key not in facts:
                 raise KeyError(section)
@@ -216,6 +217,26 @@ class SnapshotQueryService:
         except Exception:
             return facts
         return {**facts, "config_consumption": config}
+
+    def _with_interface_contract(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
+        """Public interface surface derives purely from the frozen CodeGraph,
+        so snapshots published before this extractor existed are projected at
+        the read boundary without touching the immutable facts."""
+        from codeevolution.analysis.knowledge.interface_contract import INTERFACE_VERSION
+
+        existing = facts.get("interface_contract")
+        if isinstance(existing, dict) and existing.get("version") == INTERFACE_VERSION:
+            return facts
+        from codeevolution.knowledge import KnowledgeExtractor
+
+        try:
+            extractor = KnowledgeExtractor(handle.graph, handle.sources)
+            interface = KnowledgeExtractor._serialize_interface(
+                extractor.extract_interface_contract()
+            )
+        except Exception:
+            return facts
+        return {**facts, "interface_contract": interface}
 
     @staticmethod
     def _taxonomy_stats(stored: dict | None, modules: list[dict]) -> dict:

@@ -97,6 +97,7 @@ def test_knowledge_api_returns_all_endpoints_in_report():
     extractor.extract_layer_violations = lambda: []
     extractor.extract_config_consumption = lambda: []
     extractor.extract_external_dependencies = lambda: []
+    extractor.extract_interface_contract = lambda: []
     extractor.extract_authorization_model = lambda: []
     extractor.extract_heat_map = lambda: []
     extractor.extract_frontend_pages = lambda: []

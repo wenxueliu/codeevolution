@@ -4,6 +4,7 @@ from codeevolution.analysis.knowledge.config_usage import ConfigUsageExtractor
 from codeevolution.analysis.knowledge.core_entities import CoreEntityExtractor
 from codeevolution.analysis.knowledge.dependencies import DependencyExtractor
 from codeevolution.analysis.knowledge.heatmap import HeatmapExtractor
+from codeevolution.analysis.knowledge.interface_contract import InterfaceContractExtractor
 from codeevolution.analysis.knowledge.layer_rules import LayerRuleExtractor
 from codeevolution.analysis.knowledge.module_topology import ModuleTopologyExtractor
 from codeevolution.analysis.knowledge.report_builder import KnowledgeReportBuilder
@@ -143,3 +144,33 @@ def test_module_topology_extractor_owns_graph_building_and_analysis():
     assert graph["src/users/service.py"]["src/orders/service.py"]["weight"] == 1
     assert sum(module["file_count"] for module in topology.modules) == 4
     assert 0 <= topology.coupling_score <= 1
+
+
+class InterfaceSourceStub:
+    def functions(self):
+        return [
+            {"name": "create_client", "kind": "function", "language": "python",
+             "file_path": "src/pkg/client.py", "start_line": 3, "is_exported": 0,
+             "node_id": "n1", "qualified_name": "src/pkg/client.py::create_client",
+             "signature": "create_client(url: str) -> Client"},
+            {"name": "_helper", "kind": "function", "language": "python",
+             "file_path": "src/pkg/client.py", "start_line": 7},
+            {"name": "load", "kind": "function", "language": "python",
+             "file_path": "tests/helper.py", "start_line": 1},
+            {"name": "hidden", "kind": "function", "language": "python",
+             "file_path": "src/internal/secret.py", "start_line": 1},
+            {"name": "run", "kind": "function", "language": "python",
+             "file_path": "src/pkg/cli.py", "start_line": 1, "visibility": "private"},
+            {"name": "fetch", "kind": "method", "language": "typescript",
+             "file_path": "src/api.ts", "start_line": 10, "is_exported": 1},
+            {"name": "internalFetch", "kind": "function", "language": "typescript",
+             "file_path": "src/api.ts", "start_line": 12, "is_exported": 0},
+        ]
+
+
+def test_interface_contract_extractor_keeps_only_the_public_surface():
+    entries = InterfaceContractExtractor(InterfaceSourceStub()).extract()
+    assert [item["name"] for item in entries] == ["create_client", "fetch"]
+    assert entries[0]["node_id"] == "n1"
+    assert entries[0]["qualified_name"] == "src/pkg/client.py::create_client"
+    assert entries[0]["signature"] == "create_client(url: str) -> Client"

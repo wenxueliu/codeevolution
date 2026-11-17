@@ -12,6 +12,7 @@ from .analysis.knowledge.core_entities import CoreEntityExtractor
 from .analysis.knowledge.dependencies import DependencyExtractor
 from .analysis.knowledge.frontend_pages import FrontendPageExtractor
 from .analysis.knowledge.heatmap import HEATMAP_VERSION, HeatmapExtractor
+from .analysis.knowledge.interface_contract import INTERFACE_VERSION, InterfaceContractExtractor
 from .analysis.knowledge.layer_config import LayerConfig, load_repo_layers_config
 from .analysis.knowledge.layer_rules import LayerRuleExtractor
 from .analysis.knowledge.module_topology import (
@@ -73,6 +74,7 @@ class KnowledgeExtractor:
         self._entities = CoreEntityExtractor(reader, self._layers.classify_file)
         self._config = ConfigUsageExtractor(reader, self.source_provider)
         self._dependencies = DependencyExtractor(reader)
+        self._interface = InterfaceContractExtractor(reader)
         self._authorization = AuthorizationExtractor(reader)
         self._pages = FrontendPageExtractor(self.source_provider)
         self._heatmap = HeatmapExtractor(reader, self._get_call_graph, self._layers.classify_file)
@@ -98,6 +100,9 @@ class KnowledgeExtractor:
 
     def extract_external_dependencies(self) -> list[dict]:
         return self._dependencies.extract()
+
+    def extract_interface_contract(self) -> list[dict]:
+        return self._interface.extract()
 
     def extract_authorization_model(self) -> list[dict]:
         return self._authorization.extract()
@@ -160,6 +165,9 @@ class KnowledgeExtractor:
                 },
             },
             "module_topology": serialize_module_topology(modules),
+            "interface_contract": self._serialize_interface(
+                self.extract_interface_contract()
+            ),
             "term_facts": term_facts,
             "core_entities": [
                 {
@@ -250,6 +258,15 @@ class KnowledgeExtractor:
             "total_keys": sum(item["key_count"] for item in data),
             "consumed_keys": sum(item["consumed_keys"] for item in data),
             "files": data[:20],
+        }
+
+    @staticmethod
+    def _serialize_interface(data):
+        return {
+            "version": INTERFACE_VERSION,
+            "entry_count": len(data),
+            "file_count": len({item["file_path"] for item in data}),
+            "entries": data[:200],
         }
 
     @staticmethod

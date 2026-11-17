@@ -434,6 +434,25 @@ class CrossRepoImplementation:
                         }
                     )
 
+            # A library/SDK repo exposes no HTTP surface; its externally
+            # callable roots are the public interface entries instead.  With
+            # zero HTTP endpoints the reachability walk would otherwise find
+            # nothing and every outbound call of the SDK would be dropped.
+            if not inbound:
+                from ...analysis.knowledge.interface_contract import InterfaceContractExtractor
+
+                for entry in InterfaceContractExtractor(reader).extract():
+                    inbound.append(
+                        {
+                            "method": "SDK",
+                            "path": entry["name"],
+                            "handler": entry["qualified_name"],
+                            "file": entry["file_path"],
+                            "line": entry["line"],
+                            "node_id": entry["node_id"],
+                        }
+                    )
+
             outbound = self._extract_outbound_calls(repo["name"], db_path, inbound)
             all_outbound.extend(outbound)
 
@@ -637,6 +656,8 @@ class CrossRepoImplementation:
             return "worker"
         if any(k in path_lower for k in ("cron", "scheduler", "timer")):
             return "cron"
+        if any(k in path_lower for k in ("sdk", "library", "lib", "client")):
+            return "library"
         return "backend"
 
     def _detect_db(self, db_path: str) -> str:

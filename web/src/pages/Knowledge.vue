@@ -372,6 +372,25 @@
           </tbody></table></div>
         </template>
 
+        <template v-else-if="activeSection === 'interface_contract'">
+          <UiState v-if="!activeData.entries?.length" kind="empty" :title="t('该 Snapshot 未识别到公开接口')" :message="t('公开接口指顶层导出函数与类的公开方法，非 HTTP 面。')" />
+          <template v-else>
+            <div class="metrics">
+              <div class="metric">{{ activeData.entry_count ?? 0 }} <small>{{ t('个公开入口') }}</small></div>
+              <div class="metric">{{ activeData.file_count ?? 0 }} <small>{{ t('个文件') }}</small></div>
+            </div>
+            <div class="table-wrap"><table><thead><tr><th>{{ t('名称') }}</th><th>{{ t('类型') }}</th><th>{{ t('签名') }}</th><th>{{ t('语言') }}</th><th>{{ t('文件') }}</th></tr></thead><tbody>
+              <tr v-for="row in activeData.entries" :key="row.qualified_name || `${row.name}@${row.file_path}`">
+                <td><b>{{ row.name }}</b></td>
+                <td>{{ row.kind }}</td>
+                <td><code>{{ row.signature || row.qualified_name }}</code></td>
+                <td>{{ row.language }}</td>
+                <td><code>{{ row.file_path }}:{{ row.line }}</code></td>
+              </tr>
+            </tbody></table></div>
+          </template>
+        </template>
+
         <template v-else-if="activeSection === 'external_dependencies'">
           <div class="metrics">
             <div class="metric">{{ activeData.categories ?? 0 }} <small>{{ t('个分类') }}</small></div>
@@ -564,6 +583,7 @@ function snapshotIdFromRoute(route) {
 
 const SECTIONS = [
   ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
+  ['interface_contract', '公开接口', '阶段1', '导出的公共函数与类的公开方法——外部可访问面'],
   ['page_api_map', '页面接口映射', '阶段1', '路由页面与触发的 HTTP API 端点'],
   ['terms', '术语识别', '阶段1', '从 API 契约、实体定义和前端页面生成按可信度排序的业务术语'],
   ['module_topology', '模块拓扑', '阶段1', '业务域与实体划分、依赖关系与耦合度'],
@@ -783,6 +803,7 @@ export default {
     summaryCards() {
       return [
         { key: 'api_contract', label: this.t('API 端点'), value: this.report.api_contract?.endpoint_count ?? 0 },
+        { key: 'interface_contract', label: this.t('公开接口'), value: this.report.interface_contract?.entry_count ?? 0 },
         { key: 'terms', label: this.t('术语'), value: this.terms.length },
         { key: 'module_topology', label: this.t('模块'), value: this.report.module_topology?.module_count ?? 0 },
         { key: 'core_entities', label: this.t('核心实体'), value: this.report.core_entities?.length ?? 0 },

@@ -1056,6 +1056,7 @@ def main():
         choices=[
             "all",
             "api",
+            "interface",
             "modules",
             "entities",
             "layers",

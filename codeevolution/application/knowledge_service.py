@@ -22,6 +22,7 @@ class KnowledgeService:
     def section(self, name: str, **options):
         methods = {
             "api": self.extractor.extract_api_contract,
+            "interface": self.extractor.extract_interface_contract,
             "modules": self.extractor.extract_module_topology,
             "entities": self.extractor.extract_core_entities,
             "layers": self.extractor.extract_layer_violations,
@@ -86,6 +87,7 @@ def _tag(items: list[dict], repository: str) -> list[dict]:
 def merge_knowledge_reports(reports: list[tuple[str, dict]], include_llm: bool = False) -> dict:
     """Merge serialized member reports while retaining repository provenance."""
     api_endpoints = []
+    interface_entries = []
     modules = []
     entities = []
     violations = []
@@ -101,6 +103,8 @@ def merge_knowledge_reports(reports: list[tuple[str, dict]], include_llm: bool =
     for repository, report in reports:
         api = report["api_contract"]
         api_endpoints.extend(_tag(api.get("endpoints", []), repository))
+        interface = report.get("interface_contract") or {}
+        interface_entries.extend(_tag(interface.get("entries", []), repository))
         topology = report["module_topology"]
         modules.extend(_tag(topology.get("modules", []), repository))
         totals["coupling"] += float(topology.get("coupling_score") or 0)
@@ -133,6 +137,10 @@ def merge_knowledge_reports(reports: list[tuple[str, dict]], include_llm: bool =
     return {
         "repositories": [name for name, _ in reports],
         "api_contract": {"endpoint_count": len(api_endpoints), "endpoints": api_endpoints},
+        "interface_contract": {
+            "entry_count": len(interface_entries),
+            "entries": interface_entries,
+        },
         "module_topology": {
             "module_count": len(modules),
             "coupling_score": round(totals["coupling"] / max(len(reports), 1), 3),
