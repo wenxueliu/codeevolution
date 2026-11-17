@@ -157,6 +157,32 @@ def test_snapshot_source_only_reads_manifest_members_and_checks_integrity(tmp_pa
     assert inventory.read_bytes("allowed.py") is None
 
 
+def test_snapshot_source_repairs_crlf_polluted_frozen_file(tmp_path):
+    """A CRLF-translated frozen file still serves its original LF content."""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    raw = b"line one\nline two\n"
+    (sources / "allowed.py").write_bytes(raw.replace(b"\n", b"\r\n"))
+    manifest = {
+        "sources": [
+            {
+                "path": "allowed.py",
+                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+                "category": ["indexed"],
+                "encoding_status": "utf8",
+            }
+        ]
+    }
+    inventory = SnapshotSourceInventory(sources, manifest)
+
+    assert inventory.read_bytes("allowed.py") == raw
+    assert inventory.read_text("allowed.py") == raw.decode()
+    # genuinely different bytes are never repaired into a false match
+    (sources / "allowed.py").write_bytes(b"changed\r\ncontent\n")
+    assert inventory.read_bytes("allowed.py") is None
+
+
 def test_codegraph_capture_uses_sqlite_backup_and_stable_logical_digest(tmp_path):
     first = tmp_path / "first.db"
     second = tmp_path / "second.db"

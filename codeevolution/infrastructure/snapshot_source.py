@@ -81,12 +81,21 @@ class SnapshotSourceInventory:
             raw = resolved.read_bytes()
         except (OSError, ValueError):
             return None
-        if len(raw) != entry.size:
-            return None
         expected = entry.sha256.removeprefix("sha256:")
-        if expected and hashlib.sha256(raw).hexdigest() != expected:
-            return None
-        return raw
+        candidates = [raw]
+        # Snapshots frozen by a CRLF-translating writer carry extra CR bytes
+        # and fail the manifest hash; undo the pollution and re-validate so
+        # already-published snapshots keep serving content.
+        for repaired in (raw.replace(b"\r\n", b"\n"), raw.replace(b"\r", b"")):
+            if repaired not in candidates:
+                candidates.append(repaired)
+        for content in candidates:
+            if expected:
+                if hashlib.sha256(content).hexdigest() == expected:
+                    return content
+            elif len(content) == entry.size:
+                return content
+        return None
 
     def _has_symlink_component(self, candidate: Path) -> bool:
         relative = candidate.relative_to(self.root)
