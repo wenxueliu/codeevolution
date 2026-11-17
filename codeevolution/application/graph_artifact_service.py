@@ -259,7 +259,13 @@ class GraphArtifactService:
             raise ValueError("artifact_payload_too_large")
         if self.artifacts is not None and len(payload_json.encode("utf-8")) >= 1024 * 1024:
             staging = self.artifacts.create_staging(f"artifact-job-{uuid4().hex}")
-            (Path(staging) / "payload.json").write_text(payload_json, encoding="utf-8")
+            raw = payload_json.encode("utf-8")
+            # Binary write + read-back: a text-mode write would translate LF
+            # into CRLF on Windows and corrupt the published artifact bytes.
+            target = Path(staging) / "payload.json"
+            target.write_bytes(raw)
+            if target.read_bytes() != raw:
+                raise ValueError("artifact_payload_write_verification_failed")
             key = self.artifacts.publish(staging, directory_digest(staging))
             return self.store.complete_artifact_job(job_id, payload, artifact_key=key, lease_token=lease_token)
         return self.store.complete_artifact_job(job_id, payload, lease_token=lease_token)

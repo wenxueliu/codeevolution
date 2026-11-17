@@ -178,6 +178,14 @@ def freeze_sources(
                     fsync_file(output_fd)
                 finally:
                     os.close(output_fd)
+                # Read back what actually landed on disk: a text-mode writer,
+                # antivirus rewrite or platform quirk (e.g. LF -> CRLF on
+                # Windows) must fail loudly here, not surface later as
+                # silently missing snapshot sources in knowledge extraction.
+                if _file_sha256(output) != digest.hexdigest():
+                    raise CodeGraphCaptureError(
+                        f"frozen source read-back verification failed: {entry.path}"
+                    )
                 after = os.fstat(source_fd)
             finally:
                 os.close(source_fd)

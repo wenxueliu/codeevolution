@@ -285,6 +285,27 @@ def test_freeze_sources_revalidates_observed_bytes(tmp_path):
         freeze_sources(repo, observation.entries, tmp_path / "changed")
 
 
+def test_freeze_sources_read_back_rejects_corrupted_write(tmp_path, monkeypatch):
+    """A write that lands different bytes must fail loudly, not poison knowledge."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("one\n")
+    observation = WorkspaceInputScanner(repo).scan(ScanPolicy(declared_globs=()))
+
+    real_write = os.write
+
+    def leaky_write(fd, data):
+        written = real_write(fd, data)
+        real_write(fd, b"\r")  # simulate a CRLF-translating writer
+        return written
+
+    monkeypatch.setattr(codegraph_capture_module.os, "write", leaky_write)
+    with pytest.raises(CodeGraphCaptureError, match="read-back verification failed"):
+        freeze_sources(repo, observation.entries, tmp_path / "frozen")
+    # no partial frozen set survives the failed verification
+    assert not any((tmp_path / "frozen").rglob("app.py"))
+
+
 def test_directory_digest_includes_paths_not_only_file_bytes(tmp_path):
     left = tmp_path / "left"
     right = tmp_path / "right"
