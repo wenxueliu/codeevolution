@@ -426,11 +426,14 @@ class TermStore:
                      json.dumps(term.get("source_refs", []), ensure_ascii=False)),
                 )
                 for index, evidence in enumerate(term.get("evidence", [])):
-                    evidence_id = evidence.get("id") or "ev-" + sha256(
+                    # The store owns evidence identity: always re-scope the id
+                    # by snapshot so legacy ids (hash without snapshot) cannot
+                    # collide across snapshots and abort the persistence.
+                    evidence["id"] = evidence_id = "ev-" + sha256(
                         f"{snapshot_id}|{term_id}|{index}|{evidence.get('evidence_type')}|{evidence.get('evidence_value')}".encode()
                     ).hexdigest()[:24]
                     connection.execute(
-                        """INSERT INTO term_evidence
+                        """INSERT OR IGNORE INTO term_evidence
                            (id,snapshot_id,term_id,evidence_type,evidence_value,weight,source_location_json,node_id,rule_id,
                             polarity,reliability,independence_group,content_hash,derived_from,source_version,
                             observed_at,subject_id,predicate,object_value,created_at)

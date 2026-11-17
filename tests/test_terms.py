@@ -72,6 +72,23 @@ def test_same_repository_extracts_terms_for_multiple_snapshots(tmp_path):
     store.close()
 
 
+def test_legacy_evidence_ids_do_not_abort_snapshot_persistence(tmp_path):
+    """Evidence ids without a snapshot component must not fail the store insert."""
+    store = TermStore(tmp_path / "terms.db")
+
+    legacy = [
+        {**term, "evidence": [{**item, "id": "ev-legacy"} for item in term["evidence"]]}
+        for term in TermRecognizer().extract("snapshot-1", "orders", FACTS)["terms"]
+    ]
+    first = store.replace_snapshot("snapshot-1", "orders", {"terms": legacy})
+    second = store.replace_snapshot("snapshot-2", "orders", {"terms": legacy})
+
+    assert first["total"] == second["total"] >= 1
+    for term in legacy:
+        assert store.list_evidence("snapshot-2", term["id"])
+    store.close()
+
+
 def test_human_overrides_survive_reextraction(tmp_path):
     store = TermStore(tmp_path / "terms.db")
     service = TermRecognitionService(store)
