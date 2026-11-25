@@ -42,7 +42,8 @@ codeevolution adr gen --snapshot-id <id> --commits <sha1>,<sha2>
 codeevolution adr commits --snapshot-id <id> --scan --limit 50
 codeevolution adr template show --snapshot-id <id>
 codeevolution adr backtest <draft-id>
-codeevolution adr review <draft-id> --approve --rating 4 --comment "同意"
+codeevolution adr review <draft-id> --approve --rating 4 --comment "同意" --reviewer alice
+codeevolution adr edit <draft-id> --file refined.md --editor alice --note "精简措辞"
 codeevolution adr list --snapshot-id <id>
 codeevolution adr show <draft-id>
 codeevolution adr debug <generation-id>
@@ -117,13 +118,19 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
 - **回测**：`adr backtest <draft-id>` 把 ADR 与当前代码证据（evidence 文件、仓库文件清单、
   最近提交）交给「回测」提示词，输出 verdict（consistent/partial/contradicted/
   unverifiable）、confidence、理由与证据。
-- **人工审批**：`adr review <draft-id> --approve|--reject [--rating 1-5]`；审批后才允许
-  `adr export` 写入仓库 `docs/adr` 并重建索引（未审批返回 409）。
+- **人工审批**：`adr review <draft-id> --approve|--reject [--rating 1-5] [--comment]
+  [--reviewer]`；审批后才允许 `adr export` 写入仓库 `docs/adr` 并重建索引（未审批返回 409）。
+- **精修与版本**：`adr edit <draft-id> --file refined.md [--title] [--editor] [--note]`
+  （`PUT /api/adr/drafts/{id}`）把改写后的 MADR 存为新版本：`revision + 1`、审批重置为
+  pending、旧回测失效；已导出草稿不可再编辑或重新审批（409）。
+- **交付物溯源**：导出时在 frontmatter 注入 `provenance:`（draft/generation、model、
+  prompt_digest、evidence、editor、reviewer、exported_at），重复导出只替换该块。
 - **调试映射**：每次生成/回测都保存来源内容、实际渲染提示词、模型原始响应、解析结果与
   耗时；`adr debug <generation-id>` 与 `GET /api/adr/generations/{id}` 可直接查看。
 
 所有状态机数据落在 `~/.codeevolution/adr.db`（`adr_prompts` / `adr_generations` /
-`adr_drafts` / `adr_templates` / `adr_commit_scans` / `adr_backtests`）。分析发布时仍会读取
+`adr_drafts` / `adr_draft_revisions` / `adr_templates` / `adr_commit_scans` /
+`adr_backtests`）。分析发布时仍会读取
 仓库已有 ADR 进入 Snapshot facts（`-s adr`）并执行 R1/R2 结构校验；旧 Snapshot 返回
 `available: false` 而不是报错。
 

@@ -29,9 +29,11 @@ from . import git_source
 from .domain import (
     DEFAULT_ADR_TEMPLATE,
     GENERATION_KINDS,
+    MAX_TITLE_CHARS,
     PROMPT_SOURCE_KINDS,
     default_prompt,
     decision_schema_text,
+    inject_provenance,
     normalize_decision,
     prompt_digest,
     render_madr,
@@ -44,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_CHARS = 120_000
 MAX_TEXT_CHARS = 20_000
+MAX_DRAFT_CHARS = 200_000
 MAX_HISTORY_CANDIDATES = 100
 MAX_TRIAGE_COMMITS = 60
 TRIAGE_BATCH_SIZE = 12
@@ -693,7 +696,12 @@ class AdrService:
             )
             for sha in commit_shas
         ]
-        return {"batch_id": batch_id, "total": len(generations), "generations": generations}
+        return {
+            "batch_id": batch_id,
+            "total": len(generations),
+            "generations": generations,
+            "progress": self.batch_progress(batch_id)["progress"],
+        }
 
     # ── backtest ─────────────────────────────────────────────────────
 
@@ -806,10 +814,15 @@ class AdrService:
         action: str,
         rating: int | None = None,
         comment: str = "",
+        reviewer: str = "",
     ) -> dict[str, Any]:
         draft = self.store.get_draft(draft_id)
         if draft is None:
             raise AdrServiceError("draft not found", status=404)
+        if draft.get("exported_path"):
+            raise AdrServiceError(
+                "已导出的 ADR 不能再审批；如需修改请重新生成草稿", status=409
+            )
         if action not in {"approve", "reject"}:
             raise AdrServiceError("action must be approve or reject")
         if rating is not None and not 1 <= int(rating) <= 5:
@@ -823,9 +836,91 @@ class AdrService:
             review_status="approved" if action == "approve" else "rejected",
             rating=int(rating) if rating is not None else draft.get("rating"),
             review_comment=comment,
+            reviewer=(reviewer or "").strip() or draft.get("reviewer", ""),
             reviewed_at=_now(),
         )
         return {"draft": updated, "backtest": self.store.get_backtest(draft_id)}
+
+    def edit_draft(
+        self,
+        draft_id: str,
+        *,
+        markdown: str,
+        title: str = "",
+        editor: str = "",
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Store an edited draft as a new revision and invalidate the review.
+
+        Refinement is a first-class step: a human (or an external agent) may
+        rewrite the model draft, but the result is a new revision that must be
+        reviewed again before export. Already-exported records are immutable
+        here — the repository file is the source of truth from that point on.
+        """
+        draft = self.store.get_draft(draft_id)
+        if draft is None:
+            raise AdrServiceError("draft not found", status=404)
+        if draft.get("exported_path"):
+            raise AdrServiceError(
+                "已导出的 ADR 不能再编辑；如需修改请重新生成草稿", status=409
+            )
+        text = (markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        if not text.strip():
+            raise AdrServiceError("ADR 内容不能为空")
+        if len(text) > MAX_DRAFT_CHARS:
+            raise AdrServiceError(f"ADR 内容不能超过 {MAX_DRAFT_CHARS} 字符")
+        if not text.lstrip().startswith("---"):
+            text = f"---\nstatus: proposed\n---\n\n{text}"
+        text = self._set_status(text.rstrip("\n") + "\n", "proposed")
+        new_title = (title or "").strip()[:MAX_TITLE_CHARS] or self._draft_title(text) or draft["title"]
+        editor_name = (editor or "").strip()[:200]
+        current_revision = int(draft.get("revision") or 1)
+        existing = {int(item["revision"]) for item in self.store.list_revisions(draft_id, limit=500)}
+        if current_revision not in existing:
+            # Drafts created before revisions existed: preserve their text first.
+            self.store.add_revision(
+                draft_id,
+                revision=current_revision,
+                markdown=draft["markdown"],
+                title=draft["title"],
+                editor=draft.get("editor", ""),
+                note="编辑前版本",
+            )
+        new_revision = current_revision + 1
+        self.store.add_revision(
+            draft_id,
+            revision=new_revision,
+            markdown=text,
+            title=new_title,
+            editor=editor_name,
+            note=(note or "").strip()[:2000],
+        )
+        updated = self.store.update_draft(
+            draft_id,
+            markdown=text,
+            title=new_title,
+            revision=new_revision,
+            status="proposed",
+            review_status="pending",
+            rating=None,
+            review_comment="",
+            reviewed_at=None,
+            reviewer="",
+            editor=editor_name,
+            edited_at=_now(),
+        )
+        # A backtest describes the previous text; require a fresh run.
+        self.store.delete_backtest_for_draft(draft_id)
+        return {
+            "draft": updated,
+            "revisions": self.store.list_revisions(draft_id),
+            "backtest": None,
+        }
+
+    @staticmethod
+    def _draft_title(markdown: str) -> str:
+        match = re.search(r"(?m)^#\s+(.+)$", markdown or "")
+        return match.group(1).strip() if match else ""
 
     @staticmethod
     def _set_status(markdown: str, status: str) -> str:
@@ -929,7 +1024,12 @@ class AdrService:
             )
             for commit in candidates
         ]
-        return {"batch_id": batch_id, "total": len(generations), "generations": generations}
+        return {
+            "batch_id": batch_id,
+            "total": len(generations),
+            "generations": generations,
+            "progress": self.batch_progress(batch_id)["progress"],
+        }
 
     def run(self, generation_id: str) -> dict[str, Any] | None:
         generation = self.store.get_generation(generation_id)
@@ -1069,9 +1169,36 @@ class AdrService:
         return self.store.list_generations(member_id=member_id, limit=limit)
 
     def batch_progress(self, batch_id: str) -> dict[str, Any]:
+        """Mirror the API-explanation batch contract: progress over the selection.
+
+        ``completed`` counts generations that finished executing (succeeded);
+        ``failed``/``skipped`` are terminal too, so ``percent`` is the share of
+        selected commits that no longer need work.
+        """
         generations = self.store.list_generations(batch_id=batch_id, limit=200)
         counts = self.store.count_generations(batch_id)
-        return {"batch_id": batch_id, "counts": counts, "generations": generations}
+        total = sum(counts.values())
+        completed = counts.get("succeeded", 0)
+        failed = counts.get("failed", 0)
+        skipped = counts.get("skipped", 0)
+        running = counts.get("running", 0)
+        queued = counts.get("queued", 0)
+        done = completed + failed + skipped
+        progress = {
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "skipped": skipped,
+            "running": running,
+            "queued": queued,
+            "percent": round(done * 100 / total) if total else 100,
+        }
+        return {
+            "batch_id": batch_id,
+            "counts": counts,
+            "progress": progress,
+            "generations": generations,
+        }
 
     def source_mapping(self, member_id: str) -> dict[str, Any]:
         """Show how each source kind maps to its prompt and latest ADR."""
@@ -1150,9 +1277,36 @@ class AdrService:
             "draft": draft,
             "generation": generation,
             "backtest": self.store.get_backtest(draft_id),
+            "revisions": self.store.list_revisions(draft_id),
         }
 
     # ── export ───────────────────────────────────────────────────────
+
+    def _export_provenance(
+        self, draft: dict[str, Any], generation: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        generation = generation or {}
+        parsed = generation.get("parsed") if isinstance(generation.get("parsed"), dict) else {}
+        evidence = [
+            str(item.get("path"))
+            for item in (parsed.get("evidence") or [])
+            if isinstance(item, dict) and item.get("path")
+        ]
+        return {
+            "tool": "codeevolution",
+            "draft_id": draft["id"],
+            "generation_id": draft.get("generation_id", ""),
+            "member_id": draft.get("member_id", ""),
+            "source": f'{draft.get("source_kind", "")}:{draft.get("source_ref", "")}'.rstrip(":"),
+            "model": generation.get("model") or self.model_name(),
+            "prompt_digest": generation.get("prompt_digest", ""),
+            "revision": draft.get("revision") or 1,
+            "evidence": evidence[:20],
+            "editor": draft.get("editor", ""),
+            "reviewer": draft.get("reviewer", ""),
+            "reviewed_at": draft.get("reviewed_at") or "",
+            "exported_at": _now(),
+        }
 
     def export_draft(self, draft_id: str) -> dict[str, Any]:
         draft = self.store.get_draft(draft_id)
@@ -1188,7 +1342,11 @@ class AdrService:
             while target.exists():
                 number += 1
                 target = directory / f"{number:04d}-{slug}.md"
-        target.write_text(draft["markdown"].rstrip("\n") + "\n", encoding="utf-8")
+        generation = self.store.get_generation(draft["generation_id"])
+        markdown = inject_provenance(
+            draft["markdown"], self._export_provenance(draft, generation)
+        )
+        target.write_text(markdown.rstrip("\n") + "\n", encoding="utf-8")
         index_path = directory / "index.md"
         index_path.write_text(render_index(load_adrs(directory)), encoding="utf-8")
         relative = target.relative_to(repo_root).as_posix()

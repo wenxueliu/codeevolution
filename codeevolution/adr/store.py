@@ -74,6 +74,20 @@ CREATE TABLE IF NOT EXISTS adr_drafts (
 CREATE INDEX IF NOT EXISTS idx_adr_drafts_member
     ON adr_drafts(member_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS adr_draft_revisions (
+    id TEXT PRIMARY KEY,
+    draft_id TEXT NOT NULL REFERENCES adr_drafts(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    markdown TEXT NOT NULL,
+    editor TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(draft_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_adr_draft_revisions_draft
+    ON adr_draft_revisions(draft_id, revision DESC);
+
 CREATE TABLE IF NOT EXISTS adr_templates (
     id TEXT PRIMARY KEY,
     member_id TEXT NOT NULL,
@@ -190,6 +204,10 @@ class AdrStore:
             "rating": "INTEGER",
             "review_comment": "TEXT NOT NULL DEFAULT ''",
             "reviewed_at": "TEXT",
+            "revision": "INTEGER NOT NULL DEFAULT 1",
+            "editor": "TEXT NOT NULL DEFAULT ''",
+            "reviewer": "TEXT NOT NULL DEFAULT ''",
+            "edited_at": "TEXT",
         }
         for column, definition in additions.items():
             if column not in draft_columns:
@@ -452,6 +470,12 @@ class AdrStore:
                     created_at,
                 ),
             )
+            self._connection.execute(
+                """INSERT INTO adr_draft_revisions
+                   (id, draft_id, revision, title, markdown, editor, note, created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), draft_id, 1, title, markdown, "", "生成草稿", created_at),
+            )
         return self.get_draft(draft_id)  # type: ignore[return-value]
 
     @_synchronized
@@ -503,6 +527,48 @@ class AdrStore:
     def delete_draft(self, draft_id: str) -> bool:
         with self._connection:
             cursor = self._connection.execute("DELETE FROM adr_drafts WHERE id=?", (draft_id,))
+        return cursor.rowcount > 0
+
+    @_synchronized
+    def add_revision(
+        self,
+        draft_id: str,
+        *,
+        revision: int,
+        markdown: str,
+        title: str = "",
+        editor: str = "",
+        note: str = "",
+    ) -> dict[str, Any] | None:
+        revision_id = str(uuid.uuid4())
+        created_at = _now()
+        with self._connection:
+            self._connection.execute(
+                """INSERT INTO adr_draft_revisions
+                   (id, draft_id, revision, title, markdown, editor, note, created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (revision_id, draft_id, int(revision), title, markdown, editor, note, created_at),
+            )
+        row = self._connection.execute(
+            "SELECT * FROM adr_draft_revisions WHERE id=?", (revision_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    @_synchronized
+    def list_revisions(self, draft_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            """SELECT * FROM adr_draft_revisions WHERE draft_id=?
+               ORDER BY revision DESC LIMIT ?""",
+            (draft_id, max(1, min(int(limit), 500))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @_synchronized
+    def delete_backtest_for_draft(self, draft_id: str) -> bool:
+        with self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM adr_backtests WHERE draft_id=?", (draft_id,)
+            )
         return cursor.rowcount > 0
 
 
@@ -694,6 +760,10 @@ class AdrStore:
             "reviewed_at",
             "exported_path",
             "exported_at",
+            "revision",
+            "editor",
+            "reviewer",
+            "edited_at",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:

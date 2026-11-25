@@ -286,13 +286,6 @@
                     <button class="primary sm" type="button" :disabled="!adrSelectedCommitShas.length || adrBatchSubmitting || adrBatchActive || adrActiveGeneration || adrSubmitting" data-testid="adr-batch-generate" @click="submitAdrBatchGeneration">{{ adrBatchSubmitting ? t('提交中...') : t('生成选中（{count}）', { count: adrSelectedCommitShas.length }) }}</button>
                   </div>
                   <p class="prompt-hint">{{ t('提交表格由规则过滤与 AI 分诊共同判定；勾选候选提交后批量生成，已跳过的提交需勾选“强制生成已跳过提交”。') }}</p>
-                  <div v-if="adrCommitsProgress.total" class="llm-progress adr-commit-progress" data-testid="adr-commit-progress">
-                    <div class="llm-progress-heading">
-                      <span>{{ t('已处理 {processed}/{total}（{percent}%）', { processed: adrCommitsProgress.processed, total: adrCommitsProgress.total, percent: adrCommitsProgress.percent }) }}</span>
-                      <strong>{{ t('生成中 {active}', { active: adrCommitsProgress.active }) }}</strong>
-                    </div>
-                    <div class="llm-progress-track"><span :style="{ width: `${adrCommitsProgress.percent}%` }"></span></div>
-                  </div>
                   <div class="adr-stage-filters" role="group" :aria-label="t('按状态过滤提交')" data-testid="adr-stage-filters">
                     <button
                       v-for="option in adrStageOptions"
@@ -397,8 +390,11 @@
                 <button v-if="adrSuccessDraftId" class="link-button" type="button" @click="openAdrDraft({ id: adrSuccessDraftId })">{{ t('查看草稿') }}</button>
               </p>
               <div class="llm-progress" v-if="adrBatchId" data-testid="adr-batch-progress">
-                <div class="llm-progress-heading"><span>{{ t('批量生成（{total} 个提交）', { total: adrBatchTotal }) }}</span><strong>{{ adrBatchPercent }}%</strong></div>
-                <div class="llm-progress-track"><span :style="{ width: `${adrBatchPercent}%` }"></span></div>
+                <div class="llm-progress-heading">
+                  <span>{{ t('批量生成进度（已选 {total} 个提交）', { total: adrBatchProgress.total }) }}</span>
+                  <strong>{{ t('已完成 {completed}/{total}（{percent}%）', { completed: adrBatchProgress.completed, total: adrBatchProgress.total, percent: adrBatchProgress.percent }) }}</strong>
+                </div>
+                <div class="llm-progress-track"><span :style="{ width: `${adrBatchProgress.percent}%` }"></span></div>
                 <p>{{ t('排队 {queued} · 进行中 {running} · 成功 {succeeded} · 跳过 {skipped} · 失败 {failed}', adrBatchCounts) }}</p>
                 <p v-if="adrBatchNote" class="adr-batch-note">{{ adrBatchNote }}</p>
               </div>
@@ -420,6 +416,7 @@
                     <tr v-for="draft in adrDrafts" :key="draft.id" :class="{ selected: adrDetail?.draft?.id === draft.id }">
                       <td>
                         <b>{{ draft.title || draft.slug || draft.id }}</b>
+                        <small v-if="draft.revision > 1" class="adr-version">{{ t('版本 v{revision}', { revision: draft.revision }) }}</small>
                         <small v-if="draft.exported_path" class="adr-exported">{{ t('已导出到 {path}', { path: draft.exported_path }) }}</small>
                       </td>
                       <td><span class="term-status" :class="adrDraftStatusKey(draft.status)">{{ adrDraftStatusText(draft.status) }}</span></td>
@@ -429,6 +426,7 @@
                       <td><span class="adr-review-chip" :class="draft.review_status || 'pending'" :title="draft.review_status || 'pending'">{{ adrReviewStatusText(draft.review_status) }}</span></td>
                       <td class="adr-row-actions">
                         <button class="secondary sm" :disabled="adrDetailLoading" @click="openAdrDraft(draft)">{{ t('查看') }}</button>
+                        <button class="secondary sm" :disabled="!adrDraftEditable(draft) || adrEditSaving" :title="adrDraftEditable(draft) ? '' : t('已导出的 ADR 不能编辑；如需修改请重新生成草稿')" :data-testid="`adr-draft-edit-${draft.id}`" @click="openAdrDraft(draft, { edit: true })">{{ t('编辑') }}</button>
                         <button class="secondary sm" :disabled="adrBacktestingId === draft.id" :data-testid="`adr-draft-backtest-${draft.id}`" @click="runAdrBacktestForDraft(draft)">{{ adrBacktestingId === draft.id ? t('回测中...') : t('回测') }}</button>
                         <button class="secondary sm" :data-testid="`adr-draft-review-${draft.id}`" @click="openAdrDraftForReview(draft)">{{ t('审批') }}</button>
                         <button class="secondary sm" :disabled="!adrDraftExportable(draft) || adrExportingId === draft.id" :title="adrDraftExportable(draft) ? '' : t('需人工审批通过后才能导出')" :data-testid="`adr-draft-export-${draft.id}`" @click="exportAdrDraft(draft)">{{ adrExportingId === draft.id ? t('导出中...') : t('导出') }}</button>
@@ -454,15 +452,46 @@
                   <div class="adr-detail-meta">
                     <span>{{ t('状态：{status}', { status: adrDraftStatusText(adrDetail.draft?.status) }) }}</span>
                     <span>{{ t('审批：{status}', { status: adrReviewStatusText(adrDetail.draft?.review_status) }) }}</span>
+                    <span v-if="adrDetail.draft?.revision">{{ t('版本 v{revision}', { revision: adrDetail.draft.revision }) }}</span>
+                    <span v-if="adrDetail.draft?.editor">{{ t('编辑人：{editor}', { editor: adrDetail.draft.editor }) }}</span>
                     <span>{{ t('生成时间：{time}', { time: formatSnapshotTime(adrDetail.draft?.created_at) }) }}</span>
                     <span v-if="adrDetail.draft?.exported_path">{{ t('已导出到 {path}', { path: adrDetail.draft.exported_path }) }}</span>
                   </div>
                   <div class="adr-detail-actions">
+                    <button class="secondary sm" type="button" :disabled="!adrDraftEditable(adrDetail.draft) || adrEditSaving" :title="adrDraftEditable(adrDetail.draft) ? '' : t('已导出的 ADR 不能编辑；如需修改请重新生成草稿')" data-testid="adr-detail-edit" @click="startAdrEdit(adrDetail.draft)">{{ t('编辑') }}</button>
                     <span v-if="!adrDraftExportable(adrDetail.draft)" class="prompt-hint">{{ t('需人工审批通过后才能导出') }}</span>
                     <button class="secondary sm" type="button" :disabled="!adrDraftExportable(adrDetail.draft) || adrExportingId === adrDetail.draft?.id" :title="adrDraftExportable(adrDetail.draft) ? '' : t('需人工审批通过后才能导出')" data-testid="adr-detail-export" @click="exportAdrDraft(adrDetail.draft)">{{ adrExportingId === adrDetail.draft?.id ? t('导出中...') : t('导出') }}</button>
                   </div>
                   <h5>{{ t('MADR 草稿内容') }}</h5>
-                  <pre class="adr-markdown">{{ adrDetail.draft?.markdown || '' }}</pre>
+                  <section v-if="adrEditing" class="adr-detail-section" data-testid="adr-editor">
+                    <label class="adr-field"><span>{{ t('ADR 内容（Markdown）') }}</span><textarea v-model="adrEditMarkdown" rows="12" data-testid="adr-edit-markdown"></textarea></label>
+                    <div class="adr-grid">
+                      <label class="adr-field"><span>{{ t('标题（可选）') }}</span><input v-model.trim="adrEditTitle" type="text" :placeholder="adrDetail.draft?.title || ''" data-testid="adr-edit-title" /></label>
+                      <label class="adr-field"><span>{{ t('编辑人（可选）') }}</span><input v-model.trim="adrEditEditor" type="text" :placeholder="t('可选：编辑人姓名')" data-testid="adr-edit-editor" /></label>
+                    </div>
+                    <label class="adr-field"><span>{{ t('修订说明（可选）') }}</span><input v-model.trim="adrEditNote" type="text" :placeholder="t('例如：精简背景描述、补充后果')" data-testid="adr-edit-note" /></label>
+                    <div class="adr-actions">
+                      <button class="primary sm" type="button" :disabled="adrEditSaving || !adrEditMarkdown.trim()" data-testid="adr-edit-save" @click="saveAdrEdit">{{ adrEditSaving ? t('保存中...') : t('保存为新版本') }}</button>
+                      <button class="secondary sm" type="button" :disabled="adrEditSaving" data-testid="adr-edit-cancel" @click="cancelAdrEdit">{{ t('取消') }}</button>
+                    </div>
+                    <p class="prompt-hint">{{ t('保存后成为新版本，审批状态重置为待审批，回测结果失效。') }}</p>
+                    <p v-if="adrEditError" class="explanation-error" data-testid="adr-edit-error">{{ adrEditError }}</p>
+                  </section>
+                  <pre v-else class="adr-markdown">{{ adrDetail.draft?.markdown || '' }}</pre>
+
+                  <section v-if="(adrDetail.revisions || []).length" class="adr-detail-section" data-testid="adr-revisions">
+                    <h5>{{ t('版本历史') }}</h5>
+                    <ul class="adr-revisions">
+                      <li v-for="revision in adrDetail.revisions" :key="revision.id">
+                        <b>{{ t('版本 v{revision}', { revision: revision.revision }) }}</b>
+                        <span class="muted">{{ formatSnapshotTime(revision.created_at) }}</span>
+                        <span v-if="revision.editor">{{ t('编辑人：{editor}', { editor: revision.editor }) }}</span>
+                        <span v-if="revision.note" class="muted">{{ revision.note }}</span>
+                        <button class="link-button" type="button" @click="previewAdrRevision(revision)">{{ t('查看') }}</button>
+                      </li>
+                    </ul>
+                    <pre v-if="adrRevisionPreview" class="adr-markdown" data-testid="adr-revision-preview">{{ adrRevisionPreview.markdown }}</pre>
+                  </section>
 
                   <section class="adr-detail-section" data-testid="adr-detail-backtest">
                     <div class="adr-section-heading">
@@ -516,6 +545,7 @@
                           <option v-for="score in [1, 2, 3, 4, 5]" :key="score" :value="score">{{ score }}</option>
                         </select>
                       </label>
+                      <label class="adr-field"><span>{{ t('审批人（可选）') }}</span><input v-model.trim="adrReviewReviewer" type="text" :placeholder="t('可选：审批人姓名')" data-testid="adr-review-reviewer" /></label>
                       <label class="adr-field"><span>{{ t('审批意见') }}</span><textarea v-model="adrReviewComment" rows="3" :placeholder="t('可选：补充审批意见')" data-testid="adr-review-comment"></textarea></label>
                     </div>
                     <div class="adr-actions">
@@ -1102,7 +1132,9 @@ export default {
       adrDrafts: [], adrDraftsLoading: false, adrDraftsError: '',
       adrExportingId: '', adrDeletingId: '', adrExportState: { id: '', path: '', error: '' },
       adrDetail: null, adrDetailLoading: false, adrDetailError: '', adrBacktestingId: '', adrBacktestError: '',
-      adrReviewRating: null, adrReviewComment: '', adrReviewing: false, adrReviewError: '', adrReviewNotice: '',
+      adrReviewRating: null, adrReviewComment: '', adrReviewReviewer: '', adrReviewing: false, adrReviewError: '', adrReviewNotice: '',
+      adrEditing: false, adrEditMarkdown: '', adrEditTitle: '', adrEditEditor: '', adrEditNote: '',
+      adrEditSaving: false, adrEditError: '', adrRevisionPreview: null,
       adrPrompts: null, adrPromptKind: 'commit', adrPromptText: '', adrPromptSaving: false, adrPromptError: '', adrPromptNotice: '',
       adrTemplate: null, adrTemplateText: '', adrTemplateSaving: false, adrTemplateError: '', adrTemplateNotice: '',
     }
@@ -1288,9 +1320,34 @@ export default {
       return counts.queued + counts.running + counts.succeeded + counts.skipped + counts.failed
     },
     adrBatchPercent() {
+      return this.adrBatchProgress.percent
+    },
+    adrBatchProgress() {
+      const server = this.adrBatch?.progress
+      if (server && Number(server.total)) {
+        return {
+          total: Number(server.total),
+          completed: Number(server.completed || 0),
+          failed: Number(server.failed || 0),
+          skipped: Number(server.skipped || 0),
+          running: Number(server.running || 0),
+          queued: Number(server.queued || 0),
+          percent: Number(server.percent || 0),
+        }
+      }
       const counts = this.adrBatchCounts
       const total = this.adrBatchTotal
-      return total ? Math.round(((counts.succeeded + counts.skipped + counts.failed) / total) * 100) : 0
+      return {
+        total,
+        completed: counts.succeeded,
+        failed: counts.failed,
+        skipped: counts.skipped,
+        running: counts.running,
+        queued: counts.queued,
+        percent: total
+          ? Math.round(((counts.succeeded + counts.skipped + counts.failed) / total) * 100)
+          : 0,
+      }
     },
     adrPromptEntry() {
       return (this.adrPrompts?.kinds || []).find(item => item.source_kind === this.adrPromptKind) || null
@@ -1428,7 +1485,9 @@ export default {
         this.adrScanRunning = false; this.adrSelectedCommitShas = []; this.adrGeneratingSha = ''
         this.adrDrafts = []; this.adrDraftsError = ''; this.adrDetail = null; this.adrDetailError = ''
         this.adrBacktestingId = ''; this.adrBacktestError = ''
-        this.adrReviewRating = null; this.adrReviewComment = ''; this.adrReviewing = false; this.adrReviewError = ''; this.adrReviewNotice = ''
+        this.adrReviewRating = null; this.adrReviewComment = ''; this.adrReviewReviewer = ''; this.adrReviewing = false; this.adrReviewError = ''; this.adrReviewNotice = ''
+        this.adrEditing = false; this.adrEditMarkdown = ''; this.adrEditTitle = ''; this.adrEditEditor = ''; this.adrEditNote = ''
+        this.adrEditSaving = false; this.adrEditError = ''; this.adrRevisionPreview = null
         this.adrExportingId = ''; this.adrDeletingId = ''; this.adrExportState = { id: '', path: '', error: '' }
         this.adrPrompts = null; this.adrPromptText = ''; this.adrPromptError = ''; this.adrPromptNotice = ''
         this.adrTemplate = null; this.adrTemplateText = ''; this.adrTemplateError = ''; this.adrTemplateNotice = ''
@@ -2061,7 +2120,7 @@ export default {
         await Promise.all([this.loadAdrDrafts(), this.loadAdrCommits()])
       }
     },
-    async openAdrDraft(draft) {
+    async openAdrDraft(draft, options = {}) {
       if (!draft?.id) return
       this.adrDetailLoading = true
       this.adrDetailError = ''
@@ -2073,11 +2132,19 @@ export default {
           draft: detailDraft,
           generation: data?.generation || null,
           backtest: data?.backtest || null,
+          revisions: data?.revisions || [],
         }
         this.adrReviewRating = detailDraft?.rating ?? null
         this.adrReviewComment = detailDraft?.review_comment || ''
+        this.adrReviewReviewer = detailDraft?.reviewer || ''
         this.adrReviewError = ''
         this.adrReviewNotice = ''
+        this.adrEditing = false
+        this.adrEditError = ''
+        this.adrRevisionPreview = null
+        if (options?.edit && detailDraft && !detailDraft.exported_path) {
+          this.startAdrEdit(detailDraft)
+        }
       } catch (err) {
         this.adrDetailError = this.adrErrorMessage(err, '读取 ADR 草稿详情失败')
       } finally {
@@ -2086,6 +2153,69 @@ export default {
     },
     openAdrDraftForReview(draft) {
       this.openAdrDraft(draft)
+    },
+    adrDraftEditable(draft) {
+      return Boolean(draft?.id) && !draft?.exported_path
+    },
+    startAdrEdit(draft) {
+      if (!this.adrDraftEditable(draft)) return
+      this.adrEditing = true
+      this.adrEditError = ''
+      this.adrEditMarkdown = draft.markdown || ''
+      this.adrEditTitle = draft.title || ''
+      this.adrEditEditor = draft.editor || ''
+      this.adrEditNote = ''
+      this.adrRevisionPreview = null
+    },
+    cancelAdrEdit() {
+      this.adrEditing = false
+      this.adrEditError = ''
+      this.adrEditMarkdown = ''
+      this.adrEditTitle = ''
+      this.adrEditEditor = ''
+      this.adrEditNote = ''
+    },
+    previewAdrRevision(revision) {
+      this.adrRevisionPreview = this.adrRevisionPreview?.id === revision?.id ? null : revision
+    },
+    async saveAdrEdit() {
+      const draft = this.adrDetail?.draft
+      if (!draft?.id || this.adrEditSaving) return
+      if (!this.adrEditMarkdown.trim()) {
+        this.adrEditError = this.t('ADR 内容不能为空')
+        return
+      }
+      this.adrEditSaving = true
+      this.adrEditError = ''
+      try {
+        const data = await this.$api.request(`/api/adr/drafts/${encodeURIComponent(draft.id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            markdown: this.adrEditMarkdown,
+            title: this.adrEditTitle.trim(),
+            editor: this.adrEditEditor.trim(),
+            note: this.adrEditNote.trim(),
+          }),
+        })
+        if (this.adrDetail?.draft?.id === draft.id) {
+          this.adrDetail = {
+            ...this.adrDetail,
+            draft: data?.draft || this.adrDetail.draft,
+            revisions: data?.revisions || [],
+            backtest: data?.backtest ?? null,
+          }
+        }
+        this.adrEditing = false
+        this.adrReviewRating = null
+        this.adrReviewComment = ''
+        this.adrReviewNotice = this.t('已保存为版本 v{revision}，需重新审批后才能导出。', { revision: data?.draft?.revision ?? '' })
+        await Promise.all([this.loadAdrDrafts(), this.loadAdrCommits()])
+      } catch (err) {
+        this.adrEditError = this.adrErrorMessage(err, '保存 ADR 版本失败')
+      } finally {
+        this.adrEditSaving = false
+      }
     },
     closeAdrDetail() {
       this.adrDetail = null
@@ -2142,7 +2272,7 @@ export default {
       this.adrReviewError = ''
       this.adrReviewNotice = ''
       try {
-        const body = { action, comment: this.adrReviewComment.trim() }
+        const body = { action, comment: this.adrReviewComment.trim(), reviewer: this.adrReviewReviewer.trim() }
         if (this.adrReviewRating != null && this.adrReviewRating !== '') {
           body.rating = Number(this.adrReviewRating)
         }
@@ -3147,6 +3277,9 @@ td code { color: #666; word-break: break-all; }
 .adr-row-actions button { border: 0; border-radius: 5px; padding: 4px 8px; font-size: 11px; cursor: pointer; }
 .adr-row-actions .danger { background: #fcebed; color: #b8324a; }
 .adr-exported { display: block; margin-top: 3px; color: #23764a; font-size: 10px; }
+.adr-version { display: block; margin-top: 3px; color: #6b5b95; font-size: 10px; }
+.adr-revisions { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.adr-revisions li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid #eee; border-radius: 5px; font-size: 11px; }
 .adr-commit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .adr-commit-progress { margin: 8px 0 10px; }
 .adr-stage-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }

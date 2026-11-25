@@ -158,6 +158,24 @@ function mountKnowledge() {
         drafts[0] = { ...drafts[0], backtest: { verdict: 'partial', confidence: 0.66, status: 'ready' } }
         return { backtest: BACKTEST }
       }
+      if (path === '/api/adr/drafts/d1') {
+        const revision = (drafts[0].revision || 1) + 1
+        const revisions = [
+          {
+            id: `rev-${revision}`, revision, markdown: body?.markdown || '',
+            title: body?.title || drafts[0].title, editor: body?.editor || '',
+            note: body?.note || '', created_at: '2026-11-25T02:00:00Z',
+          },
+          ...(drafts[0].revisions || []),
+        ]
+        drafts[0] = {
+          ...drafts[0], revision, markdown: body?.markdown || drafts[0].markdown,
+          title: body?.title || drafts[0].title, editor: body?.editor || '',
+          status: 'proposed', review_status: 'pending', rating: null,
+          review_comment: '', reviewed_at: null, reviewer: '', revisions,
+        }
+        return { draft: drafts[0], revisions, backtest: null }
+      }
       if (path === '/api/adr/drafts/d1/export') {
         drafts[0] = { ...drafts[0], exported_path: 'docs/adr/0001-test-adr.md' }
         return { relative_path: 'docs/adr/0001-test-adr.md', path: '/repo/docs/adr/0001-test-adr.md' }
@@ -233,14 +251,10 @@ describe('ADR workbench integration', () => {
   it('renders lifecycle progress and filters commits by stage server-side', async () => {
     const { wrapper, api } = await openWorkbench()
 
-    // Progress block above the commit table.
-    expect(wrapper.find('[data-testid="adr-commit-progress"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('已处理 1/4（25%）')
-    expect(wrapper.text()).toContain('生成中 0')
-
-    // Every commit exposes a lifecycle stage; generated maps to 待校验.
+    // Per-commit stage is rendered; the table no longer shows a global
+    // processed/total bar (progress belongs to the selected generation batch).
+    expect(wrapper.find('[data-testid="adr-commit-progress"]').exists()).toBe(false)
     expect(wrapper.vm.adrCommits.every(item => typeof item.stage === 'string')).toBe(true)
-    expect(wrapper.vm.adrCommitsProgress).toMatchObject({ total: 4, processed: 1, active: 0, percent: 25 })
     expect(wrapper.vm.adrCommitStageText({ stage: 'generating', generation_progress: 40 })).toBe('生成中 40%')
     expect(wrapper.find('[data-testid="adr-commit-stage-sha-generated"]').text()).toContain('待校验')
 
@@ -255,6 +269,27 @@ describe('ADR workbench integration', () => {
     expect(wrapper.find('[data-testid="adr-commit-stage-sha-generated"]').text()).toContain('待校验')
     expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="adr-commit-row-sha-docs"]').exists()).toBe(false)
+
+  it('shows how many selected commits finished executing', async () => {
+    const { wrapper } = await openWorkbench()
+    wrapper.vm.adrBatchId = 'batch-1'
+    wrapper.vm.adrBatch = {
+      batch_id: 'batch-1',
+      counts: { queued: 0, running: 1, succeeded: 2, skipped: 0, failed: 0 },
+      progress: {
+        total: 3, completed: 2, failed: 0, skipped: 0,
+        running: 1, queued: 0, percent: 67,
+      },
+    }
+    await flushPromises()
+
+    const progress = wrapper.find('[data-testid="adr-batch-progress"]')
+    expect(progress.exists()).toBe(true)
+    expect(progress.text()).toContain('批量生成进度（已选 3 个提交）')
+    expect(progress.text()).toContain('已完成 2/3（67%）')
+    expect(wrapper.vm.adrBatchProgress).toMatchObject({ total: 3, completed: 2, percent: 67 })
+    wrapper.unmount()
+  })
 
     // Selecting 全部 clears the filter and requests the unfiltered list again.
     await wrapper.find('[data-testid="adr-stage-filter-all"]').trigger('click')
@@ -305,6 +340,47 @@ describe('ADR workbench integration', () => {
     await flushPromises()
     expect(posted.some(item => item.path === '/api/adr/drafts/d1/export')).toBe(true)
     expect(wrapper.text()).toContain('docs/adr/0001-test-adr.md')
+    wrapper.unmount()
+  })
+
+  it('saves an edited draft as a new revision and resets review', async () => {
+    const { wrapper, posted } = await openWorkbench()
+
+    await wrapper.vm.openAdrDraft({ id: 'd1' })
+    await flushPromises()
+    await wrapper.find('[data-testid="adr-detail-edit"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="adr-editor"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="adr-edit-markdown"]').setValue('# 测试 ADR\n\n## Context\n\n精修后的内容\n')
+    await wrapper.find('[data-testid="adr-edit-title"]').setValue('测试 ADR（精修）')
+    await wrapper.find('[data-testid="adr-edit-editor"]').setValue('bob')
+    await wrapper.find('[data-testid="adr-edit-note"]').setValue('精简')
+    await wrapper.find('[data-testid="adr-edit-save"]').trigger('click')
+    await flushPromises()
+
+    const saved = posted.find(item => item.path === '/api/adr/drafts/d1')
+    expect(saved).toBeTruthy()
+    expect(saved.body).toMatchObject({
+      markdown: '# 测试 ADR\n\n## Context\n\n精修后的内容\n',
+      title: '测试 ADR（精修）',
+      editor: 'bob',
+      note: '精简',
+    })
+    expect(wrapper.text()).toContain('已保存为版本 v2')
+    expect(wrapper.find('[data-testid="adr-editor"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="adr-revisions"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('版本历史')
+
+    await wrapper.vm.exportAdrDraft({ id: 'd1' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="adr-draft-edit-d1"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('[data-testid="adr-review-reviewer"]').setValue('alice')
+    await wrapper.find('[data-testid="adr-review-approve"]').trigger('click')
+    await flushPromises()
+    const review = posted.find(item => item.path === '/api/adr/drafts/d1/review')
+    expect(review.body).toMatchObject({ action: 'approve', reviewer: 'alice' })
     wrapper.unmount()
   })
 

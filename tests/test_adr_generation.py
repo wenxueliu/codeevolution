@@ -579,3 +579,93 @@ def test_cli_lists_prompts_and_exports_a_draft(tmp_path):
     payload = json.loads(exported.stdout)
     assert Path(payload["path"]).is_file()
     assert Path(payload["path"]).parent == tmp_path / "docs" / "adr"
+
+
+def test_edit_draft_creates_revision_and_resets_review(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        draft = _generate(client, {"kind": "text", "text": "精修测试"})["draft"]
+        client.post(
+            f"/api/adr/drafts/{draft['id']}/review",
+            json={"action": "approve", "rating": 5, "comment": "初版可用", "reviewer": "alice"},
+        )
+        client.post(f"/api/adr/drafts/{draft['id']}/backtest")
+        detail = client.get(f"/api/adr/drafts/{draft['id']}").json()
+        assert detail["draft"]["review_status"] == "approved"
+        assert detail["backtest"]["status"] == "ready"
+
+        edited_text = detail["draft"]["markdown"].replace(
+            "# 引入支付网关适配器", "# 引入支付网关适配器（精修）"
+        )
+        response = client.put(
+            f"/api/adr/drafts/{draft['id']}",
+            json={"markdown": edited_text, "editor": "bob", "note": "精简措辞"},
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        updated = payload["draft"]
+        assert updated["revision"] == 2
+        assert updated["status"] == "proposed"
+        assert updated["review_status"] == "pending"
+        assert updated["rating"] is None
+        assert updated["editor"] == "bob"
+        assert updated["reviewer"] == ""
+        assert "# 引入支付网关适配器（精修）" in updated["markdown"]
+        assert "status: proposed" in updated["markdown"]
+        assert payload["backtest"] is None
+        assert [item["revision"] for item in payload["revisions"]] == [2, 1]
+        assert "# 引入支付网关适配器（精修）" in payload["revisions"][0]["markdown"]
+        assert "# 引入支付网关适配器" in payload["revisions"][1]["markdown"]
+
+        after = client.get(f"/api/adr/drafts/{draft['id']}").json()
+        assert after["backtest"] is None
+        assert len(after["revisions"]) == 2
+
+        reviewed = client.post(
+            f"/api/adr/drafts/{draft['id']}/review",
+            json={"action": "approve", "rating": 4, "reviewer": "carol"},
+        ).json()["draft"]
+        exported = client.post(f"/api/adr/drafts/{draft['id']}/export").json()
+        content = Path(exported["path"]).read_text(encoding="utf-8")
+        assert 'reviewer: "carol"' in content
+        assert "revision: 2" in content
+
+        blocked_edit = client.put(
+            f"/api/adr/drafts/{draft['id']}", json={"markdown": "# 再改一次\n"}
+        )
+        assert blocked_edit.status_code == 409
+        blocked_review = client.post(
+            f"/api/adr/drafts/{draft['id']}/review", json={"action": "reject"}
+        )
+        assert blocked_review.status_code == 409
+
+
+def test_export_records_provenance_and_replaces_it_idempotently(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        draft = _generate(client, {"kind": "text", "text": "溯源测试"})["draft"]
+        client.post(
+            f"/api/adr/drafts/{draft['id']}/review",
+            json={"action": "approve", "reviewer": "alice", "comment": "同意"},
+        )
+        exported = client.post(f"/api/adr/drafts/{draft['id']}/export").json()
+        target = Path(exported["path"])
+        content = target.read_text(encoding="utf-8")
+        assert content.startswith("---\n")
+        assert "provenance:" in content
+        assert 'draft_id: "' + draft["id"] + '"' in content
+        assert 'reviewer: "alice"' in content
+        assert 'source: "text:' in content
+        assert 'prompt_digest: "sha256:' in content
+        assert "app/payments.py" in content
+        assert "status: accepted" in content
+        assert content.count("provenance:") == 1
+
+        client.post(f"/api/adr/drafts/{draft['id']}/export")
+        again = target.read_text(encoding="utf-8")
+        assert again.count("provenance:") == 1
+        assert again.count("status: accepted") == 1
+        assert again.count("exported_at:") == 1
+        assert "app/payments.py" in again

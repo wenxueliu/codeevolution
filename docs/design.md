@@ -223,10 +223,11 @@ ADR 不只是被读取的事实，核心是**用模型生成**：从 git 提交�
   × 来源类型**版本化覆盖；占位符为 `{{service}} {{repo}} {{source_ref}} {{commit_message}}
   {{commit_files}} {{diff}} {{content}} {{text}} {{schema}} {{existing_adrs}}`。
   每次生成冻结 `prompt_id/version/digest/text`，提示词改动不会污染历史记录。
-- **存储**：`analysis_data_dir()/adr.db`，三张表：`adr_prompts`（版本化提示词）、
-  `adr_generations`（生成任务与调试轨迹）、`adr_drafts`（MADR 草稿）。状态机：
-  `queued → running → succeeded | failed`；模型判定「不是架构决策」时为 `skipped`。
-  生成状态一律 `proposed`，只有人能改为 `accepted`。
+- **存储**：`analysis_data_dir()/adr.db`，四张表：`adr_prompts`（版本化提示词）、
+  `adr_generations`（生成任务与调试轨迹）、`adr_drafts`（MADR 草稿与
+  `revision/editor/reviewer` 元数据）、`adr_draft_revisions`（每次保存的全文版本）。
+  状态机：`queued → running → succeeded | failed`；模型判定「不是架构决策」时为
+  `skipped`。生成状态一律 `proposed`，只有人能改为 `accepted`。
 - **调试映射**：一次 generation 完整记录 `source_payload`（提交 diff / 文件内容 / 文本）、
   来源摘要、实际提示词全文与摘要、模型名、原始响应、解析后的决策对象、错误或跳过原因、
   耗时。`adr debug <generation-id>` 与 `GET /api/adr/generations/{id}` 暴露同一份映射。
@@ -244,12 +245,21 @@ ADR 不只是被读取的事实，核心是**用模型生成**：从 git 提交�
 - **回测**：`adr backtest <draft-id>` 用「回测」提示词把 ADR 与当前代码证据（ADR 引用的
   文件内容、仓库文件清单、最近提交）交给模型，输出 verdict（consistent/partial/
   contradicted/unverifiable）、confidence、理由与证据，存入 `adr_backtests`。
-- **人工审批**：`adr review <draft-id> --approve|--reject [--rating 1-5] [--comment]`
-  写入 `review_status`、评分与意见，并把 MADR frontmatter 状态改为 accepted/rejected；
-  只有 approved 的草稿才允许导出，否则返回 409。
+- **人工审批**：`adr review <draft-id> --approve|--reject [--rating 1-5] [--comment]
+  [--reviewer]` 写入 `review_status`、评分、意见与审批人，并把 MADR frontmatter 状态改为
+  accepted/rejected；只有 approved 的草稿才允许导出，否则返回 409。
+- **精修与版本**：`adr edit <draft-id> --file|--text [--title] [--editor] [--note]`
+  （`PUT /api/adr/drafts/{id}`）把人工/外部 agent 改写的 MADR 保存为**新版本**：追加
+  `adr_draft_revisions`、`revision + 1`、frontmatter 状态重置为 proposed、审批状态重置为
+  pending、旧回测结果删除（需重新回测）。已导出（`exported_path`）的草稿不可再编辑或
+  重新审批，返回 409——仓库文件即该决策的权威文本。
 - **导出**：`adr export <draft-id>` 或 `POST /api/adr/drafts/{id}/export` 写入仓库
   `docs/adr`（已有 `doc/adr`/`docs/decisions`/`adr` 则复用），按现有编号续号、
   slug 化文件名、重建 `index.md`；重复导出同一草稿复用原路径，不产生重复文件。
+  导出时在 frontmatter 注入 `provenance:` 块（`draft_id`、`generation_id`、`member_id`、
+  `source`、`model`、`prompt_digest`、`revision`、`evidence`、`editor`、`reviewer`、
+  `reviewed_at`、`exported_at`、`tool`），且重导出只替换该块、不重复追加。这是**交付物
+  契约**：仓库只保存经过人工确认、可溯源的记录；生成内容永不作为后续分析的证据。
 - **与快照的关系**：导出的 Markdown 是仓库数据，只有重新分析生成 Snapshot 后才会进入
   `-s adr` 的快照事实；ADR 内容摘要并入 `rules_digest`，决策变更会产生新 Snapshot。
 

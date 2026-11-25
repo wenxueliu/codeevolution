@@ -195,6 +195,14 @@ class AdrReviewRequest(BaseModel):
     action: str = Field(pattern="^(approve|reject)$")
     rating: int | None = Field(default=None, ge=1, le=5)
     comment: str = Field(default="", max_length=2000)
+    reviewer: str = Field(default="", max_length=200)
+
+
+class AdrDraftUpdateRequest(BaseModel):
+    markdown: str = Field(min_length=1, max_length=200_000)
+    title: str = Field(default="", max_length=200)
+    editor: str = Field(default="", max_length=200)
+    note: str = Field(default="", max_length=2000)
 
 
 class AdrBacktestRequest(BaseModel):
@@ -2096,6 +2104,20 @@ def get_adr_draft(draft_id: str):
         raise HTTPException(error.status, str(error)) from error
 
 
+@app.put("/api/adr/drafts/{draft_id}")
+def update_adr_draft(draft_id: str, request: AdrDraftUpdateRequest):
+    try:
+        return get_adr_service().edit_draft(
+            draft_id,
+            markdown=request.markdown,
+            title=request.title,
+            editor=request.editor,
+            note=request.note,
+        )
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
 @app.post("/api/adr/drafts/{draft_id}/backtest")
 def backtest_adr_draft(draft_id: str, request: AdrBacktestRequest | None = None):
     try:
@@ -2112,6 +2134,7 @@ def review_adr_draft(draft_id: str, request: AdrReviewRequest):
             action=request.action,
             rating=request.rating,
             comment=request.comment,
+            reviewer=request.reviewer,
         )
     except AdrServiceError as error:
         raise HTTPException(error.status, str(error)) from error

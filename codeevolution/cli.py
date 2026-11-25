@@ -231,6 +231,27 @@ def cmd_adr(args):
                 print(detail["draft"]["markdown"])
             return
 
+        if command == "edit":
+            text = args.text or ""
+            if args.file:
+                text = Path(args.file).read_text(encoding="utf-8")
+            if not text.strip():
+                _fail("adr edit needs --file or --text with non-empty content", 2)
+            result = service.edit_draft(
+                args.draft_id,
+                markdown=text,
+                title=args.title,
+                editor=args.editor,
+                note=args.note,
+            )
+            if args.json:
+                _print_json(result)
+            else:
+                draft = result["draft"]
+                print(f"saved revision v{draft['revision']} (review reset to pending)")
+                print(f"title {draft['title']}")
+            return
+
         if command == "debug":
             detail = service.get_generation(args.generation_id)
             generation = detail["generation"]
@@ -353,6 +374,7 @@ def cmd_adr(args):
                 action=action,
                 rating=args.rating,
                 comment=args.comment,
+                reviewer=getattr(args, "reviewer", "") or "",
             )
             if args.json:
                 _print_json(result)
@@ -1442,6 +1464,16 @@ def main():
     debug.add_argument("generation_id")
     debug.set_defaults(handler=cmd_adr)
 
+    edit = adr_sub.add_parser("edit", help="Save an edited draft as a new revision")
+    edit.add_argument("draft_id")
+    edit.add_argument("--file", default="", help="Read the edited MADR Markdown from a file")
+    edit.add_argument("--text", default="", help="Edited MADR Markdown text")
+    edit.add_argument("--title", default="", help="Override the ADR title")
+    edit.add_argument("--editor", default="", help="Who made the edit (recorded in provenance)")
+    edit.add_argument("--note", default="", help="Short note describing the edit")
+    edit.add_argument("--json", action="store_true")
+    edit.set_defaults(handler=cmd_adr)
+
     export = adr_sub.add_parser("export", help="Write a draft into the repository ADR directory")
     export.add_argument("draft_id")
     export.add_argument("--json", action="store_true")
@@ -1491,6 +1523,7 @@ def main():
     group.add_argument("--reject", action="store_true")
     review.add_argument("--rating", type=int, choices=[1, 2, 3, 4, 5], default=None)
     review.add_argument("--comment", default="")
+    review.add_argument("--reviewer", default="", help="Reviewer name recorded in provenance")
     review.add_argument("--json", action="store_true")
     review.set_defaults(handler=cmd_adr)
 

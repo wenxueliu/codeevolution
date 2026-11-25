@@ -392,6 +392,88 @@ def validate_template(template: str) -> str:
     return text
 
 
+PROVENANCE_KEY = "provenance"
+PROVENANCE_FIELDS = (
+    "tool",
+    "draft_id",
+    "generation_id",
+    "member_id",
+    "source",
+    "model",
+    "prompt_digest",
+    "revision",
+    "evidence",
+    "editor",
+    "reviewer",
+    "reviewed_at",
+    "exported_at",
+)
+_PROVENANCE_HEADER_RE = re.compile(rf"^{PROVENANCE_KEY}\s*:")
+
+
+def _yaml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _provenance_lines(provenance: dict[str, Any]) -> list[str]:
+    lines = [f"{PROVENANCE_KEY}:"]
+    for key in PROVENANCE_FIELDS:
+        value = provenance.get(key)
+        if isinstance(value, (list, tuple, set)):
+            items = [str(item).strip() for item in value if str(item).strip()]
+            if items:
+                rendered = ", ".join(_yaml_scalar(item) for item in items)
+                lines.append(f"  {key}: [{rendered}]")
+            continue
+        if value in (None, ""):
+            continue
+        lines.append(f"  {key}: {_yaml_scalar(value)}")
+    return lines
+
+
+def _strip_provenance(lines: list[str]) -> list[str]:
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        if not skipping and _PROVENANCE_HEADER_RE.match(line):
+            skipping = True
+            continue
+        if skipping:
+            if not line.strip() or line[:1] in {" ", "\t"}:
+                continue
+            skipping = False
+        kept.append(line)
+    return kept
+
+
+def inject_provenance(markdown: str, provenance: dict[str, Any]) -> str:
+    """Return ``markdown`` with a fresh provenance block in its frontmatter.
+
+    Export uses this so a record written into a repository says which draft,
+    generation, model and review produced it. An existing block is replaced
+    rather than appended, so exporting the same draft twice is idempotent.
+    """
+    block = _provenance_lines(provenance)
+    text = (markdown or "").replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    lines = text.split("\n") if text else []
+    if lines and lines[0].strip() == "---":
+        for index in range(1, len(lines)):
+            if lines[index].strip() in {"---", "..."}:
+                head = _strip_provenance(lines[1:index])
+                while head and not head[-1].strip():
+                    head.pop()
+                merged = ["---", *head, *block, "---", *lines[index + 1 :]]
+                return "\n".join(merged).rstrip("\n") + "\n"
+    merged = ["---", *block, "---", ""]
+    if text:
+        merged.append(text)
+    return "\n".join(merged).rstrip("\n") + "\n"
+
+
 def render_madr(
     decision: dict[str, Any],
     *,
@@ -430,9 +512,11 @@ __all__ = [
     "DEFAULT_STATUS",
     "HISTORY_KIND",
     "PROMPT_SOURCE_KINDS",
+    "PROVENANCE_KEY",
     "SOURCE_KINDS",
     "decision_schema_text",
     "default_prompt",
+    "inject_provenance",
     "normalize_decision",
     "prompt_digest",
     "render_madr",
