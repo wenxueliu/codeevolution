@@ -282,16 +282,35 @@
                     <button class="secondary sm" type="button" :disabled="adrCommitsLoading || adrScanRunning" data-testid="adr-commit-refresh" @click="loadAdrCommits">{{ adrCommitsLoading ? t('加载中...') : t('刷新') }}</button>
                     <label class="adr-check"><input v-model="adrCommitFilterCandidates" type="checkbox" data-testid="adr-commit-filter" /> <span>{{ t('仅显示候选') }}</span></label>
                     <label class="adr-check"><input v-model="adrForce" type="checkbox" data-testid="adr-commit-force" /> <span>{{ t('强制生成已跳过提交') }}</span></label>
-                    <span class="adr-commit-summary">{{ t('候选 {candidates} / 共 {total}', { candidates: adrCommitCandidateCount, total: adrCommits.length }) }}<template v-if="adrCommitsScanned"> · {{ t('已分诊 {scanned}', { scanned: adrCommitsScanned }) }}</template></span>
+                    <span class="adr-commit-summary">{{ t('候选 {candidates} / 共 {total}', { candidates: adrCommitCandidateCount, total: adrCommitsTotal }) }}<template v-if="adrCommitsScanned"> · {{ t('已分诊 {scanned}', { scanned: adrCommitsScanned }) }}</template></span>
                     <button class="primary sm" type="button" :disabled="!adrSelectedCommitShas.length || adrBatchSubmitting || adrBatchActive || adrActiveGeneration || adrSubmitting" data-testid="adr-batch-generate" @click="submitAdrBatchGeneration">{{ adrBatchSubmitting ? t('提交中...') : t('生成选中（{count}）', { count: adrSelectedCommitShas.length }) }}</button>
                   </div>
                   <p class="prompt-hint">{{ t('提交表格由规则过滤与 AI 分诊共同判定；勾选候选提交后批量生成，已跳过的提交需勾选“强制生成已跳过提交”。') }}</p>
+                  <div v-if="adrCommitsProgress.total" class="llm-progress adr-commit-progress" data-testid="adr-commit-progress">
+                    <div class="llm-progress-heading">
+                      <span>{{ t('已处理 {processed}/{total}（{percent}%）', { processed: adrCommitsProgress.processed, total: adrCommitsProgress.total, percent: adrCommitsProgress.percent }) }}</span>
+                      <strong>{{ t('生成中 {active}', { active: adrCommitsProgress.active }) }}</strong>
+                    </div>
+                    <div class="llm-progress-track"><span :style="{ width: `${adrCommitsProgress.percent}%` }"></span></div>
+                  </div>
+                  <div class="adr-stage-filters" role="group" :aria-label="t('按状态过滤提交')" data-testid="adr-stage-filters">
+                    <button
+                      v-for="option in adrStageOptions"
+                      :key="option.key || 'all'"
+                      type="button"
+                      class="adr-stage-chip"
+                      :class="{ active: adrStageFilter === option.key }"
+                      :aria-pressed="adrStageFilter === option.key"
+                      :data-testid="`adr-stage-filter-${option.key || 'all'}`"
+                      @click="filterAdrCommitsByStage(option.key)"
+                    ><span>{{ option.label }}</span><span class="adr-stage-chip-count">{{ option.count }}</span></button>
+                  </div>
                   <p v-if="adrCommitsError" class="explanation-error" data-testid="adr-commits-error">{{ adrCommitsError }}</p>
                   <div v-if="adrVisibleCommits.length" class="table-wrap">
                     <table data-testid="adr-commit-table">
                       <thead><tr>
                         <th class="adr-select-cell"><input type="checkbox" :checked="adrAllCandidatesSelected" :disabled="!adrCandidateShas.length" data-testid="adr-select-all-candidates" @change="toggleAllAdrCandidates" /></th>
-                        <th>{{ t('提交') }}</th><th>{{ t('说明') }}</th><th>{{ t('作者') }}</th><th>{{ t('日期') }}</th><th>{{ t('文件数') }}</th><th>{{ t('AI 判定') }}</th><th>{{ t('跳过原因') }}</th><th>{{ t('已生成草稿') }}</th><th>{{ t('操作') }}</th>
+                        <th>{{ t('提交') }}</th><th>{{ t('说明') }}</th><th>{{ t('作者') }}</th><th>{{ t('日期') }}</th><th>{{ t('文件数') }}</th><th>{{ t('状态') }}</th><th>{{ t('AI 判定') }}</th><th>{{ t('跳过原因') }}</th><th>{{ t('已生成草稿') }}</th><th>{{ t('操作') }}</th>
                       </tr></thead>
                       <tbody>
                         <tr v-for="commit in adrVisibleCommits" :key="commit.sha" :data-testid="`adr-commit-row-${commit.sha}`" :class="{ skipped: !commit.candidate }">
@@ -303,6 +322,7 @@
                           <td>{{ commit.author || '-' }}</td>
                           <td>{{ formatSnapshotTime(commit.committed_at) }}</td>
                           <td :title="(commit.files || []).join('\n')">{{ (commit.files || []).length }}</td>
+                          <td :data-testid="`adr-commit-stage-${commit.sha}`"><span class="term-status adr-stage-badge" :class="`adr-stage-${adrCommitStageKey(commit.stage)}`">{{ adrCommitStageText(commit) }}</span></td>
                           <td>
                             <span class="term-status" :class="commit.candidate ? 'accepted' : 'rejected'">{{ commit.candidate ? t('候选') : t('跳过') }}</span>
                             <small v-if="commit.change_type" class="adr-change-type">{{ adrChangeTypeText(commit.change_type) }}</small>
@@ -323,7 +343,11 @@
                             <span v-else class="muted">-</span>
                           </td>
                           <td class="adr-row-actions">
-                            <button class="secondary sm" type="button" :disabled="!adrCommitSelectable(commit) || adrGeneratingSha === commit.sha || adrBatchActive || adrScanRunning || adrActiveGeneration || adrSubmitting" :data-testid="`adr-commit-generate-${commit.sha}`" @click="generateAdrCommit(commit)">{{ adrGeneratingSha === commit.sha ? t('生成中...') : t('生成') }}</button>
+                            <button class="secondary sm" type="button" :disabled="adrCommitGenerateDisabled(commit)" :title="adrCommitGenerateDisabled(commit) ? adrCommitStageText(commit) : ''" :data-testid="`adr-commit-generate-${commit.sha}`" @click="generateAdrCommit(commit)">{{ adrCommitGenerateLabel(commit) }}</button>
+                            <button class="secondary sm" type="button" :disabled="adrCommitBacktestDisabled(commit)" :data-testid="`adr-commit-backtest-${commit.sha}`" @click="backtestAdrCommit(commit)">{{ t('回测') }}</button>
+                            <button class="secondary sm" type="button" :disabled="adrCommitReviewDisabled(commit)" :data-testid="`adr-commit-review-${commit.sha}`" @click="reviewAdrCommit(commit)">{{ t('审批') }}</button>
+                            <button class="secondary sm" type="button" :disabled="adrCommitExportDisabled(commit)" :title="adrCommitExportTitle(commit)" :data-testid="`adr-commit-export-${commit.sha}`" @click="exportAdrCommit(commit)">{{ t('导出') }}</button>
+                            <button v-if="commit.draft_id" class="secondary sm" type="button" :data-testid="`adr-commit-view-${commit.sha}`" @click="viewAdrCommit(commit)">{{ t('查看') }}</button>
                           </td>
                         </tr>
                       </tbody>
@@ -1026,6 +1050,17 @@ const DEFAULT_PROMPT_TEMPLATES = Object.freeze({
   aggregate: '你是调用链业务行为聚合器。请先说明当前函数自身行为，再结合直接子节点解释和调用关系，描述调用顺序、条件、返回值使用、异常传播、副作用和 API 契约影响；区分当前节点与子节点行为，不得臆测。\n\n当前函数：{qualified_name}\n当前函数自身解释：\n{local_explanation}\n直接子节点解释：\n{children_explanations}\n调用关系：\n{call_edges}\n\n用户补充分析要求：\n{guidance}\n\n请输出合法 JSON，不要输出 Markdown。\n\n输出结构：\n{agent_output_schema}',
 })
 
+const ADR_COMMIT_STAGES = Object.freeze([
+  'pending', 'queued', 'generating', 'generated', 'backtested',
+  'approved', 'rejected', 'exported', 'skipped', 'failed',
+])
+
+const ADR_COMMIT_STAGE_LABELS = Object.freeze({
+  pending: '待生成', queued: '排队中', generating: '生成中', generated: '待校验',
+  backtested: '待审批', approved: '已通过', rejected: '已驳回', exported: '已导出',
+  skipped: '已跳过', failed: '失败',
+})
+
 export default {
   components: { UiState, CallChainTree, LayerRules, TopologyGraph },
   props: { repoName: String },
@@ -1062,6 +1097,7 @@ export default {
       adrSuccessNote: '', adrSuccessDraftId: '',
       adrBatchId: '', adrBatch: null, adrBatchPollTimer: null, adrBatchNote: '', adrBatchSubmitting: false,
       adrCommits: [], adrCommitsLoading: false, adrCommitsError: '', adrCommitsScanned: 0, adrCommitsLoadedFor: '',
+      adrCommitsTotal: 0, adrCommitCounts: {}, adrCommitProgress: null, adrStageFilter: '', adrCommitsSeq: 0,
       adrScanRunning: false, adrCommitFilterCandidates: true, adrSelectedCommitShas: [], adrGeneratingSha: '',
       adrDrafts: [], adrDraftsLoading: false, adrDraftsError: '',
       adrExportingId: '', adrDeletingId: '', adrExportState: { id: '', path: '', error: '' },
@@ -1272,11 +1308,42 @@ export default {
       return this.t('可用占位符：{{service}}、{{repo}}、{{source_ref}}、{{commit_message}}、{{commit_files}}、{{diff}}、{{content}}、{{text}}、{{schema}}、{{existing_adrs}}；未使用的占位符生成时为空。')
     },
     adrCommitCandidateCount() { return this.adrCandidateShas.length },
+    adrCommitsProgress() {
+      const progress = this.adrCommitProgress || {}
+      const counts = this.adrCommitCounts || {}
+      const total = Number(progress.total ?? this.adrCommitsTotal ?? 0)
+      const processed = Number(progress.processed ?? (
+        (counts.approved || 0) + (counts.rejected || 0) + (counts.exported || 0) + (counts.skipped || 0) + (counts.failed || 0)
+      ))
+      const active = Number(progress.active ?? ((counts.queued || 0) + (counts.generating || 0)))
+      const percent = progress.percent != null
+        ? Number(progress.percent)
+        : (total ? Math.round((processed * 100) / total) : 0)
+      return {
+        total: Number.isFinite(total) ? total : 0,
+        processed: Number.isFinite(processed) ? processed : 0,
+        active: Number.isFinite(active) ? active : 0,
+        percent: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0,
+      }
+    },
+    adrStageOptions() {
+      const counts = this.adrCommitCounts || {}
+      return [
+        { key: '', label: this.t('全部'), count: this.adrCommitsProgress.total },
+        ...ADR_COMMIT_STAGES.map(stage => ({
+          key: stage,
+          label: this.adrCommitStageLabel(stage),
+          count: Number(counts[stage] || 0),
+        })),
+      ]
+    },
     adrCandidateShas() {
       return (this.adrCommits || []).filter(item => item.candidate).map(item => item.sha)
     },
     adrVisibleCommits() {
       const items = this.adrCommits || []
+      // The server already filtered by stage; keep skipped rows visible in that view.
+      if (this.adrStageFilter) return items
       if (!this.adrCommitFilterCandidates || this.adrForce) return items
       return items.filter(item => item.candidate)
     },
@@ -1337,6 +1404,9 @@ export default {
       const candidates = new Set(this.adrCommits.filter(item => item.candidate).map(item => item.sha))
       this.adrSelectedCommitShas = this.adrSelectedCommitShas.filter(sha => candidates.has(sha))
     },
+    adrStageFilter() {
+      this.adrSelectedCommitShas = []
+    },
     '$route': {
       async handler(route) {
         const snapshotId = snapshotIdFromRoute(route)
@@ -1354,6 +1424,7 @@ export default {
         this.adrSuccessNote = ''; this.adrSuccessDraftId = ''
         this.adrBatchId = ''; this.adrBatch = null; this.adrBatchNote = ''; this.adrBatchSubmitting = false
         this.adrCommits = []; this.adrCommitsError = ''; this.adrCommitsScanned = 0; this.adrCommitsLoadedFor = ''
+        this.adrCommitsTotal = 0; this.adrCommitCounts = {}; this.adrCommitProgress = null; this.adrStageFilter = ''; this.adrCommitsSeq += 1
         this.adrScanRunning = false; this.adrSelectedCommitShas = []; this.adrGeneratingSha = ''
         this.adrDrafts = []; this.adrDraftsError = ''; this.adrDetail = null; this.adrDetailError = ''
         this.adrBacktestingId = ''; this.adrBacktestError = ''
@@ -1491,6 +1562,60 @@ export default {
     adrCommitSelectable(commit) {
       return Boolean(commit?.candidate || this.adrForce)
     },
+    adrCommitStageKey(stage) {
+      return ADR_COMMIT_STAGES.includes(stage) ? stage : 'pending'
+    },
+    adrCommitStageLabel(stage) {
+      return this.t(ADR_COMMIT_STAGE_LABELS[this.adrCommitStageKey(stage)])
+    },
+    adrCommitStageText(commit) {
+      const stage = this.adrCommitStageKey(commit?.stage)
+      const label = this.adrCommitStageLabel(stage)
+      if (stage === 'generating') {
+        const progress = Math.max(0, Math.min(100, Math.round(Number(commit?.generation_progress || 0))))
+        return this.t('{stage} {percent}%', { stage: label, percent: progress })
+      }
+      return label
+    },
+    adrCommitCanGenerate(commit) {
+      const stage = this.adrCommitStageKey(commit?.stage)
+      if (stage === 'pending') return true
+      return stage === 'skipped' && this.adrForce
+    },
+    adrCommitGenerateDisabled(commit) {
+      return !this.adrCommitCanGenerate(commit) || !this.adrCommitSelectable(commit)
+        || this.adrGeneratingSha === commit.sha || this.adrBatchActive || this.adrScanRunning
+        || this.adrActiveGeneration || this.adrSubmitting
+    },
+    adrCommitGenerateLabel(commit) {
+      if (this.adrGeneratingSha === commit.sha) return this.t('生成中...')
+      const stage = this.adrCommitStageKey(commit?.stage)
+      if (stage === 'queued' || stage === 'generating') return this.adrCommitStageText(commit)
+      return this.t('生成')
+    },
+    adrCommitCanBacktest(commit) {
+      return Boolean(commit?.draft_id) && ['generated', 'backtested'].includes(this.adrCommitStageKey(commit?.stage))
+    },
+    adrCommitBacktestDisabled(commit) {
+      return !this.adrCommitCanBacktest(commit) || this.adrBacktestingId === commit.draft_id
+    },
+    adrCommitReviewDisabled(commit) {
+      return this.adrCommitStageKey(commit?.stage) !== 'backtested' || !commit?.draft_id
+    },
+    adrCommitCanExport(commit) {
+      return this.adrCommitStageKey(commit?.stage) === 'approved'
+        && Boolean(commit?.draft_id)
+        && this.adrDraftExportable({ review_status: commit.review_status })
+    },
+    adrCommitExportDisabled(commit) {
+      return !this.adrCommitCanExport(commit) || this.adrExportingId === commit.draft_id
+    },
+    adrCommitExportTitle(commit) {
+      if (this.adrCommitCanExport(commit)) return ''
+      return this.adrCommitStageKey(commit?.stage) === 'approved'
+        ? this.t('需人工审批通过后才能导出')
+        : this.adrCommitStageText(commit)
+    },
     adrDraftStatusKey(status) {
       const value = String(status || '').toLowerCase()
       return ['proposed', 'accepted', 'rejected', 'deprecated', 'superseded'].includes(value) ? value : 'unknown'
@@ -1529,23 +1654,38 @@ export default {
     applyAdrCommits(data) {
       this.adrCommits = data?.items || []
       this.adrCommitsScanned = Number(data?.scanned || 0)
+      this.adrCommitsTotal = Number(data?.total ?? this.adrCommits.length)
+      this.adrCommitCounts = data?.counts || {}
+      this.adrCommitProgress = data?.progress || null
       this.adrCommitsLoadedFor = this.snapshotId
       const selectable = new Set(
         this.adrCommits.filter(item => item.candidate || this.adrForce).map(item => item.sha),
       )
       this.adrSelectedCommitShas = this.adrSelectedCommitShas.filter(sha => selectable.has(sha))
     },
+    async filterAdrCommitsByStage(stage) {
+      const next = stage === this.adrStageFilter ? '' : stage
+      if (next === this.adrStageFilter) return
+      this.adrStageFilter = next
+      await this.loadAdrCommits()
+    },
     async loadAdrCommits() {
       if (!this.snapshotId) return
+      const seq = this.adrCommitsSeq + 1
+      this.adrCommitsSeq = seq
       this.adrCommitsLoading = true
       this.adrCommitsError = ''
       try {
-        const data = await this.$api.get('/api/adr/commits', { snapshot_id: this.snapshotId, limit: 50 })
-        this.applyAdrCommits(data)
+        const data = await this.$api.get('/api/adr/commits', {
+          snapshot_id: this.snapshotId,
+          limit: 50,
+          stage: this.adrStageFilter || undefined,
+        })
+        if (seq === this.adrCommitsSeq) this.applyAdrCommits(data)
       } catch (err) {
-        this.adrCommitsError = this.adrErrorMessage(err, '读取提交列表失败')
+        if (seq === this.adrCommitsSeq) this.adrCommitsError = this.adrErrorMessage(err, '读取提交列表失败')
       } finally {
-        this.adrCommitsLoading = false
+        if (seq === this.adrCommitsSeq) this.adrCommitsLoading = false
       }
     },
     async scanAdrCommits() {
@@ -1558,7 +1698,11 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ snapshot_id: this.snapshotId, limit: 50, refresh: false }),
         })
-        this.applyAdrCommits(data)
+        const items = data?.items || []
+        this.applyAdrCommits({
+          ...data,
+          items: this.adrStageFilter ? items.filter(item => item.stage === this.adrStageFilter) : items,
+        })
       } catch (err) {
         this.adrCommitsError = this.adrErrorMessage(err, 'AI 分诊提交失败')
       } finally {
@@ -1599,6 +1743,22 @@ export default {
         this.adrSubmitting = false
         this.adrGeneratingSha = ''
       }
+    },
+    backtestAdrCommit(commit) {
+      if (!commit?.draft_id || this.adrCommitBacktestDisabled(commit)) return
+      return this.runAdrBacktestForDraft({ id: commit.draft_id, backtest: commit.backtest })
+    },
+    reviewAdrCommit(commit) {
+      if (!commit?.draft_id || this.adrCommitReviewDisabled(commit)) return
+      return this.openAdrDraftForReview({ id: commit.draft_id })
+    },
+    exportAdrCommit(commit) {
+      if (!commit?.draft_id || this.adrCommitExportDisabled(commit)) return
+      return this.exportAdrDraft({ id: commit.draft_id, review_status: commit.review_status })
+    },
+    viewAdrCommit(commit) {
+      if (!commit?.draft_id) return
+      return this.openAdrDraft({ id: commit.draft_id })
     },
     async submitAdrBatchGeneration() {
       if (!this.snapshotId || this.adrBatchSubmitting || this.adrBatchActive) return
@@ -1862,8 +2022,13 @@ export default {
         const data = await this.$api.get(`/api/adr/generations/${encodeURIComponent(this.adrGeneration.id)}`)
         this.adrGeneration = data?.generation || this.adrGeneration
         this.adrDraft = data?.draft || null
-        if (this.adrActiveGeneration) this.scheduleAdrPoll()
-        else await this.afterAdrGeneration()
+        if (this.adrActiveGeneration) {
+          this.scheduleAdrPoll()
+          // Keep the commit table lifecycle status in sync while a generation runs.
+          await this.loadAdrCommits()
+        } else {
+          await this.afterAdrGeneration()
+        }
       } catch (err) {
         this.adrError = this.adrErrorMessage(err, '读取 ADR 生成状态失败')
         if (this.adrActiveGeneration) this.scheduleAdrPoll()
@@ -1889,6 +2054,8 @@ export default {
       }
       if (this.adrBatchActive) {
         this.scheduleAdrBatchPoll()
+        // Refresh the commit table alongside the batch poll so stages advance live.
+        await this.loadAdrCommits()
       } else if (wasActive) {
         this.adrBatchNote = this.t('批量生成结束：成功 {succeeded}，跳过 {skipped}，失败 {failed}。', this.adrBatchCounts)
         await Promise.all([this.loadAdrDrafts(), this.loadAdrCommits()])
@@ -1941,7 +2108,7 @@ export default {
         if (this.adrDetail?.draft?.id === draft.id) {
           this.adrDetail = { ...this.adrDetail, backtest: data?.backtest || null }
         }
-        await this.loadAdrDrafts()
+        await Promise.all([this.loadAdrDrafts(), this.loadAdrCommits()])
       } catch (err) {
         this.adrBacktestError = this.adrErrorMessage(err, '运行 ADR 回测失败')
       } finally {
@@ -1961,7 +2128,7 @@ export default {
         if (this.adrDetail?.draft?.id === draft.id) {
           this.adrDetail = { ...this.adrDetail, backtest: data?.backtest || null }
         }
-        await this.loadAdrDrafts()
+        await Promise.all([this.loadAdrDrafts(), this.loadAdrCommits()])
       } catch (err) {
         this.adrBacktestError = this.adrErrorMessage(err, '运行 ADR 回测失败')
       } finally {
@@ -1994,7 +2161,7 @@ export default {
         this.adrReviewNotice = action === 'approve'
           ? this.t('已通过审批，草稿可以导出。')
           : this.t('已驳回草稿。')
-        await this.loadAdrDrafts()
+        await Promise.all([this.loadAdrDrafts(), this.loadAdrCommits()])
       } catch (err) {
         this.adrReviewError = this.adrErrorMessage(err, '提交 ADR 审批失败')
       } finally {
@@ -2011,7 +2178,7 @@ export default {
         if (this.adrDetail?.draft?.id === draft.id && data?.draft) {
           this.adrDetail = { ...this.adrDetail, draft: data.draft }
         }
-        await this.loadAdrDrafts()
+        await Promise.all([this.loadAdrDrafts(), this.loadAdrCommits()])
       } catch (err) {
         this.adrExportState = { id: draft.id, path: '', error: this.adrErrorMessage(err, '导出 ADR 草稿失败') }
       } finally {
@@ -2981,6 +3148,24 @@ td code { color: #666; word-break: break-all; }
 .adr-row-actions .danger { background: #fcebed; color: #b8324a; }
 .adr-exported { display: block; margin-top: 3px; color: #23764a; font-size: 10px; }
 .adr-commit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.adr-commit-progress { margin: 8px 0 10px; }
+.adr-stage-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.adr-stage-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d7dbe3; border-radius: 12px; padding: 3px 9px; background: #fff; color: #555; font-size: 11px; cursor: pointer; }
+.adr-stage-chip:hover { border-color: #b9c2d0; }
+.adr-stage-chip.active { border-color: #2a6496; background: #eef7ff; color: #1f5c8c; }
+.adr-stage-chip-count { border-radius: 8px; padding: 0 5px; background: #f0f1f5; color: #666; font-size: 10px; }
+.adr-stage-chip.active .adr-stage-chip-count { background: #d9ebfb; color: #1f5c8c; }
+.adr-stage-badge { display: inline-block; white-space: nowrap; }
+.adr-stage-pending { background: #f0f1f5; color: #666; }
+.adr-stage-queued { background: #eaf2fb; color: #2a6496; }
+.adr-stage-generating { background: #fff4dc; color: #8a6413; }
+.adr-stage-generated { background: #f1edfb; color: #5b4a9b; }
+.adr-stage-backtested { background: #e8f4f6; color: #1e6b78; }
+.adr-stage-approved { background: #e8f7ed; color: #23764a; }
+.adr-stage-rejected { background: #fcebed; color: #b8324a; }
+.adr-stage-exported { background: #dff3e6; color: #1d6b42; }
+.adr-stage-skipped { background: #f0f1f5; color: #888; }
+.adr-stage-failed { background: #fcebed; color: #b8324a; }
 .adr-commit-summary { color: #666; font-size: 11px; }
 .adr-commit-sha { color: #2a6496; font-size: 11px; }
 .adr-commit-subject { min-width: 180px; }

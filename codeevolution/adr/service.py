@@ -48,6 +48,18 @@ MAX_HISTORY_CANDIDATES = 100
 MAX_TRIAGE_COMMITS = 60
 TRIAGE_BATCH_SIZE = 12
 BACKTEST_VERDICTS = ("consistent", "partial", "contradicted", "unverifiable")
+COMMIT_STAGES = (
+    "pending",
+    "queued",
+    "generating",
+    "generated",
+    "backtested",
+    "approved",
+    "rejected",
+    "exported",
+    "skipped",
+    "failed",
+)
 EXPORT_DIR_CANDIDATES = ("docs/adr", "doc/adr", "docs/decisions", "adr")
 
 
@@ -348,55 +360,95 @@ class AdrService:
 
     # ── commit table + AI triage ─────────────────────────────────────
 
-    def _scan_item(self, commit: dict[str, Any], scan: dict[str, Any] | None, draft: dict[str, Any] | None) -> dict[str, Any]:
+    @staticmethod
+    def _commit_stage(candidate: bool, draft: dict[str, Any] | None, generation: dict[str, Any] | None) -> str:
+        if draft:
+            if draft.get("exported_path"):
+                return "exported"
+            review = draft.get("review_status")
+            if review == "approved":
+                return "approved"
+            if review == "rejected":
+                return "rejected"
+            backtest = draft.get("backtest") or {}
+            if backtest.get("status") == "ready":
+                return "backtested"
+            return "generated"
+        if generation:
+            status = generation.get("status")
+            if status == "queued":
+                return "queued"
+            if status == "running":
+                return "generating"
+            if status == "failed":
+                return "failed"
+            if status == "skipped":
+                return "skipped"
+        return "pending" if candidate else "skipped"
+
+    def _scan_item(
+        self,
+        commit: dict[str, Any],
+        scan: dict[str, Any] | None,
+        draft: dict[str, Any] | None,
+        generation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         rule_candidate = bool(commit["significant"])
         if scan is None:
             if rule_candidate:
                 candidate, reason = True, ""
             else:
                 candidate, reason = False, "仅修改文档、测试或 lockfile"
-            return {
-                "sha": commit["sha"],
-                "subject": commit["subject"],
-                "author": commit["author"],
-                "committed_at": commit["committed_at"],
-                "files": commit["files"],
-                "rule_candidate": rule_candidate,
-                "ai_candidate": None,
-                "candidate": candidate,
-                "skip_reason": reason,
-                "change_type": "",
-                "scanned": False,
-                "generation_id": "",
-                "draft_id": draft["id"] if draft else "",
-                "draft_title": draft["title"] if draft else "",
-                "draft_status": draft["status"] if draft else "",
-                "review_status": draft.get("review_status") if draft else "",
-            }
-        ai_candidate = scan.get("ai_candidate")
-        if not scan.get("rule_candidate"):
-            candidate, reason = False, scan.get("rule_reason") or "仅修改文档、测试或 lockfile"
-        elif ai_candidate is None:
-            candidate, reason = True, scan.get("ai_reason") or "AI 分诊未完成，可手动生成"
+            ai_candidate = None
+            change_type = ""
+            scanned = False
+            rule_candidate_value = rule_candidate
         else:
-            candidate, reason = bool(ai_candidate), scan.get("ai_reason", "")
+            ai_candidate = scan.get("ai_candidate")
+            rule_candidate_value = bool(scan.get("rule_candidate"))
+            if not rule_candidate_value:
+                candidate, reason = False, scan.get("rule_reason") or "仅修改文档、测试或 lockfile"
+            elif ai_candidate is None:
+                candidate, reason = True, scan.get("ai_reason") or "AI 分诊未完成，可手动生成"
+            else:
+                candidate, reason = bool(ai_candidate), scan.get("ai_reason", "")
+            change_type = scan.get("change_type", "")
+            scanned = True
+
+        stage = self._commit_stage(candidate, draft, generation)
+        backtest = (draft or {}).get("backtest") or {}
         return {
             "sha": commit["sha"],
             "subject": commit["subject"],
             "author": commit["author"],
             "committed_at": commit["committed_at"],
             "files": commit["files"],
-            "rule_candidate": bool(scan.get("rule_candidate")),
+            "rule_candidate": rule_candidate_value,
             "ai_candidate": ai_candidate,
             "candidate": candidate,
             "skip_reason": reason,
-            "change_type": scan.get("change_type", ""),
-            "scanned": True,
-            "generation_id": "",
+            "change_type": change_type,
+            "scanned": scanned,
+            "stage": stage,
+            "generation_id": generation["id"] if generation else "",
+            "generation_status": generation.get("status", "") if generation else "",
+            "generation_stage": generation.get("stage", "") if generation else "",
+            "generation_progress": generation.get("progress", 0) if generation else 0,
             "draft_id": draft["id"] if draft else "",
             "draft_title": draft["title"] if draft else "",
             "draft_status": draft["status"] if draft else "",
             "review_status": draft.get("review_status") if draft else "",
+            "rating": draft.get("rating") if draft else None,
+            "exported_path": draft.get("exported_path") if draft else "",
+            "backtest": (
+                {
+                    "verdict": backtest.get("verdict", ""),
+                    "confidence": backtest.get("confidence"),
+                    "status": backtest.get("status", ""),
+                }
+                if backtest
+                else None
+            ),
         }
 
     def list_commits(
@@ -407,8 +459,11 @@ class AdrService:
         until: str = "",
         limit: int = 50,
         include_merges: bool = False,
+        stage: str = "",
     ) -> dict[str, Any]:
         member_id = _member_id(member)
+        if stage and stage not in COMMIT_STAGES:
+            raise AdrServiceError(f"unknown commit stage: {stage}")
         repo_root = self._repo_root(member)
         try:
             commits = git_source.list_commits(
@@ -423,19 +478,46 @@ class AdrService:
         scans = {scan["sha"]: scan for scan in self.store.list_scans(member_id)}
         drafts = {
             draft["source_ref"]: draft
-            for draft in self.store.list_drafts(member_id, limit=500)
+            for draft in self.list_drafts(member_id, limit=500)
             if draft["source_kind"] == "commit"
         }
+        latest_generation: dict[str, dict[str, Any]] = {}
+        for generation in self.store.list_generations(member_id=member_id, limit=500):
+            if generation["source_kind"] != "commit":
+                continue
+            latest_generation.setdefault(generation["source_ref"], generation)
         items = [
-            self._scan_item(commit, scans.get(commit["sha"]), drafts.get(commit["sha"]))
+            self._scan_item(
+                commit,
+                scans.get(commit["sha"]),
+                drafts.get(commit["sha"]),
+                latest_generation.get(commit["sha"]),
+            )
             for commit in commits
         ]
+        counts = {stage_name: 0 for stage_name in COMMIT_STAGES}
+        for item in items:
+            counts[item["stage"]] = counts.get(item["stage"], 0) + 1
+        total = len(items)
+        terminal = sum(
+            counts.get(name, 0)
+            for name in ("approved", "rejected", "exported", "skipped", "failed")
+        )
+        filtered = [item for item in items if not stage or item["stage"] == stage]
         return {
             "member_id": member_id,
             "repo": str(repo_root),
-            "items": items,
-            "total": len(items),
+            "items": filtered,
+            "total": total,
             "scanned": sum(1 for item in items if item["scanned"]),
+            "counts": counts,
+            "stage": stage,
+            "progress": {
+                "total": total,
+                "processed": terminal,
+                "active": counts.get("queued", 0) + counts.get("generating", 0),
+                "percent": int(round(terminal * 100 / total)) if total else 0,
+            },
         }
 
     def scan_commits(

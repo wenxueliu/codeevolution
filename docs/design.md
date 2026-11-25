@@ -234,6 +234,10 @@ ADR 不只是被读取的事实，核心是**用模型生成**：从 git 提交�
   噪声，再由「提交分诊」提示词（批量 12 条/次）判断 bug fix、lint、test-only 等是否值得
   记录；判定缓存到 `adr_commit_scans`（按 `member + sha`），表格支持单选/勾选批量生成
   （`adr gen --commits`、`POST /api/adr/generations/batch`）。`force` 可绕过分诊与噪声过滤。
+  每个 commit 投影生命周期状态：`pending`（待生成）、`queued`、`generating`（生成中）、
+  `generated`（待校验）、`backtested`（待审批）、`approved`/`rejected`、`exported`、
+  `skipped`、`failed`；`GET /api/adr/commits` 同时返回各状态计数、已处理进度
+  （processed/total/percent）与 `stage` 过滤参数。
 - **输出模板**：默认内置 MADR 4.0（`{{frontmatter}} {{title}} {{context}} {{drivers}}
   {{options}} {{outcome}} {{consequences}} {{confirmation}} {{options_detail}}
   {{evidence}} {{service}} {{date}} {{status}}`），按服务版本化覆盖；`{{title}}` 必填。

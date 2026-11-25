@@ -287,16 +287,21 @@ def cmd_adr(args):
                     until=args.until,
                     limit=args.limit,
                     include_merges=args.include_merges,
+                    stage=getattr(args, "stage", "") or "",
                 )
             if args.json:
                 _print_json(result)
             else:
+                progress = result.get("progress") or {}
+                print(
+                    f"progress: {progress.get('processed', 0)}/{progress.get('total', 0)}"
+                    f" ({progress.get('percent', 0)}%), active={progress.get('active', 0)}"
+                )
                 for item in result["items"]:
-                    mark = "Y" if item["candidate"] else "-"
                     reason = item["skip_reason"] or item.get("change_type") or ""
                     draft = f" -> {item['draft_title']}" if item.get("draft_title") else ""
                     print(
-                        f"{item['sha'][:10]}  {mark}  {item['subject'][:60]:60s}"
+                        f"{item['sha'][:10]}  {item['stage']:<10} {item['subject'][:56]:56s}"
                         f"  {reason}{draft}"
                     )
             return
@@ -1449,6 +1454,13 @@ def main():
     commits.add_argument("--until", default="")
     commits.add_argument("--limit", type=int, default=50)
     commits.add_argument("--include-merges", action="store_true")
+    commits.add_argument(
+        "--stage",
+        default="",
+        choices=["", "pending", "queued", "generating", "generated", "backtested",
+                 "approved", "rejected", "exported", "skipped", "failed"],
+        help="Only print commits at this lifecycle stage",
+    )
     commits.add_argument("--scan", action="store_true", help="Run the AI triage before printing")
     commits.add_argument("--refresh", action="store_true", help="Re-run triage for cached commits")
     commits.add_argument("--json", action="store_true")

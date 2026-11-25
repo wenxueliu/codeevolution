@@ -36,25 +36,48 @@ function commitItems() {
       sha: 'sha-feat', subject: 'feat: add payment gateway', author: 'alice',
       committed_at: '2026-11-20T10:00:00Z', files: ['src/gateway.rs', 'src/router.rs'],
       rule_candidate: true, ai_candidate: true, candidate: true, skip_reason: '',
-      change_type: 'feature', scanned: true, generation_id: '', draft_id: '', draft_title: '',
-      draft_status: '', review_status: '',
+      change_type: 'feature', scanned: true, stage: 'pending',
+      generation_id: '', generation_status: '', generation_stage: '', generation_progress: 0,
+      draft_id: '', draft_title: '', draft_status: '', review_status: '', rating: null, exported_path: '',
+      backtest: null,
     },
     {
       sha: 'sha-docs', subject: 'docs: update readme', author: 'bob',
       committed_at: '2026-11-19T10:00:00Z', files: ['README.md'],
       rule_candidate: false, ai_candidate: false, candidate: false,
-      skip_reason: '仅修改文档、测试或 lockfile', change_type: 'docs', scanned: true,
-      generation_id: '', draft_id: '', draft_title: '', draft_status: '', review_status: '',
+      skip_reason: '仅修改文档、测试或 lockfile', change_type: 'docs', scanned: true, stage: 'skipped',
+      generation_id: '', generation_status: '', generation_stage: '', generation_progress: 0,
+      draft_id: '', draft_title: '', draft_status: '', review_status: '', rating: null, exported_path: '',
+      backtest: null,
     },
     {
       sha: 'sha-pending', subject: 'chore: wire config', author: 'carol',
       committed_at: '2026-11-18T10:00:00Z', files: ['config/app.yaml'],
       rule_candidate: true, ai_candidate: null, candidate: true, skip_reason: '',
-      change_type: '', scanned: false, generation_id: '', draft_id: '', draft_title: '',
-      draft_status: '', review_status: '',
+      change_type: '', scanned: false, stage: 'pending',
+      generation_id: '', generation_status: '', generation_stage: '', generation_progress: 0,
+      draft_id: '', draft_title: '', draft_status: '', review_status: '', rating: null, exported_path: '',
+      backtest: null,
+    },
+    {
+      sha: 'sha-generated', subject: 'feat: add retry budget', author: 'dave',
+      committed_at: '2026-11-17T10:00:00Z', files: ['src/retry.rs'],
+      rule_candidate: true, ai_candidate: true, candidate: true, skip_reason: '',
+      change_type: 'feature', scanned: true, stage: 'generated',
+      generation_id: 'g1', generation_status: 'succeeded', generation_stage: 'draft_ready',
+      generation_progress: 100, draft_id: 'd1', draft_title: '测试 ADR', draft_status: 'proposed',
+      review_status: 'pending', rating: null, exported_path: '',
+      backtest: null,
     },
   ]
 }
+
+const COMMIT_COUNTS = {
+  pending: 2, queued: 0, generating: 0, generated: 1, backtested: 0,
+  approved: 0, rejected: 0, exported: 0, skipped: 1, failed: 0,
+}
+
+const COMMIT_PROGRESS = { total: 4, processed: 1, active: 0, percent: 25 }
 
 function mountKnowledge() {
   const posted = []
@@ -66,11 +89,12 @@ function mountKnowledge() {
   }
 
   const commitListing = () => ({
-    member_id: 'member-1', repo: '/repo', total: 3, scanned: 2, items: commitItems(),
+    member_id: 'member-1', repo: '/repo', total: 4, scanned: 2, stage: '',
+    counts: { ...COMMIT_COUNTS }, progress: { ...COMMIT_PROGRESS }, items: commitItems(),
   })
 
   const api = {
-    get: vi.fn(async (path) => {
+    get: vi.fn(async (path, query = {}) => {
       if (path === '/api/knowledge') {
         return { adr: { available: false, records: [], violations: [] } }
       }
@@ -86,7 +110,13 @@ function mountKnowledge() {
           ],
         }
       }
-      if (path === '/api/adr/commits') return commitListing()
+      if (path === '/api/adr/commits') {
+        const listing = commitListing()
+        if (query.stage) {
+          return { ...listing, stage: query.stage, items: listing.items.filter(item => item.stage === query.stage) }
+        }
+        return listing
+      }
       if (path === '/api/adr/template') return template
       if (path === '/api/adr/drafts') return { drafts }
       if (path === '/api/adr/drafts/d1') {
@@ -176,7 +206,7 @@ describe('ADR workbench integration', () => {
     expect(wrapper.find('[data-testid="adr-commit-table"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('feat: add payment gateway')
     expect(wrapper.vm.adrCommitFilterCandidates).toBe(true)
-    expect(wrapper.vm.adrCommitCandidateCount).toBe(2)
+    expect(wrapper.vm.adrCommitCandidateCount).toBe(3)
 
     // The default filter hides skipped commits; turn it off to inspect them.
     await wrapper.find('[data-testid="adr-commit-filter"]').setValue(false)
@@ -197,6 +227,55 @@ describe('ADR workbench integration', () => {
     const batch = posted.find(item => item.path === '/api/adr/generations/batch')
     expect(batch).toBeTruthy()
     expect(batch.body).toMatchObject({ snapshot_id: 'snapshot-1', commits: ['sha-feat'] })
+    wrapper.unmount()
+  })
+
+  it('renders lifecycle progress and filters commits by stage server-side', async () => {
+    const { wrapper, api } = await openWorkbench()
+
+    // Progress block above the commit table.
+    expect(wrapper.find('[data-testid="adr-commit-progress"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('已处理 1/4（25%）')
+    expect(wrapper.text()).toContain('生成中 0')
+
+    // Every commit exposes a lifecycle stage; generated maps to 待校验.
+    expect(wrapper.vm.adrCommits.every(item => typeof item.stage === 'string')).toBe(true)
+    expect(wrapper.vm.adrCommitsProgress).toMatchObject({ total: 4, processed: 1, active: 0, percent: 25 })
+    expect(wrapper.vm.adrCommitStageText({ stage: 'generating', generation_progress: 40 })).toBe('生成中 40%')
+    expect(wrapper.find('[data-testid="adr-commit-stage-sha-generated"]').text()).toContain('待校验')
+
+    // The 待校验 chip asks the server for that stage only.
+    await wrapper.find('[data-testid="adr-stage-filter-generated"]').trigger('click')
+    await flushPromises()
+
+    const commitCalls = api.get.mock.calls.filter(([path]) => path === '/api/adr/commits')
+    expect(commitCalls.at(-1)[1]).toMatchObject({ snapshot_id: 'snapshot-1', stage: 'generated' })
+    expect(wrapper.vm.adrStageFilter).toBe('generated')
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-generated"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adr-commit-stage-sha-generated"]').text()).toContain('待校验')
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-docs"]').exists()).toBe(false)
+
+    // Selecting 全部 clears the filter and requests the unfiltered list again.
+    await wrapper.find('[data-testid="adr-stage-filter-all"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.adrStageFilter).toBe('')
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps row actions aligned with the commit stage', async () => {
+    const { wrapper } = await openWorkbench()
+
+    // pending → 生成 enabled, later stages disabled.
+    expect(wrapper.find('[data-testid="adr-commit-generate-sha-feat"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="adr-commit-backtest-sha-feat"]').attributes('disabled')).toBeDefined()
+
+    // generated → 回测 enabled, 生成 disabled.
+    expect(wrapper.find('[data-testid="adr-commit-generate-sha-generated"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="adr-commit-backtest-sha-generated"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="adr-commit-review-sha-generated"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="adr-commit-export-sha-generated"]').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 

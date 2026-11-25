@@ -1935,6 +1935,7 @@ def list_adr_commits(
     until: str = Query("", max_length=100),
     limit: int = Query(50, ge=1, le=100),
     include_merges: bool = Query(False),
+    stage: str = Query("", max_length=40),
 ):
     member = _adr_member(snapshot_id, member_id)
     try:
@@ -1944,6 +1945,7 @@ def list_adr_commits(
             until=until,
             limit=limit,
             include_merges=include_merges,
+            stage=stage,
         )
     except AdrServiceError as error:
         raise HTTPException(error.status, str(error)) from error

@@ -351,6 +351,19 @@ def test_commit_table_triages_noise_and_caches_results(tmp_path):
         feature = by_subject["feat: add payment gateway"]
         assert docs["candidate"] is False and docs["scanned"] is False
         assert feature["rule_candidate"] is True
+        assert docs["stage"] == "skipped"
+        assert feature["stage"] == "pending"
+        assert listing["counts"]["pending"] == 1
+        assert listing["counts"]["skipped"] == 1
+        assert listing["progress"]["total"] == 2
+        assert listing["progress"]["processed"] == 1
+        assert listing["progress"]["percent"] == 50
+
+        pending_only = client.get(
+            "/api/adr/commits", params={"member_id": "member-1", "stage": "pending"}
+        ).json()
+        assert [item["subject"] for item in pending_only["items"]] == ["feat: add payment gateway"]
+        assert pending_only["counts"]["skipped"] == 1  # counts stay global
 
         scanned = client.post("/api/adr/commits/scan", json={"member_id": "member-1"}).json()
         assert scanned["scanned"] == 2
@@ -363,6 +376,44 @@ def test_commit_table_triages_noise_and_caches_results(tmp_path):
         again = client.post("/api/adr/commits/scan", json={"member_id": "member-1"}).json()
         assert again["scanned"] == 2
         assert len(prompts) == calls  # cached triage is not re-sent to the model
+
+
+def test_commit_stage_progress_follows_generation_and_review(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    def stage_of(sha):
+        result = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        return next(item for item in result["items"] if item["sha"] == sha)
+
+    with client:
+        scanned = client.post("/api/adr/commits/scan", json={"member_id": "member-1"}).json()
+        feature_sha = next(
+            item["sha"] for item in scanned["items"] if item["subject"] == "feat: add payment gateway"
+        )
+
+        detail = _generate(client, {"kind": "commit", "ref": feature_sha})
+        item = stage_of(feature_sha)
+        assert item["stage"] == "generated"
+        assert item["generation_status"] == "succeeded"
+
+        client.post(f"/api/adr/drafts/{detail['draft']['id']}/backtest")
+        assert stage_of(feature_sha)["stage"] == "backtested"
+
+        client.post(
+            f"/api/adr/drafts/{detail['draft']['id']}/review",
+            json={"action": "approve"},
+        )
+        assert stage_of(feature_sha)["stage"] == "approved"
+
+        client.post(f"/api/adr/drafts/{detail['draft']['id']}/export")
+        assert stage_of(feature_sha)["stage"] == "exported"
+
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        assert listing["counts"]["exported"] == 1
+        assert listing["counts"]["skipped"] == 1
+        assert listing["progress"]["processed"] == 2
+        assert listing["progress"]["percent"] == 100
+        assert listing["progress"]["active"] == 0
 
 
 def test_batch_generation_from_selected_commits(tmp_path):
