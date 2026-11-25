@@ -901,4 +901,26 @@ describe('repository and knowledge pages', () => {
     await knowledge.vm.$nextTick()
     expect(knowledge.text()).toContain('暂无知识数据')
   })
+  it('saves member aliases and base path from the communication settings dialog', async () => {
+    const { wrapper, api } = mountPage(Snapshots, {
+      '/api/scopes': { scopes: [{ id: 'scope-shop', name: 'shop' }] },
+      '/api/scopes/scope-shop/members': { members: [{ id: 'member-shop', display_name: 'orders', registered_path: '/workspace/orders' }] },
+      '/api/repository-members/member-shop/snapshots': { items: [{ id: 'snapshot-shop' }] },
+      '/api/repository-members/member-shop': { member: { id: 'member-shop', display_name: 'orders', declared_aliases: ['orders.internal', 'orders'], base_path: '/svc/orders' } },
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="member-config"]').trigger('click')
+    await wrapper.find('[data-testid="member-aliases-input"]').setValue('orders.internal, orders')
+    await wrapper.find('[data-testid="member-base-path-input"]').setValue('/svc/orders')
+    await wrapper.find('[data-testid="member-config-save"]').trigger('click')
+    await flushPromises()
+    expect(api.request).toHaveBeenCalledWith('/api/repository-members/member-shop', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ declared_aliases: ['orders.internal', 'orders'], base_path: '/svc/orders' }),
+    })
+    expect(wrapper.text()).toContain('配置已保存')
+    expect(api.get).toHaveBeenCalledWith('/api/scopes/scope-shop/members')
+    wrapper.unmount()
+  })
 })

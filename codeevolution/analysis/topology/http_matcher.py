@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 _CONFIRMED = "confirmed"
 _CANDIDATE = "candidate"
+_CONFIRMING_ALIAS_SOURCES = frozenset({"declared", "frozen_config", "config", "service_discovery"})
 _UNRESOLVED = "unresolved"
 _AMBIGUOUS = "ambiguous"
 _OUT_OF_SCOPE = "out_of_scope_or_unregistered"
@@ -340,7 +341,13 @@ class HttpTopologyMatcher:
                 reasons=("relative_url_without_unique_client_binding",),
             )
 
-        alias_members = _alias_members(authority, frozen_aliases)
+        matching_aliases = _matching_aliases(authority, frozen_aliases)
+        alias_members = {alias.member_id for alias in matching_aliases}
+        confirming_members = {
+            alias.member_id
+            for alias in matching_aliases
+            if alias.source in _CONFIRMING_ALIAS_SOURCES
+        }
         external_rules = self.known_external_registry.matches(fact)
         if len(alias_members) > 1:
             return self._decision(
@@ -446,9 +453,29 @@ class HttpTopologyMatcher:
             ConfidenceComponent("extraction", _clamp(fact.extraction_confidence), "frozen-observation"),
             ConfidenceComponent("reachability", 1.0, "entry-reachable-shortest-path"),
             ConfidenceComponent("protocol_identity", best_score, "http-method+route-template"),
-            ConfidenceComponent("target_identity", _clamp(alias_confidence), "frozen-service-alias"),
+            ConfidenceComponent(
+                "target_identity",
+                _clamp(alias_confidence),
+                "declared-service-alias"
+                if target_member_id in confirming_members
+                else "derived-name-alias",
+            ),
         )
         score = self._weighted_score(components)
+        if target_member_id not in confirming_members:
+            # A name-derived alias is evidence for a candidate only.  It can
+            # show the likely target in review, but identity confirmation stays
+            # a human/config decision.
+            return self._decision(
+                _CANDIDATE,
+                fact,
+                target_member_id=target_member_id,
+                target_entry_ids=tuple(item.entry_id for item in winners),
+                score=score,
+                components=components,
+                candidates=tuple(item.entry_id for _, item in ranked),
+                reasons=("derived_alias_requires_confirmation",),
+            )
         if score < self.rules.confirmed_threshold:
             return self._decision(
                 _CANDIDATE,
@@ -612,12 +639,12 @@ def _is_multi_wildcard(segment: str) -> bool:
     return segment in {"**", "{**path}", "<path:path>", "<path:rest>"}
 
 
-def _alias_members(authority: str, aliases: Iterable[HttpAlias]) -> set[str]:
-    return {
-        alias.member_id
+def _matching_aliases(authority: str, aliases: Iterable[HttpAlias]) -> tuple[HttpAlias, ...]:
+    return tuple(
+        alias
         for alias in aliases
         if canonical_authority(alias.authority) == authority
-    }
+    )
 
 
 def _external_path_prefix(value: str) -> str:

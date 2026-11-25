@@ -84,6 +84,7 @@ class GraphViewResolver:
                     snapshot.facts_digest,
                     artifact_key,
                     artifact.completeness,
+                    base_path=view_member.base_path,
                 )
             )
         resolved = ResolvedGraphView(

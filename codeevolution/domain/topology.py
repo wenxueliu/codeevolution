@@ -109,6 +109,29 @@ def canonical_aliases(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted(aliases))
 
 
+def canonical_base_path(value: str) -> str:
+    """Normalize a member-level route prefix without inventing segments.
+
+    A declared base path models gateway/router prefixes that are not visible in
+    the route decorator itself.  It is intentionally static: query strings,
+    fragments, absolute URLs and relative paths are rejected rather than
+    silently repaired.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if "://" in raw or raw.startswith("//"):
+        raise ValueError("base path must not be an absolute URL")
+    if "?" in raw or "#" in raw:
+        raise ValueError("base path must not contain query or fragment")
+    if not raw.startswith("/"):
+        raise ValueError("base path must start with '/'")
+    parts = [part for part in raw.split("/") if part]
+    if not parts:
+        return ""
+    return "/" + "/".join(parts)
+
+
 @dataclass(frozen=True)
 class Location:
     file: str
@@ -139,9 +162,11 @@ class SnapshotHandle:
     facts_digest: str
     communication_artifact_key: str
     completeness: str
+    base_path: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "declared_aliases", canonical_aliases(self.declared_aliases))
+        object.__setattr__(self, "base_path", canonical_base_path(self.base_path))
 
 
 @dataclass(frozen=True)

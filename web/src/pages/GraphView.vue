@@ -96,11 +96,13 @@
           <el-card v-if="artifact.candidates?.length || artifact.boundary_dependencies?.length" class="panel" shadow="never">
             <template #header><h2>{{ t('待确认与边界') }}</h2></template>
             <el-alert v-if="artifact.candidates?.length" :title="t('候选/未解析边（{count}）', { count: artifact.candidates.length })" type="warning" :closable="false" />
+            <el-alert v-if="hasDerivedAliasCandidates" :title="t('存在派生别名候选；确认成员别名并重建 View 后可转为确认边。')" type="warning" :closable="false" />
             <el-alert v-if="artifact.boundary_dependencies?.length" :title="t('Scope 外边界（{count}）', { count: artifact.boundary_dependencies.length })" type="info" :closable="false" />
             <el-table :data="[...(artifact.candidates || []), ...(artifact.boundary_dependencies || [])]" size="small" class="compact-table" :max-height="tableMaxHeight">
               <el-table-column :label="t('类型')" width="130"><template #default="{ row }"><el-tag size="small" :type="row.kind === 'known_external' ? 'info' : 'warning'">{{ row.kind }}</el-tag></template></el-table-column>
               <el-table-column :label="t('服务')" min-width="150"><template #default="{ row }">{{ serviceName(row.source_member_id || row.source?.member_id) }}</template></el-table-column>
-              <el-table-column :label="t('原因')" min-width="260"><template #default="{ row }">{{ row.reason || '—' }}</template></el-table-column>
+              <el-table-column :label="t('目标')" min-width="150"><template #default="{ row }">{{ targetName(row) }}</template></el-table-column>
+              <el-table-column :label="t('原因')" min-width="260"><template #default="{ row }">{{ candidateReason(row) }}</template></el-table-column>
             </el-table>
           </el-card>
 
@@ -153,6 +155,7 @@ export default {
       return [...byKey.values()]
     },
     resources() { return this.artifact?.resource_dependencies || [] },
+    hasDerivedAliasCandidates() { return (this.artifact?.candidates || []).some((item) => item.reason === 'derived_alias_requires_confirmation') },
     coverageRows() {
       const coverage = this.artifact?.coverage || {}
       const members = coverage.members || Object.fromEntries(Object.entries(coverage.member_details || {}).map(([id, detail]) => [id, detail.status]))
@@ -208,7 +211,8 @@ export default {
     async selectService(service) { this.selectedService = service; await this.loadAnalysis() },
     async loadAnalysis() { if (!this.selectedService) return; this.analysisLoading = true; this.analysisError = null; try { const query = { member_id: this.selectedService }; this.impact = await this.$api.get(`/api/graph-views/${this.viewId}/impact`, query); this.flow = this.path ? await this.$api.get(`/api/graph-views/${this.viewId}/flow`, { ...query, method: this.method || 'GET', path: this.path }) : {} } catch (error) { this.analysisError = error } finally { this.analysisLoading = false } },
     serviceName(id) { return this.services.find((item) => item.member_id === id)?.display_name || id || '—' },
-    targetName(edge) { return edge.target_member_id ? this.serviceName(edge.target_member_id) : (edge.target?.member_id ? this.serviceName(edge.target.member_id) : (edge.target_candidates || []).join(', ') || this.t('外部依赖')) },
+    targetName(edge) { return edge.target_member_id ? this.serviceName(edge.target_member_id) : (edge.target?.member_id ? this.serviceName(edge.target.member_id) : (edge.target_candidates || edge.candidate_member_ids || []).join(', ') || this.t('外部依赖')) },
+    candidateReason(row) { return row.reason === 'derived_alias_requires_confirmation' ? this.t('派生别名待确认；请在 Snapshots 页确认成员别名后重建 View。') : (row.reason || '—') },
     resourceLabel(item) { const resource = item.resource || {}; return resource.instance_id || resource.resource_id || resource.name || resource.type || item.observation_id || this.t('未知资源') },
     confidenceText(value) { return typeof value === 'object' ? value.level || value.score || '—' : value },
     statusText(value) { return this.t(({ complete: '完整', partial: '部分', available: '可用', unavailable: '不可用', unsupported: '不支持', failed: '失败' })[value] || value || '未知') },

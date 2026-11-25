@@ -58,7 +58,13 @@ class RepositoryCatalogService:
         return self.store.list_members(scope_id)
 
     def add_member(
-        self, scope_id: str, display_name: str, registered_path: str
+        self,
+        scope_id: str,
+        display_name: str,
+        registered_path: str,
+        *,
+        declared_aliases: tuple[str, ...] = (),
+        base_path: str = "",
     ) -> RepositoryMember:
         if self.store.get_scope(scope_id) is None:
             raise KeyError(scope_id)
@@ -78,6 +84,8 @@ class RepositoryCatalogService:
                 display_name,
                 str(path),
                 self._path_identity(path),
+                declared_aliases=declared_aliases,
+                base_path=base_path,
             )
         except sqlite3.IntegrityError as error:
             raise SnapshotStoreError("repository member is already registered") from error
@@ -88,9 +96,16 @@ class RepositoryCatalogService:
         *,
         display_name: str | None = None,
         registered_path: str | None = None,
+        declared_aliases: tuple[str, ...] | None = None,
+        base_path: str | None = None,
     ) -> RepositoryMember:
         if registered_path is None:
-            return self.store.update_member(member_id, display_name=display_name)
+            return self.store.update_member(
+                member_id,
+                display_name=display_name,
+                declared_aliases=declared_aliases,
+                base_path=base_path,
+            )
         candidate = Path(registered_path).expanduser()
         if os.name == "nt" and is_reparse_point(candidate):
             raise ValueError("repository path is a Windows reparse point")
@@ -106,6 +121,8 @@ class RepositoryCatalogService:
             display_name=display_name,
             registered_path=str(path),
             path_identity=self._path_identity(path),
+            declared_aliases=declared_aliases,
+            base_path=base_path,
         )
 
     def retire_member(self, member_id: str) -> RepositoryMember:

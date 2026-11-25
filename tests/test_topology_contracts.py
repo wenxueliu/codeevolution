@@ -100,3 +100,15 @@ def test_topology_cache_identity_uses_frozen_view_not_view_id(tmp_path):
     assert first.digest == second.digest
     assert first_spec.cache_key == second_spec.cache_key
     assert "view_id" not in first_spec.to_dict()
+
+
+def test_graph_view_digest_tracks_member_base_path_changes(tmp_path):
+    store = _store(tmp_path)
+    store.update_member("orders", base_path="/svc/orders")
+    first = store.create_current_view(member_ids=["orders"], view_id="base-path-1")
+    assert first.members[0].base_path == "/svc/orders"
+
+    store.update_member("orders", base_path="/svc/orders-v2")
+    second = store.create_current_view(member_ids=["orders"], view_id="base-path-2")
+    assert second.members[0].base_path == "/svc/orders-v2"
+    assert first.digest != second.digest

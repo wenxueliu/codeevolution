@@ -38,6 +38,29 @@ def _authority_matches_alias(authority: str, alias: str) -> bool:
     return bool(normalized_authority and normalized_authority == normalized_alias)
 
 
+def _derived_aliases(display_name: str) -> tuple[str, ...]:
+    """Derive review-only aliases from a frozen member display name.
+
+    These aliases never confirm an identity.  They let the UI show a candidate
+    instead of silently treating a conventional service hostname as external;
+    an administrator must still declare the alias before an edge is confirmed.
+    """
+    name = str(display_name or "").strip()
+    if not name:
+        return ()
+    variants: set[str] = {name, name.lower()}
+    lowered = name.lower()
+    if any(character in lowered for character in " _"):
+        variants.add(lowered.replace("_", "-").replace(" ", "-"))
+    for base in {name.lower().replace("_", "-").replace(" ", "-")}:
+        for suffix in ("-service", "-svc"):
+            if base.endswith(suffix):
+                variants.add(base[: -len(suffix)])
+            else:
+                variants.add(base + suffix)
+    return tuple(sorted(value for value in variants if value and " " not in value))
+
+
 def _message_match_key(
     messaging: Mapping[str, Any], *, include_channel: bool = True, include_routing_key: bool = True
 ) -> tuple[Any, ...]:
@@ -270,7 +293,13 @@ class TopologyArtifactBuilder:
             for entry in artifacts[member.snapshot_id].entries:
                 if entry.protocol.lower() not in {"http", "https"} or not entry.method or not entry.path_template:
                     continue
-                result.append(HttpInboundEndpoint(member.member_id, entry.entry_id, entry.method, entry.path_template))
+                result.append(HttpInboundEndpoint(
+                    member.member_id,
+                    entry.entry_id,
+                    entry.method,
+                    entry.path_template,
+                    base_path=member.base_path,
+                ))
         return sorted(result, key=lambda item: (item.member_id, item.entry_id))
 
     @staticmethod
@@ -279,7 +308,12 @@ class TopologyArtifactBuilder:
         for member in members:
             for value in member.declared_aliases:
                 aliases.append(HttpAlias(member.member_id, value, source="declared", confidence=0.95))
-        return sorted(aliases, key=lambda item: (item.authority, item.member_id))
+            declared = {value.strip().lower() for value in member.declared_aliases}
+            for value in _derived_aliases(member.display_name):
+                if value.lower() in declared:
+                    continue
+                aliases.append(HttpAlias(member.member_id, value, source="derived-name", confidence=0.40))
+        return sorted(aliases, key=lambda item: (item.authority, item.member_id, item.source))
 
     @staticmethod
     def _http_observation(member: SnapshotHandle, observation: CommunicationObservation) -> HttpObservation:

@@ -34,10 +34,10 @@ from codeevolution.domain.analysis_snapshot import (
     ViewLifecycle,
     aggregate_run_status,
 )
-from codeevolution.domain.topology import canonical_aliases, canonical_digest
+from codeevolution.domain.topology import canonical_aliases, canonical_base_path, canonical_digest
 from codeevolution.platform import ensure_supported_storage_path, set_private_permissions
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 DEFAULT_TOPOLOGY_RULES_DIGEST = canonical_digest({"schema": "topology-rules/v1", "rules": []})
 
 # Retention is deliberately expressed in one place so an administrator can
@@ -221,6 +221,7 @@ CREATE TABLE repository_members (
     display_name TEXT NOT NULL, registered_path TEXT NOT NULL, path_identity TEXT NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, retired_at TEXT,
     declared_aliases_json TEXT NOT NULL DEFAULT '[]',
+    base_path TEXT NOT NULL DEFAULT '',
     UNIQUE(scope_id, display_name)
 );
 CREATE INDEX idx_members_scope_active ON repository_members(scope_id, retired_at);
@@ -381,6 +382,7 @@ CREATE TABLE graph_view_members (
     availability TEXT NOT NULL CHECK(availability IN ('available','unparsed','retired')),
     display_name TEXT NOT NULL,
     declared_aliases_json TEXT NOT NULL DEFAULT '[]',
+    base_path TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(view_id,member_id), UNIQUE(view_id,ordinal),
     CHECK((availability='available' AND snapshot_id IS NOT NULL)
        OR (availability!='available' AND snapshot_id IS NULL))
@@ -541,6 +543,10 @@ class AnalysisSnapshotSQLiteStore:
             connection.execute(
                 "ALTER TABLE graph_view_members ADD COLUMN declared_aliases_json TEXT NOT NULL DEFAULT '[]'"
             )
+        if "base_path" not in member_columns:
+            connection.execute(
+                "ALTER TABLE graph_view_members ADD COLUMN base_path TEXT NOT NULL DEFAULT ''"
+            )
 
         catalog_columns = {
             item["name"] for item in connection.execute("PRAGMA table_info(repository_members)")
@@ -548,6 +554,10 @@ class AnalysisSnapshotSQLiteStore:
         if "declared_aliases_json" not in catalog_columns:
             connection.execute(
                 "ALTER TABLE repository_members ADD COLUMN declared_aliases_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "base_path" not in catalog_columns:
+            connection.execute(
+                "ALTER TABLE repository_members ADD COLUMN base_path TEXT NOT NULL DEFAULT ''"
             )
 
         connection.execute(
@@ -575,6 +585,11 @@ class AnalysisSnapshotSQLiteStore:
             """UPDATE graph_view_members
                    SET declared_aliases_json=(SELECT declared_aliases_json FROM repository_members m WHERE m.id=graph_view_members.member_id)
                  WHERE declared_aliases_json='[]'"""
+        )
+        connection.execute(
+            """UPDATE graph_view_members
+                   SET base_path=(SELECT base_path FROM repository_members m WHERE m.id=graph_view_members.member_id)
+                 WHERE base_path=''"""
         )
         connection.execute(
             """CREATE TRIGGER IF NOT EXISTS trg_view_member_scope_insert
@@ -702,22 +717,25 @@ class AnalysisSnapshotSQLiteStore:
         *,
         member_id: str | None = None,
         declared_aliases: Sequence[str] = (),
+        base_path: str = "",
     ) -> RepositoryMember:
         if not display_name.strip() or not registered_path or not path_identity:
             raise SnapshotStoreError("member name, path and path identity are required")
         now = utc_now()
         aliases = canonical_aliases(declared_aliases)
+        normalized_base_path = canonical_base_path(base_path)
         item = RepositoryMember(
             member_id or str(uuid4()), scope_id, display_name.strip(), registered_path,
-            path_identity, now, now, declared_aliases=aliases,
+            path_identity, now, now, declared_aliases=aliases, base_path=normalized_base_path,
         )
         with self.connection() as connection, connection:
             connection.execute(
                 """INSERT INTO repository_members
-                   (id,scope_id,display_name,registered_path,path_identity,created_at,updated_at,declared_aliases_json)
-                   VALUES(?,?,?,?,?,?,?,?)""",
+                   (id,scope_id,display_name,registered_path,path_identity,created_at,updated_at,declared_aliases_json,base_path)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
                 (item.id, item.scope_id, item.display_name, item.registered_path,
-                 item.path_identity, item.created_at, item.updated_at, _canonical_json(list(item.declared_aliases))),
+                 item.path_identity, item.created_at, item.updated_at,
+                 _canonical_json(list(item.declared_aliases)), item.base_path),
             )
         return item
 
@@ -753,6 +771,8 @@ class AnalysisSnapshotSQLiteStore:
         display_name: str | None = None,
         registered_path: str | None = None,
         path_identity: str | None = None,
+        declared_aliases: Sequence[str] | None = None,
+        base_path: str | None = None,
     ) -> RepositoryMember:
         current = self.get_member(member_id)
         if current is None:
@@ -760,13 +780,22 @@ class AnalysisSnapshotSQLiteStore:
         name = current.display_name if display_name is None else display_name.strip()
         path = current.registered_path if registered_path is None else registered_path
         identity = current.path_identity if path_identity is None else path_identity
+        aliases = (
+            current.declared_aliases
+            if declared_aliases is None
+            else canonical_aliases(declared_aliases)
+        )
+        normalized_base_path = (
+            current.base_path if base_path is None else canonical_base_path(base_path)
+        )
         if not name or not path or not identity:
             raise SnapshotStoreError("member name, path and path identity are required")
         with self.connection() as connection, connection:
             connection.execute(
                 """UPDATE repository_members SET display_name=?,registered_path=?,
-                   path_identity=?,updated_at=? WHERE id=?""",
-                (name, path, identity, utc_now(), member_id),
+                   path_identity=?,declared_aliases_json=?,base_path=?,updated_at=? WHERE id=?""",
+                (name, path, identity, _canonical_json(list(aliases)),
+                 normalized_base_path, utc_now(), member_id),
             )
         return self.get_member(member_id)  # type: ignore[return-value]
 
@@ -2241,7 +2270,7 @@ class AnalysisSnapshotSQLiteStore:
                     raise SnapshotStoreError("scope must exist and be active")
                 rows = connection.execute(
                     """SELECT m.id AS member_id,m.scope_id,m.display_name,m.declared_aliases_json,
-                              m.retired_at,c.snapshot_id
+                              m.base_path,m.retired_at,c.snapshot_id
                         FROM repository_members m LEFT JOIN current_repository_snapshots c ON c.member_id=m.id
                         WHERE m.scope_id=? AND m.retired_at IS NULL ORDER BY m.id""",
                     (scope_id,),
@@ -2254,7 +2283,7 @@ class AnalysisSnapshotSQLiteStore:
                 placeholders = ",".join("?" for _ in selected)
                 rows = connection.execute(
                     f"""SELECT m.id AS member_id,m.scope_id,m.display_name,m.declared_aliases_json,
-                              m.retired_at,c.snapshot_id
+                              m.base_path,m.retired_at,c.snapshot_id
                         FROM repository_members m LEFT JOIN current_repository_snapshots c ON c.member_id=m.id
                         WHERE m.id IN ({placeholders}) ORDER BY m.id""",
                     tuple(selected),
@@ -2278,6 +2307,7 @@ class AnalysisSnapshotSQLiteStore:
                 GraphViewMember(
                     row["member_id"], ordinal, snapshot_id, availability,
                     row["display_name"], tuple(json.loads(row["declared_aliases_json"])),
+                    base_path=row["base_path"],
                 )
             )
         return self._create_view(mappings, scope_id=scope_id, selector=selector, view_id=view_id)
@@ -2294,7 +2324,7 @@ class AnalysisSnapshotSQLiteStore:
         placeholders = ",".join("?" for _ in member_ids)
         with self.connection() as connection:
             rows = connection.execute(
-                f"""SELECT id,scope_id,display_name,declared_aliases_json
+                f"""SELECT id,scope_id,display_name,declared_aliases_json,base_path
                     FROM repository_members WHERE id IN ({placeholders})""",
                 tuple(member_ids),
             ).fetchall()
@@ -2312,6 +2342,9 @@ class AnalysisSnapshotSQLiteStore:
                 canonical_aliases(item.declared_aliases)
                 if item.declared_aliases
                 else tuple(json.loads(metadata[item.member_id]["declared_aliases_json"])),
+                canonical_base_path(item.base_path)
+                if item.base_path
+                else canonical_base_path(metadata[item.member_id]["base_path"]),
             )
             for ordinal, item in enumerate(sorted(members, key=lambda item: item.member_id))
         ]
@@ -2332,13 +2365,14 @@ class AnalysisSnapshotSQLiteStore:
         now = now_dt.isoformat(timespec="microseconds")
         expires = (now_dt + timedelta(hours=24)).isoformat(timespec="microseconds")
         digest_body = {
-            "schema": "graph-view/v2",
+            "schema": "graph-view/v3",
             "scope_id": scope_id,
             "topology_rules_digest": DEFAULT_TOPOLOGY_RULES_DIGEST,
             "members": [
                 {"member_id": item.member_id, "snapshot_id": item.snapshot_id,
                  "availability": item.availability.value, "display_name": item.display_name,
-                 "declared_aliases": list(canonical_aliases(item.declared_aliases))}
+                 "declared_aliases": list(canonical_aliases(item.declared_aliases)),
+                 "base_path": canonical_base_path(item.base_path)}
                 for item in members
             ],
         }
@@ -2355,15 +2389,16 @@ class AnalysisSnapshotSQLiteStore:
                     """INSERT INTO graph_views
                        (id,digest,scope_id,identity_schema,topology_rules_digest,lifecycle,completeness,created_at,last_accessed_at,expires_at,selector_json)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                    (new_id, digest, scope_id, "graph-view/v2", DEFAULT_TOPOLOGY_RULES_DIGEST, ViewLifecycle.EPHEMERAL.value, completeness,
+                    (new_id, digest, scope_id, "graph-view/v3", DEFAULT_TOPOLOGY_RULES_DIGEST, ViewLifecycle.EPHEMERAL.value, completeness,
                      now, now, expires, _canonical_json(selector)),
                 )
                 for item in members:
                     connection.execute(
                         """INSERT INTO graph_view_members
-                           (view_id,ordinal,member_id,snapshot_id,availability,display_name,declared_aliases_json) VALUES(?,?,?,?,?,?,?)""",
+                           (view_id,ordinal,member_id,snapshot_id,availability,display_name,declared_aliases_json,base_path) VALUES(?,?,?,?,?,?,?,?)""",
                         (new_id, item.ordinal, item.member_id, item.snapshot_id, item.availability.value,
-                         item.display_name, _canonical_json(list(canonical_aliases(item.declared_aliases))),),
+                         item.display_name, _canonical_json(list(canonical_aliases(item.declared_aliases))),
+                         canonical_base_path(item.base_path)),
                     )
                     if item.snapshot_id:
                         self._insert_reference(
@@ -2548,6 +2583,7 @@ class AnalysisSnapshotSQLiteStore:
                     availability=ViewAvailability(item["availability"]),
                     display_name=item["display_name"],
                     declared_aliases=tuple(json.loads(item["declared_aliases_json"])),
+                    base_path=item["base_path"],
                 )
                 for item in members
             ),

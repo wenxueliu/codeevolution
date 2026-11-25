@@ -97,6 +97,7 @@ class RepositoryMember:
     updated_at: str
     retired_at: str | None = None
     declared_aliases: tuple[str, ...] = ()
+    base_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,7 @@ class GraphViewMember:
     availability: ViewAvailability
     display_name: str = ""
     declared_aliases: tuple[str, ...] = ()
+    base_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -213,7 +215,7 @@ class GraphView:
     members: tuple[GraphViewMember, ...] = ()
     scope_id: str | None = None
     topology_rules_digest: str = ""
-    identity_schema: str = "graph-view/v2"
+    identity_schema: str = "graph-view/v3"
 
 
 def aggregate_run_status(

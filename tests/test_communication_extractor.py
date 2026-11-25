@@ -181,3 +181,22 @@ def test_missing_protocol_adapter_is_unsupported_but_keeps_entry_inventory():
     http = next(item for item in artifact.collector_coverage if item.collector == "http")
     assert http.status.value == "unsupported"
     assert artifact.entries
+
+
+class _ConstantSources:
+    def snippet(self, path, start, end):
+        return 'requests.get(BASE + "/users/" + str(user_id))'
+
+    def read_text(self, path):
+        return 'BASE = "http://users.internal"\nAPI = BASE + "/v1"\n'
+
+
+def test_http_url_constant_concatenation_is_resolved_without_losing_dynamic_segments():
+    artifact = CommunicationFactExtractor().collect(
+        _Graph(), _ConstantSources(), CollectorRuleSet("sha256:rules", "rules/v1"),
+        snapshot_id="snapshot-1",
+    )
+
+    request = artifact.http_outbounds[0].payload["request"]
+    assert request["authority"] == "users.internal"
+    assert request["normalized_path"] == "/users/"

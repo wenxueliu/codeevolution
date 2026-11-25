@@ -297,3 +297,54 @@ def test_message_matching_applies_broker_wildcards_without_substring_matching():
         },
     )
     assert any(item["kind"] == "message" for item in payload["endpoint_dependencies"])
+
+
+def test_builder_applies_member_base_path_to_inbound_routes():
+    gateway = SnapshotHandle("gateway", "snap-gateway", "gateway", ("gateway.internal",), "facts", "artifact", "complete")
+    orders = SnapshotHandle(
+        "orders", "snap-orders", "orders", ("orders.internal",), "facts", "artifact", "complete",
+        base_path="/svc",
+    )
+    artifacts = {
+        "snap-gateway": _artifact(
+            "snap-gateway",
+            entries=(_entry("snap-gateway", "gateway.entry", "GET", "/gateway"),),
+            http=(_observation(
+                "http:base",
+                "gateway.entry",
+                {"request": {"method": "GET", "authority": "orders.internal", "normalized_path": "/svc/orders/42"}},
+            ),),
+        ),
+        "snap-orders": _artifact(
+            "snap-orders",
+            entries=(_entry("snap-orders", "orders.entry", "GET", "/orders/{id}"),),
+        ),
+    }
+    payload = TopologyArtifactBuilder().build(_view(gateway, orders), artifacts)
+    assert payload["endpoint_dependencies"][0]["target"]["entry_ids"] == ["orders.entry"]
+
+
+def test_builder_marks_name_derived_alias_as_candidate_that_requires_confirmation():
+    gateway = SnapshotHandle("gateway", "snap-gateway", "gateway", (), "facts", "artifact", "complete")
+    orders = SnapshotHandle("orders", "snap-orders", "orders", (), "facts", "artifact", "complete")
+    artifacts = {
+        "snap-gateway": _artifact(
+            "snap-gateway",
+            entries=(_entry("snap-gateway", "gateway.entry", "GET", "/gateway"),),
+            http=(_observation(
+                "http:derived",
+                "gateway.entry",
+                {"request": {"method": "GET", "authority": "orders", "normalized_path": "/orders"}},
+            ),),
+        ),
+        "snap-orders": _artifact(
+            "snap-orders",
+            entries=(_entry("snap-orders", "orders.entry", "GET", "/orders"),),
+        ),
+    }
+    payload = TopologyArtifactBuilder().build(_view(gateway, orders), artifacts)
+    assert payload["endpoint_dependencies"] == []
+    candidate = payload["candidates"][0]
+    assert candidate["kind"] == "candidate"
+    assert candidate["target_member_id"] == "orders"
+    assert candidate["reasons"] == ["derived_alias_requires_confirmation"]

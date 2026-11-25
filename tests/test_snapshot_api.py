@@ -96,3 +96,48 @@ def test_scope_delete_retires_catalog_members_without_deleting_snapshot_data(tmp
         assert client.get(f"/api/scopes/{scope['id']}/members").status_code == 200
         assert client.get(f"/api/scopes/{scope['id']}/members").json()["members"] == []
         assert _store.get_member(member["id"]).retired_at is not None
+
+
+def test_member_alias_and_base_path_api_round_trip_into_explicit_view(tmp_path):
+    client, store, _notifications = _client(tmp_path)
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+
+    with client:
+        scope = client.post("/api/scopes", json={"name": "shop"}).json()["scope"]
+        member = client.post(
+            f"/api/scopes/{scope['id']}/members",
+            json={
+                "display_name": "orders",
+                "registered_path": str(repo),
+                "declared_aliases": ["orders.internal"],
+                "base_path": "/svc/orders",
+            },
+        ).json()["member"]
+        assert member["declared_aliases"] == ["orders.internal"]
+        assert member["base_path"] == "/svc/orders"
+
+        patched = client.patch(
+            f"/api/repository-members/{member['id']}",
+            json={"declared_aliases": ["orders", "orders.internal"], "base_path": "/orders"},
+        )
+        assert patched.status_code == 200
+        assert patched.json()["member"]["declared_aliases"] == ["orders", "orders.internal"]
+        assert store.get_member(member["id"]).base_path == "/orders"
+
+        view = client.post(
+            "/api/graph-views",
+            json={"members": [{
+                "member_id": member["id"],
+                "availability": "unparsed",
+                "base_path": "/gateway/orders",
+            }]},
+        ).json()["view"]
+        assert view["members"][0]["base_path"] == "/gateway/orders"
+        assert view["members"][0]["declared_aliases"] == ["orders", "orders.internal"]
+
+        invalid = client.patch(
+            f"/api/repository-members/{member['id']}",
+            json={"base_path": "orders"},
+        )
+        assert invalid.status_code == 422

@@ -95,6 +95,7 @@ class CommunicationFactExtractor:
         observations = []
         unresolved = []
         entry_by_id = {entry.entry_id: entry for entry in entries}
+        constants_cache: dict[str, dict[str, str]] = {}
         if not _protocol_supported(graph, rules, "http_client") or not callable(getattr(graph, "http_client_calls", None)):
             return CollectorResult(
                 CollectorCoverage("http", "http-collector/v1", CollectorStatus.UNSUPPORTED, reason="graph_adapter_missing_http_client_calls"),
@@ -105,7 +106,10 @@ class CommunicationFactExtractor:
                 caller_id = row.get("caller_node_id")
                 caller = functions.get(caller_id)
                 call_line = int(row.get("call_line") or row.get("caller_line") or 1)
-                payload = _http_payload(graph, sources, caller, call_line, row.get("callee_name", ""))
+                payload = _http_payload(
+                    graph, sources, caller, call_line, row.get("callee_name", ""),
+                    constants_cache=constants_cache,
+                )
                 for entry in _entries_for_node(caller_id, paths, entry_by_id):
                     observation = self._observation(
                         "http", entry, caller, call_line, payload, row,
@@ -456,9 +460,21 @@ def _bounded_payload(payload, *, max_bytes=64 * 1024):
     }
 
 
-def _http_payload(graph, sources, caller, call_line, callee_name):
+def _http_payload(graph, sources, caller, call_line, callee_name, *, constants_cache=None):
     text = sources.snippet(caller.file_path, max(1, call_line - 2), call_line + 2) if caller else None
+    constants = (
+        _file_constants(sources, caller.file_path, constants_cache)
+        if caller is not None
+        else {}
+    )
+    expanded = _expand_http_text(text or "", constants) if constants else (text or "")
     raw = _first_url(text or "")
+    expanded_raw = _first_url(expanded)
+    if expanded_raw and (
+        (not raw)
+        or (expanded_raw.startswith("http") and not raw.startswith("http"))
+    ):
+        raw = expanded_raw
     method = _method(callee_name)
     sanitized = _sanitize_url(raw)
     if sanitized.startswith("http"):
@@ -470,7 +486,7 @@ def _http_payload(graph, sources, caller, call_line, callee_name):
     binding = None
     binding_candidate = None
     if path and not authority:
-        base = _first_absolute_url(text or "")
+        base = _first_absolute_url(expanded)
         if not base and caller is not None and callable(getattr(graph, "url_candidate_nodes", None)):
             try:
                 candidates = graph.url_candidate_nodes(caller.file_path, max(1, call_line - 10), call_line + 10)
@@ -500,7 +516,7 @@ def _http_payload(graph, sources, caller, call_line, callee_name):
     query_keys = sorted({key for key, _value in parse_qsl(parsed.query, keep_blank_values=True) if key}) if parsed else []
     scheme = (parsed.scheme or "") if parsed else ""
     if not scheme and binding and binding.get("base_authority"):
-        base_scheme = _first_absolute_url(text or "")
+        base_scheme = _first_absolute_url(expanded)
         scheme = urlsplit(base_scheme).scheme if base_scheme else ""
     client = _client_metadata(callee_name)
     request = {
@@ -520,6 +536,168 @@ def _http_payload(graph, sources, caller, call_line, callee_name):
     if binding:
         result["client_binding"] = binding
     return result
+
+
+_CONSTANT_ASSIGNMENT = re.compile(
+    r"(?m)^[ \t]*(?:(?:export|public|private|protected|static|final|readonly|const|let|var|val)\s+)*"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[^=\n]+)?=\s*(?P<expr>[^\n;]+)"
+)
+_LITERAL_TOKEN = re.compile(r'"([^"\n]*)"|\'([^\'\n]*)\'|`([^`\n]*)`')
+_EXPRESSION_TOKEN = re.compile(
+    r'\s*(?:"([^"\n]*)"|\'([^\'\n]*)\'|`([^`\n]*)`|([A-Za-z_][A-Za-z0-9_]*)|([+()]))'
+)
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_URL_PATTERN = re.compile(
+    r"""https?://[^\s'"`),]+
+      |"(?P<double>(?:https?://|/)[^"\n]*)"
+      |'(?P<single>(?:https?://|/)[^'\n]*)'
+      |`(?P<template>(?:https?://|/)[^`\n]*)`
+      |(?P<bare>/api(?:/[^\s'"`),]*)?)
+    """,
+    re.VERBOSE,
+)
+
+
+def _file_constants(sources, path, cache):
+    """Resolve simple same-file string constants for URL reconstruction.
+
+    This is deliberately not a data-flow engine.  It only accepts assignments
+    whose right side is a string literal, an f-string/template, or a ``+``
+    concatenation of literals and other resolvable constants.  Ambiguous
+    re-assignments are dropped.  A bounded cache keeps repeated calls cheap.
+    """
+    if cache is not None and path in cache:
+        return cache[path]
+    result: dict[str, str] = {}
+    reader = getattr(sources, "read_text", None)
+    text = reader(path) if callable(reader) else None
+    if isinstance(text, str) and len(text) <= 2_000_000:
+        assignments: dict[str, list[str]] = {}
+        for match in _CONSTANT_ASSIGNMENT.finditer(text):
+            name = match.group("name")
+            expression = match.group("expr").split("#", 1)[0].strip()
+            if not expression or len(expression) > 4096:
+                continue
+            assignments.setdefault(name, []).append(expression)
+        resolved: dict[str, str] = {}
+        for _ in range(4):
+            changed = False
+            for name, expressions in assignments.items():
+                if name in resolved:
+                    continue
+                values = [_resolve_constant(expression, resolved) for expression in expressions]
+                if any(value is None for value in values):
+                    continue
+                if len(set(values)) == 1:
+                    value = values[0]
+                    if value is not None and value and len(value) <= 4096:
+                        resolved[name] = value
+                        changed = True
+            if not changed:
+                break
+        result = resolved
+    if cache is not None:
+        cache[path] = result
+    return result
+
+
+def _resolve_constant(expression, resolved):
+    value = expression.strip()
+    if not value:
+        return None
+    if value in resolved:
+        return resolved[value]
+    f_match = re.match(r"""^[fF](["'])(.*)\1$""", value, re.S)
+    if f_match:
+        return _expand_template(f_match.group(2), resolved)
+    b_match = re.match(r"^`(.*)`$", value, re.S)
+    if b_match:
+        return _expand_template(b_match.group(1), resolved)
+    parts: list[str] = []
+    position = 0
+    while position < len(value):
+        token = _EXPRESSION_TOKEN.match(value, position)
+        if token is None:
+            return None
+        literal = token.group(1) or token.group(2) or token.group(3)
+        if literal is not None:
+            parts.append(literal)
+        elif token.group(4):
+            name = token.group(4)
+            if name not in resolved:
+                return None
+            parts.append(resolved[name])
+        position = token.end()
+    return "".join(parts) if parts else None
+
+
+def _expand_template(content, resolved):
+    def replace(match):
+        name = match.group(1) or match.group(2)
+        return resolved.get(name, match.group(0))
+
+    expanded = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, content)
+    if "{" in expanded or "}" in expanded:
+        return None
+    return expanded
+
+
+def _replace_outside_literals(text, constants):
+    """Quote-resolve constants in code outside string literals.
+
+    Wrapping the value in a JSON string keeps later ``+`` joining and
+    ``_first_url`` extraction usable without inventing expression syntax.
+    """
+    def replace(segment):
+        for name, value in sorted(constants.items(), key=lambda item: -len(item[0])):
+            if len(name) < 2:
+                continue
+            segment = re.sub(
+                r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])",
+                lambda _match, replacement=json.dumps(value): replacement,
+                segment,
+            )
+        return segment
+
+    result: list[str] = []
+    position = 0
+    for literal in _LITERAL_TOKEN.finditer(text):
+        result.append(replace(text[position:literal.start()]))
+        result.append(literal.group(0))
+        position = literal.end()
+    result.append(replace(text[position:]))
+    return "".join(result)
+
+
+def _expand_http_text(text, constants):
+    if not constants or not text:
+        return text
+    # Template fields (`{BASE}` / `${BASE}`) are unambiguous references, so
+    # they are expanded before treating the surrounding literal as plain text.
+    text = re.sub(
+        r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\{([A-Za-z_][A-Za-z0-9_]*)\}",
+        lambda match: constants.get(
+            match.group(1) or match.group(2), match.group(0)
+        ),
+        text,
+    )
+    text = _replace_outside_literals(text, constants)
+    text = re.sub(r'(?<![A-Za-z0-9_])[fF](["\'])', r"\1", text)
+    for _ in range(3):
+        joined = re.sub(
+            r'"([^"\n]*)"\s*\+\s*"([^"\n]*)"',
+            lambda match: '"' + match.group(1) + match.group(2) + '"',
+            text,
+        )
+        joined = re.sub(
+            r"'([^'\n]*)'\s*\+\s*'([^'\n]*)'",
+            lambda match: "'" + match.group(1) + match.group(2) + "'",
+            joined,
+        )
+        if joined == text:
+            break
+        text = joined
+    return text
 
 
 def _first_absolute_url(text):
@@ -616,8 +794,14 @@ def _message_payload(row, *, protocol, channel, direction):
 
 
 def _first_url(text):
-    match = re.search(r"(?:https?://[^\s'\"`),]+|/api(?:/[^\s'\"`),]*)?)", text)
-    return match.group(0).rstrip(")]}>,") if match else ""
+    match = _URL_PATTERN.search(text)
+    if not match:
+        return ""
+    for group in ("double", "single", "template"):
+        captured = match.group(group)
+        if captured is not None:
+            return captured
+    return match.group(0).rstrip(")]}>,")
 
 
 def _method(name):

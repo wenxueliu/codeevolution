@@ -55,6 +55,7 @@
               <label>
                 <input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="t('选择 {name}', { name: member.display_name })" @change="rememberMemberSnapshot(member)">
                 <b>{{ member.display_name }}</b>
+                <small v-if="(member.declared_aliases || []).length" class="member-aliases">{{ member.declared_aliases.join(', ') }}</small>
               </label>
               <span class="member-card-state" :class="{ unparsed: !member.current_snapshot_id }">{{ member.current_snapshot_id ? t('已发布') : t('未解析') }}</span>
             </div>
@@ -63,6 +64,7 @@
             <div class="member-actions">
               <router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">{{ t('查看知识') }}</router-link>
               <button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? t('检查中...') : t('检查改动') }}</button>
+              <button class="secondary sm" data-testid="member-config" @click="openMemberConfig(member)">{{ t('通信配置') }}</button>
             </div>
           </article>
         </div>
@@ -70,15 +72,38 @@
           <table><thead><tr><th><input :aria-label="t('选择 {name} 全部成员', { name: scope.name })" type="checkbox" :checked="scopeSelected(scope)" :indeterminate.prop="scopeIndeterminate(scope)" @change="toggleScope(scope, $event.target.checked)"></th><th>{{ t('成员') }}</th><th>{{ t('当前 Snapshot') }}</th><th>{{ t('状态') }}</th><th></th></tr></thead>
             <tbody><tr v-for="member in scope.members" :key="member.id">
               <td><input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="t('选择 {name}', { name: member.display_name })" @change="rememberMemberSnapshot(member)"></td>
-              <td>{{ member.display_name }}</td>
+              <td>{{ member.display_name }}<small v-if="(member.declared_aliases || []).length" class="member-aliases">{{ member.declared_aliases.join(', ') }}</small></td>
               <td><code>{{ member.current_snapshot_id || '—' }}</code></td>
               <td>{{ member.current_snapshot_id ? t('已发布') : t('未解析') }}<span v-if="member.check" data-testid="change-status" :class="`status-${member.check.status}`"> · {{ changeStatusText(member.check.status) }}</span></td>
-              <td class="member-actions"><router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">{{ t('查看知识') }}</router-link><button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? t('检查中...') : t('检查改动') }}</button></td>
+              <td class="member-actions"><router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">{{ t('查看知识') }}</router-link><button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? t('检查中...') : t('检查改动') }}</button><button class="secondary sm" data-testid="member-config" @click="openMemberConfig(member)">{{ t('通信配置') }}</button></td>
             </tr></tbody>
           </table>
         </div>
       </section>
       <p v-if="!scopes.length" class="muted">{{ t('暂无分析 Scope。') }}</p>
+    </div>
+
+    <div v-if="configMember" class="member-config-backdrop" role="dialog" aria-modal="true" aria-labelledby="member-config-title" @click.self="closeMemberConfig">
+      <section class="member-config-dialog" @keydown.esc="closeMemberConfig">
+        <header><h2 id="member-config-title">{{ t('成员通信配置') }}</h2><button class="secondary sm" @click="closeMemberConfig">{{ t('关闭') }}</button></header>
+        <p class="muted">{{ t('配置 {name} 的服务主机别名与路由前缀；保存后新建的 View 才会生效。', { name: configMember.display_name }) }}</p>
+        <label>
+          <span>{{ t('服务别名（逗号分隔）') }}</span>
+          <input v-model="configAliases" data-testid="member-aliases-input" :placeholder="t('例如 orders.internal, orders')" />
+          <small>{{ t('用于把调用 URL 的 host 唯一映射到该成员；未声明时不确认跨服务边。') }}</small>
+        </label>
+        <label>
+          <span>{{ t('路由基础路径') }}</span>
+          <input v-model="configBasePath" data-testid="member-base-path-input" :placeholder="t('例如 /svc/orders')" />
+          <small>{{ t('作为该成员所有入站路由的前缀参与匹配，留空表示无前缀。') }}</small>
+        </label>
+        <p v-if="configNotice" class="config-notice">{{ configNotice }}</p>
+        <p v-if="configError" class="config-error">{{ configError }}</p>
+        <div class="config-actions">
+          <button class="secondary" @click="closeMemberConfig">{{ t('取消') }}</button>
+          <button class="primary" data-testid="member-config-save" :disabled="configSaving" @click="saveMemberConfig">{{ configSaving ? t('保存中...') : t('保存配置') }}</button>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -95,7 +120,7 @@ const LAST_RUN_KEY = 'codeevolution:last-analysis-run-id'
 
 export default {
   components: { UiState },
-  data() { return { scopes: [], selectedIds: [], loading: false, error: null, view: null, activeRun: null, runBusy: false, pollTimer: null, checkingIds: {}, isMobile: false } },
+  data() { return { scopes: [], selectedIds: [], loading: false, error: null, view: null, activeRun: null, runBusy: false, pollTimer: null, checkingIds: {}, isMobile: false, configMember: null, configAliases: '', configBasePath: '', configSaving: false, configError: null, configNotice: '' } },
   computed: {
     selectedMemberIds() { return this.selectedIds.filter(id => this.memberIds.includes(id)) },
     memberIds() { return this.scopes.flatMap(scope => scope.members.map(member => member.id)) },
@@ -161,6 +186,33 @@ export default {
       }
     },
     memberName(memberId) { return this.scopes.flatMap(scope => scope.members).find(member => member.id === memberId)?.display_name || memberId },
+    openMemberConfig(member) {
+      this.configMember = member
+      this.configAliases = (member.declared_aliases || []).join(', ')
+      this.configBasePath = member.base_path || ''
+      this.configError = null
+      this.configNotice = ''
+    },
+    closeMemberConfig() {
+      if (this.configSaving) return
+      this.configMember = null
+      this.configError = null
+      this.configNotice = ''
+    },
+    async saveMemberConfig() {
+      if (!this.configMember) return
+      this.configSaving = true; this.configError = null; this.configNotice = ''
+      try {
+        const aliases = this.configAliases.split(',').map(item => item.trim()).filter(Boolean)
+        const response = await this.$api.request(`/api/repository-members/${encodeURIComponent(this.configMember.id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ declared_aliases: aliases, base_path: this.configBasePath.trim() }),
+        })
+        const updated = response.member || {}
+        Object.assign(this.configMember, updated)
+        this.configNotice = this.t('配置已保存；请新建 View 后重新生成拓扑以应用变更。')
+      } catch (error) { this.configError = error.message || this.t('保存失败') } finally { this.configSaving = false }
+    },
     scopeSelected(scope) { return scope.members.length > 0 && scope.members.every(member => this.selectedIds.includes(member.id)) },
     scopeIndeterminate(scope) { return !this.scopeSelected(scope) && scope.members.some(member => this.selectedIds.includes(member.id)) },
     toggleScope(scope, checked) {
@@ -269,7 +321,22 @@ th, td { padding: 10px; border-bottom: 1px solid var(--border, #ddd); text-align
 .run-status { margin-left: 8px; }
 .status-pending, .status-queued { color: #8b5e00; }.status-running { color: #1769aa; }.status-completed, .status-unchanged { color: #19703a; }.status-failed, .status-interrupted { color: #b3261e; }.status-cancelled { color: #666; }
 .muted { color: #777; }
+.member-aliases { display: block; margin-top: 3px; color: #777; font-size: 11px; font-weight: normal; overflow-wrap: anywhere; }
+.member-config-backdrop { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgb(15 23 42 / 55%); }
+.member-config-dialog { width: min(560px, 100%); max-height: calc(100vh - 36px); overflow: auto; padding: 20px; background: #fff; border-radius: 10px; box-shadow: 0 18px 60px rgb(0 0 0 / 35%); }
+.member-config-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.member-config-dialog h2 { margin: 0; font-size: 18px; }
+.member-config-dialog label { display: block; margin-top: 14px; }
+.member-config-dialog label span { display: block; margin-bottom: 6px; color: #333; font-size: 13px; font-weight: 600; }
+.member-config-dialog input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #cdd2dc; border-radius: 6px; font: inherit; }
+.member-config-dialog label small { display: block; margin-top: 5px; color: #777; font-size: 11px; line-height: 1.45; }
+.config-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.config-actions button { border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+.config-notice { margin: 12px 0 0; color: #19703a; font-size: 12px; }
+.config-error { margin: 12px 0 0; color: #b3261e; font-size: 12px; }
 @media (max-width: 720px) {
+  .member-config-backdrop { padding: 0; }
+  .member-config-dialog { width: 100vw; height: 100vh; height: 100dvh; max-height: none; border-radius: 0; }
   .page-header { display: block; margin-bottom: 14px; }
   .page-header h1 { font-size: 20px; }
   .page-header p { font-size: 12px; line-height: 1.5; }

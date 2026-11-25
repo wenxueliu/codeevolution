@@ -378,11 +378,15 @@ class ScopeUpdateRequest(BaseModel):
 class RepositoryMemberCreateRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=200)
     registered_path: str = Field(min_length=1, max_length=4000)
+    declared_aliases: list[str] = Field(default_factory=list, max_length=32)
+    base_path: str = Field(default="", max_length=500)
 
 
 class RepositoryMemberUpdateRequest(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
     registered_path: str | None = Field(default=None, min_length=1, max_length=4000)
+    declared_aliases: list[str] | None = Field(default=None, max_length=32)
+    base_path: str | None = Field(default=None, max_length=500)
 
 
 class SnapshotMetadataRequest(BaseModel):
@@ -403,6 +407,7 @@ class ExplicitGraphViewMemberRequest(BaseModel):
     availability: str = Field(pattern="^(available|unparsed|retired)$")
     display_name: str | None = Field(default=None, max_length=200)
     declared_aliases: list[str] = Field(default_factory=list, max_length=32)
+    base_path: str = Field(default="", max_length=500)
 
 
 class ExplicitGraphViewRequest(BaseModel):
@@ -822,7 +827,11 @@ def list_analysis_scope_members(scope_id: str):
 def create_repository_member(scope_id: str, request: RepositoryMemberCreateRequest):
     try:
         member = get_catalog_service().add_member(
-            scope_id, request.display_name, request.registered_path
+            scope_id,
+            request.display_name,
+            request.registered_path,
+            declared_aliases=tuple(request.declared_aliases),
+            base_path=request.base_path,
         )
         return {"member": _resource(member)}
     except KeyError as error:
@@ -838,6 +847,11 @@ def update_repository_member(member_id: str, request: RepositoryMemberUpdateRequ
             member_id,
             display_name=request.display_name,
             registered_path=request.registered_path,
+            declared_aliases=(
+                None if request.declared_aliases is None
+                else tuple(request.declared_aliases)
+            ),
+            base_path=request.base_path,
         )
         return {"member": _resource(member)}
     except KeyError as error:
@@ -1059,6 +1073,7 @@ def create_explicit_graph_view(request: ExplicitGraphViewRequest):
             availability=ViewAvailability(item.availability),
             display_name=item.display_name or "",
             declared_aliases=tuple(item.declared_aliases),
+            base_path=item.base_path,
         )
         for index, item in enumerate(request.members)
     ]
