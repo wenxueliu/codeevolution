@@ -1,6 +1,11 @@
 <template>
   <div v-if="repoName" class="assistant-shell">
-    <button v-if="!open" class="assistant-toggle" @click="openAssistant" :aria-expanded="open">代码问答</button>
+    <button v-if="!open" class="assistant-toggle" aria-label="代码问答" @click="openAssistant" :aria-expanded="open">
+      <span class="assistant-toggle-text">代码问答</span>
+      <span class="assistant-toggle-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h16a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-6.6l-4.7 3.7A1 1 0 0 1 7 19.9V17H4a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Zm2 5a1 1 0 1 0 0 2h12a1 1 0 1 0 0-2H6Zm0 4a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2H6Z"/></svg>
+      </span>
+    </button>
     <aside v-if="open" class="assistant-panel" role="dialog" aria-modal="true" aria-label="代码仓问答助手">
       <header>
         <div><strong>代码仓问答</strong><small>{{ repoName }} · 只读操作</small></div>
@@ -221,6 +226,7 @@ export default {
 
 <style scoped>
 .assistant-toggle { position: fixed; right: 0; top: 42%; z-index: 30; border: 0; border-radius: 8px 0 0 8px; background: #e94560; color: white; padding: 12px 9px; writing-mode: vertical-rl; cursor: pointer; box-shadow: 0 2px 12px #0003; }
+.assistant-toggle-icon { display: none; }
 .assistant-panel { position: fixed; z-index: 29; right: 0; top: 52px; bottom: 0; width: min(440px, 94vw); background: #fff; box-shadow: -4px 0 20px #0002; display: flex; flex-direction: column; }
 header { padding: 16px 18px; background: #1a1a2e; color: #fff; display: flex; justify-content: space-between; align-items: center; }
 header div { display: flex; flex-direction: column; gap: 3px; } header small { color: #aaa; } header button { border: 0; background: none; color: #fff; font-size: 24px; cursor: pointer; }
@@ -239,7 +245,9 @@ header div { display: flex; flex-direction: column; gap: 3px; } header small { c
 .recordings-heading { display: flex; justify-content: space-between; margin: 14px 0 6px; } .recordings-heading button { border: 0; background: none; color: #e94560; cursor: pointer; }
 .recording-entry { padding: 11px 0; border-bottom: 1px solid #eee; } .recording-entry > div { display: flex; justify-content: space-between; gap: 8px; } .recording-entry span, .recording-entry small { color: #888; font-size: 11px; } .recording-entry p { margin: 5px 0; font-size: 12px; } .recording-entry pre { max-height: 160px; } .run-result { margin-left: 8px; } .run-result.passed { color: #16834b; } .run-result.failed { color: #a82038; }
 @media (max-width: 600px) {
-  .assistant-toggle { top: auto; bottom: 18px; right: 14px; border-radius: 20px; padding: 10px 14px; writing-mode: horizontal-tb; }
+  .assistant-toggle { top: auto; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); right: 14px; width: 50px; height: 50px; display: grid; place-items: center; border-radius: 50%; padding: 0; writing-mode: horizontal-tb; }
+  .assistant-toggle-text { display: none; }
+  .assistant-toggle-icon { display: block; width: 23px; height: 23px; }
   .assistant-panel { inset: 0; width: 100vw; z-index: 60; }
   .checkpoint-form { grid-template-columns: 1fr; }
   .composer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }

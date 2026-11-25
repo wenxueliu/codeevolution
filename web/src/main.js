@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHashHistory } from 'vue-router'
 import 'element-plus/theme-chalk/base.css'
+import './mobile.css'
 import App from './App.vue'
 import { apiClient } from './api/apiClient.js'
 import { runAsync } from './composables/useAsync.js'

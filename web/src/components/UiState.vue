@@ -34,4 +34,9 @@ export default {
 .dismiss-btn:hover { background: #f5f5f7; }
 .is-error { border-color: #efc4cb; background: #fff4f5; color: #8d2437; }
 .is-loading { border-color: #dce2ec; background: #f4f7fb; }
+@media (max-width: 720px) {
+  .ui-state { padding: 14px; }
+  .ui-state-actions { flex-wrap: wrap; }
+  .ui-state-actions button { flex: 1 1 auto; min-height: 38px; }
+}
 </style>

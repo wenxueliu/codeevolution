@@ -395,4 +395,22 @@ onUnmounted(stopResize)
   .ct-column { max-height: none; overflow: visible; padding: 0 0 12px; }
   .ct-divider { display: none; }
 }
+@media (max-width: 720px) {
+  .ct-call-chain {
+    max-height: 58vh; overflow: auto; padding: 4px 6px 8px;
+    border: 1px solid #ececf2; border-radius: 6px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ct-column-title { font-size: 10px; }
+  .ct-root { font-size: 11px; padding: 5px 6px 7px; }
+  .ct-tree { font-size: 11px; }
+  .ct-row { row-gap: 2px; }
+  .ct-row code { font-size: 10px; }
+  .ct-name { overflow-wrap: anywhere; }
+  .ct-dim { display: block; flex-basis: 100%; padding-left: 13px; }
+  .ct-badge { min-width: 30px; }
+  :deep(.el-tree-node__content) { height: auto; min-height: 28px; align-items: flex-start; padding: 3px 0; }
+  :deep(.el-tree-node__expand-icon) { padding-top: 2px; }
+  .ct-rail, .ct-source-rail { padding: 0; }
+}
 </style>

@@ -315,4 +315,15 @@ export default {
   .layers-grid { grid-template-columns: 1fr; }
   .layers-meta { flex-wrap: wrap; }
 }
+@media (max-width: 720px) {
+  .layer-rules-summary { flex-wrap: wrap; gap: 6px 10px; }
+  .layer-rules-body { padding: 0 12px 14px; }
+  .layers-meta > div, .layers-meta > div:first-child { flex-basis: 100%; }
+  .layers-toolbar button { flex: 1 1 45%; min-height: 38px; }
+  .layers-dirty { flex-basis: 100%; margin-left: 0; }
+  .layers-editor { min-height: 300px; }
+  .layers-violations { max-height: 320px; }
+  .layers-group-heading { flex-wrap: wrap; padding: 8px 12px; }
+  .layers-violations td:first-child { padding-left: 12px; }
+}
 </style>

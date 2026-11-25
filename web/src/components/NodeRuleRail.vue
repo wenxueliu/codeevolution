@@ -125,4 +125,9 @@ function stepText(step) {
 button { border: 0; border-radius: 6px; padding: 6px 10px; font-size: 11px; cursor: pointer; }
 button:disabled { opacity: 0.55; cursor: default; }
 .sm { padding: 5px 10px; font-size: 11px; }
+@media (max-width: 720px) {
+  .nrr-api-actions button { min-height: 36px; }
+  .nrr-api-card { padding: 9px 10px; }
+  .nrr-title, .nrr-sub { overflow-wrap: anywhere; }
+}
 </style>

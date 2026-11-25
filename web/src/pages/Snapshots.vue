@@ -19,28 +19,64 @@
         </div>
         <p v-if="isActiveRun" class="muted">{{ t('正在轮询成员进度；离开后重新打开本页可继续查看此 Run。') }}</p>
         <p v-else-if="activeRun.status === 'partial'" class="muted">{{ t('部分成员未完成；已发布的 Snapshot 保持可用。') }}</p>
-        <table class="run-members"><thead><tr><th>{{ t('成员') }}</th><th>{{ t('状态') }}</th><th>{{ t('阶段') }}</th><th>{{ t('进度/错误') }}</th><th></th></tr></thead>
-          <tbody><tr v-for="member in activeRun.members || []" :key="member.member_id">
-            <td>{{ memberName(member.member_id) }}</td>
-            <td><span :class="`status-${member.attempt?.status || member.disposition}`">{{ attemptStatusText(member.attempt?.status || member.disposition) }}</span></td>
-            <td>{{ stageText(member.attempt?.stage) }}</td>
-            <td class="attempt-detail">{{ attemptDetail(member.attempt) }}</td>
-            <td><button v-if="canCancelMember(member)" class="secondary sm" :disabled="runBusy" @click="cancelMember(member.member_id)">{{ t('取消') }}</button></td>
-          </tr></tbody>
-        </table>
+        <div v-if="isMobile" class="run-member-cards">
+          <article v-for="member in activeRun.members || []" :key="member.member_id" class="run-member-card">
+            <div class="run-member-head">
+              <b>{{ memberName(member.member_id) }}</b>
+              <span :class="`status-${member.attempt?.status || member.disposition}`">{{ attemptStatusText(member.attempt?.status || member.disposition) }}</span>
+            </div>
+            <p><span>{{ t('阶段') }}</span>{{ stageText(member.attempt?.stage) }}</p>
+            <p class="run-member-detail"><span>{{ t('进度/错误') }}</span>{{ attemptDetail(member.attempt) }}</p>
+            <button v-if="canCancelMember(member)" class="secondary sm" :disabled="runBusy" @click="cancelMember(member.member_id)">{{ t('取消') }}</button>
+          </article>
+        </div>
+        <div v-else class="table-wrap">
+          <table class="run-members"><thead><tr><th>{{ t('成员') }}</th><th>{{ t('状态') }}</th><th>{{ t('阶段') }}</th><th>{{ t('进度/错误') }}</th><th></th></tr></thead>
+            <tbody><tr v-for="member in activeRun.members || []" :key="member.member_id">
+              <td>{{ memberName(member.member_id) }}</td>
+              <td><span :class="`status-${member.attempt?.status || member.disposition}`">{{ attemptStatusText(member.attempt?.status || member.disposition) }}</span></td>
+              <td>{{ stageText(member.attempt?.stage) }}</td>
+              <td class="attempt-detail">{{ attemptDetail(member.attempt) }}</td>
+              <td><button v-if="canCancelMember(member)" class="secondary sm" :disabled="runBusy" @click="cancelMember(member.member_id)">{{ t('取消') }}</button></td>
+            </tr></tbody>
+          </table>
+        </div>
       </section>
 
       <section v-for="scope in scopes" :key="scope.id" class="snapshot-scope">
         <h2>{{ scope.name }}</h2>
-        <table><thead><tr><th><input :aria-label="t('选择 {name} 全部成员', { name: scope.name })" type="checkbox" :checked="scopeSelected(scope)" :indeterminate.prop="scopeIndeterminate(scope)" @change="toggleScope(scope, $event.target.checked)"></th><th>{{ t('成员') }}</th><th>{{ t('当前 Snapshot') }}</th><th>{{ t('状态') }}</th><th></th></tr></thead>
-          <tbody><tr v-for="member in scope.members" :key="member.id">
-            <td><input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="t('选择 {name}', { name: member.display_name })" @change="rememberMemberSnapshot(member)"></td>
-            <td>{{ member.display_name }}</td>
-            <td><code>{{ member.current_snapshot_id || '—' }}</code></td>
-            <td>{{ member.current_snapshot_id ? t('已发布') : t('未解析') }}<span v-if="member.check" data-testid="change-status" :class="`status-${member.check.status}`"> · {{ changeStatusText(member.check.status) }}</span></td>
-            <td class="member-actions"><router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">{{ t('查看知识') }}</router-link><button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? t('检查中...') : t('检查改动') }}</button></td>
-          </tr></tbody>
-        </table>
+        <div v-if="isMobile" class="member-cards">
+          <label class="member-select-all">
+            <input :aria-label="t('选择 {name} 全部成员', { name: scope.name })" type="checkbox" :checked="scopeSelected(scope)" :indeterminate.prop="scopeIndeterminate(scope)" @change="toggleScope(scope, $event.target.checked)">
+            <span>{{ t('选择 {name} 全部成员', { name: scope.name }) }}</span>
+          </label>
+          <article v-for="member in scope.members" :key="member.id" class="member-card">
+            <div class="member-card-head">
+              <label>
+                <input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="t('选择 {name}', { name: member.display_name })" @change="rememberMemberSnapshot(member)">
+                <b>{{ member.display_name }}</b>
+              </label>
+              <span class="member-card-state" :class="{ unparsed: !member.current_snapshot_id }">{{ member.current_snapshot_id ? t('已发布') : t('未解析') }}</span>
+            </div>
+            <p class="member-card-snapshot"><span>{{ t('当前 Snapshot') }}</span><code>{{ member.current_snapshot_id || '—' }}</code></p>
+            <p v-if="member.check" data-testid="change-status" class="member-card-check" :class="`status-${member.check.status}`">{{ changeStatusText(member.check.status) }}</p>
+            <div class="member-actions">
+              <router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">{{ t('查看知识') }}</router-link>
+              <button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? t('检查中...') : t('检查改动') }}</button>
+            </div>
+          </article>
+        </div>
+        <div v-else class="table-wrap">
+          <table><thead><tr><th><input :aria-label="t('选择 {name} 全部成员', { name: scope.name })" type="checkbox" :checked="scopeSelected(scope)" :indeterminate.prop="scopeIndeterminate(scope)" @change="toggleScope(scope, $event.target.checked)"></th><th>{{ t('成员') }}</th><th>{{ t('当前 Snapshot') }}</th><th>{{ t('状态') }}</th><th></th></tr></thead>
+            <tbody><tr v-for="member in scope.members" :key="member.id">
+              <td><input v-model="selectedIds" type="checkbox" :value="member.id" :aria-label="t('选择 {name}', { name: member.display_name })" @change="rememberMemberSnapshot(member)"></td>
+              <td>{{ member.display_name }}</td>
+              <td><code>{{ member.current_snapshot_id || '—' }}</code></td>
+              <td>{{ member.current_snapshot_id ? t('已发布') : t('未解析') }}<span v-if="member.check" data-testid="change-status" :class="`status-${member.check.status}`"> · {{ changeStatusText(member.check.status) }}</span></td>
+              <td class="member-actions"><router-link v-if="member.current_snapshot_id" class="primary sm" :to="knowledgeLink(member.current_snapshot_id, member.display_name)" @click="rememberMemberSnapshot(member)">{{ t('查看知识') }}</router-link><button v-if="member.current_snapshot_id" class="secondary sm" :disabled="checkingIds[member.id]" @click="checkMember(member)">{{ checkingIds[member.id] ? t('检查中...') : t('检查改动') }}</button></td>
+            </tr></tbody>
+          </table>
+        </div>
       </section>
       <p v-if="!scopes.length" class="muted">{{ t('暂无分析 Scope。') }}</p>
     </div>
@@ -59,7 +95,7 @@ const LAST_RUN_KEY = 'codeevolution:last-analysis-run-id'
 
 export default {
   components: { UiState },
-  data() { return { scopes: [], selectedIds: [], loading: false, error: null, view: null, activeRun: null, runBusy: false, pollTimer: null, checkingIds: {} } },
+  data() { return { scopes: [], selectedIds: [], loading: false, error: null, view: null, activeRun: null, runBusy: false, pollTimer: null, checkingIds: {}, isMobile: false } },
   computed: {
     selectedMemberIds() { return this.selectedIds.filter(id => this.memberIds.includes(id)) },
     memberIds() { return this.scopes.flatMap(scope => scope.members.map(member => member.id)) },
@@ -67,13 +103,19 @@ export default {
     retryableMemberIds() { return (this.activeRun?.members || []).filter(member => RETRYABLE_ATTEMPT_STATUSES.includes(member.attempt?.status)).map(member => member.member_id) },
   },
   async created() {
+    this.syncViewport()
+    window.addEventListener('resize', this.syncViewport)
     await this.load()
     const runId = window.sessionStorage?.getItem(LAST_RUN_KEY)
     if (runId) await this.loadRun(runId, { quiet: true })
   },
-  beforeUnmount() { this.stopPolling() },
+  beforeUnmount() {
+    this.stopPolling()
+    window.removeEventListener('resize', this.syncViewport)
+  },
   methods: {
     t,
+    syncViewport() { this.isMobile = window.innerWidth <= 720 },
     async load() {
       this.loading = true; this.error = null
       try {
@@ -210,10 +252,54 @@ export default {
 .run-card .muted { margin: 8px 0; }
 .run-members { margin-top: 10px; }
 .snapshot-scope h2 { margin: 0 0 10px; }
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.page-header h1 { font-size: 24px; margin-bottom: 4px; }
+.page-header p { color: #777; font-size: 13px; }
+.actions { display: flex; gap: 8px; flex-shrink: 0; }
+.primary { border: 0; background: #e94560; color: #fff; }
+.secondary { border: 1px solid #cdd2dc; background: #fff; color: #444; }
+.primary, .secondary { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.actions button, .member-actions .primary, .member-actions .secondary { border-radius: 6px; padding: 8px 13px; cursor: pointer; }
+.member-actions .primary.sm, .member-actions .secondary.sm { padding: 6px 10px; font-size: 11px; }
+button:disabled { opacity: .55; cursor: wait; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px; border-bottom: 1px solid var(--border, #ddd); text-align: left; }
 .attempt-detail { max-width: 320px; word-break: break-word; }
 .run-status { margin-left: 8px; }
 .status-pending, .status-queued { color: #8b5e00; }.status-running { color: #1769aa; }.status-completed, .status-unchanged { color: #19703a; }.status-failed, .status-interrupted { color: #b3261e; }.status-cancelled { color: #666; }
 .muted { color: #777; }
+@media (max-width: 720px) {
+  .page-header { display: block; margin-bottom: 14px; }
+  .page-header h1 { font-size: 20px; }
+  .page-header p { font-size: 12px; line-height: 1.5; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .actions button { flex: 1 1 calc(50% - 4px); min-height: 40px; }
+  .snapshot-scope, .run-card { margin-bottom: 18px; }
+  .view-card { flex-wrap: wrap; gap: 6px 10px; }
+  .view-card small { flex-basis: 100%; overflow-wrap: anywhere; }
+  .run-header { display: block; }
+  .run-actions { margin-top: 8px; }
+  .snapshot-scope h2 { font-size: 18px; overflow-wrap: anywhere; }
+  .member-cards, .run-member-cards { display: grid; gap: 10px; }
+  .member-select-all { display: flex; align-items: center; gap: 8px; padding: 2px 4px 4px; color: #555; font-size: 12px; }
+  .member-card, .run-member-card { padding: 12px; border: 1px solid #e7e7eb; border-radius: 8px; background: #fff; }
+  .member-card-head, .run-member-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .member-card-head label { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+  .member-card-head b { font-size: 14px; overflow-wrap: anywhere; }
+  .member-card-state { flex: none; padding: 2px 7px; border-radius: 10px; background: #eaf8f0; color: #23764a; font-size: 11px; }
+  .member-card-state.unparsed { background: #f0f0f5; color: #666; }
+  .member-card-snapshot { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 0; color: #777; font-size: 11px; }
+  .member-card-snapshot span { flex: none; }
+  .member-card-snapshot code { color: #444; font-size: 11px; word-break: break-all; }
+  .member-card-check { margin: 6px 0 0; font-size: 11px; }
+  .member-card .member-actions { margin-top: 10px; }
+  .member-card .member-actions .primary, .member-card .member-actions .secondary { flex: 1; min-height: 36px; padding: 6px 10px; font-size: 12px; }
+  .run-member-head b { font-size: 14px; overflow-wrap: anywhere; }
+  .run-member-card p { display: flex; gap: 8px; margin: 7px 0 0; color: #555; font-size: 12px; line-height: 1.45; }
+  .run-member-card p > span { flex: none; color: #888; font-size: 11px; }
+  .run-member-detail { overflow-wrap: anywhere; }
+  .run-member-card button { margin-top: 9px; min-height: 34px; }
+  .member-actions .primary.sm, .member-actions .secondary.sm { min-height: 32px; }
+}
 </style>

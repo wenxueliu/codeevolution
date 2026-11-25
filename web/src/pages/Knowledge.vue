@@ -65,7 +65,7 @@
     </div>
 
     <div class="content" v-if="snapshotId && report">
-      <aside class="section-nav">
+      <aside ref="sectionNav" class="section-nav">
         <button
           v-for="section in sections"
           :key="section.key"
@@ -125,7 +125,7 @@
             <span>{{ t('共 {count} 条', { count: filteredEndpoints.length }) }}</span>
             <span class="explanation-status-summary" data-testid="explanation-status-summary" :class="{ loading: explanationStatusLoading }">{{ t('已解释 {explained} · 待刷新 {stale} · 待解释 {pending}', explanationStatusSummary) }}</span>
           </div>
-          <div class="table-wrap"><table><thead><tr><th>{{ t('方法') }}</th><th>{{ t('路径') }}</th><th>{{ t('处理函数') }}</th><th>{{ t('请求/应答') }}</th><th>{{ t('前端调用') }}</th><th>{{ t('解释状态') }}</th></tr></thead><tbody>
+          <div class="table-wrap"><table class="api-contract-table"><thead><tr><th>{{ t('方法') }}</th><th>{{ t('路径') }}</th><th>{{ t('处理函数') }}</th><th>{{ t('请求/应答') }}</th><th>{{ t('前端调用') }}</th><th>{{ t('解释状态') }}</th></tr></thead><tbody>
             <template v-for="(item, index) in visibleEndpoints" :key="`${item.repository || ''}-${item.method}-${item.path}-${index}`">
               <tr class="clickable" :class="{ expanded: expandedKeys.has(endpointKey(item, index)) }" tabindex="0" @click="toggleEndpoint(item, index)" @keydown.enter="toggleEndpoint(item, index)">
                 <td><span class="method">{{ item.method }}</span></td><td><code>{{ item.path }}</code></td><td>{{ item.handler || '-' }}</td>
@@ -1148,6 +1148,7 @@ export default {
     promptReady() { return Boolean(this.promptText.trim() || Object.values(this.promptTemplates).some(value => String(value || '').trim())) },
   },
   watch: {
+    activeSection() { this.$nextTick(this.revealActiveSection) },
     '$route': {
       async handler(route) {
         const snapshotId = snapshotIdFromRoute(route)
@@ -1197,6 +1198,17 @@ export default {
   },
   methods: {
     t,
+    revealActiveSection() {
+      const nav = this.$refs.sectionNav
+      const active = nav?.querySelector('button.active')
+      if (!nav || !active || nav.scrollWidth <= nav.clientWidth) return
+      const navRect = nav.getBoundingClientRect()
+      const activeRect = active.getBoundingClientRect()
+      nav.scrollTo({
+        left: nav.scrollLeft + activeRect.left - navRect.left - (nav.clientWidth - activeRect.width) / 2,
+        behavior: 'smooth',
+      })
+    },
     termTypeLabel(type) {
       const labels = {
         ENTITY: '实体', BUSINESS_EVENT: '业务事件', BUSINESS_ACTION: '业务动作',
@@ -2191,6 +2203,7 @@ export default {
 button { font: inherit; }
 .actions button, .empty-semantic button { border: 0; border-radius: 6px; padding: 9px 14px; cursor: pointer; }
 button:disabled { opacity: .55; cursor: wait; }
+.primary, .secondary { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; padding: 8px 13px; cursor: pointer; text-decoration: none; }
 .primary { background: #e94560; color: white; }
 .secondary { background: #ececf2; color: #333; }
 .notice { background: #fff8e1; color: #795c12; border: 1px solid #ffe6a3; border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 16px; }
@@ -2483,5 +2496,120 @@ tr.selected { background: #fff0f2; }
   .api-explanation-actions { margin-top: 8px; justify-content: flex-start; }
   .endpoint-prompt-backdrop { padding: 0; }
   .endpoint-prompt-dialog { width: 100vw; height: 100vh; max-height: none; border-radius: 0; }
+}
+/* Phone layout: one readable column, thumb-sized controls and tables that
+   scroll inside their panel instead of widening the page. */
+@media (max-width: 720px) {
+  .page-header { margin-bottom: 12px; }
+  .page-header h1 { font-size: 20px; overflow-wrap: anywhere; }
+  .page-header p { font-size: 12px; line-height: 1.5; }
+  .page-header p code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+  .actions { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .actions button { width: 100%; min-height: 42px; }
+  .summary-grid { gap: 8px; margin-bottom: 14px; }
+  .summary-card { padding: 12px 13px; }
+  .summary-value { font-size: 21px; }
+  .summary-label { font-size: 11px; }
+  .content { gap: 10px; }
+  .section-nav { padding: 6px; }
+  .section-nav button { min-width: 118px; padding: 8px 9px; font-size: 12px; }
+  .section-nav small { font-size: 8px; }
+  .panel { padding: 12px; }
+  .panel-title { display: block; padding-bottom: 10px; margin-bottom: 12px; }
+  .panel-title h2 { font-size: 17px; }
+  .panel-title .phase { display: inline-block; margin-top: 8px; }
+  .metrics { flex-wrap: wrap; gap: 8px 14px; }
+  .metric { font-size: 21px; margin-bottom: 8px; }
+  .metric small { font-size: 11px; }
+  .table-wrap { min-width: 0; margin: 0 -4px; padding: 0 4px 4px; -webkit-overflow-scrolling: touch; }
+  .adr-workbench, .adr-card, .adr-form, .adr-tabs { min-width: 0; }
+  .table-wrap > table { min-width: 660px; }
+  /* The API contract keeps its expandable detail usable by dropping the two
+     summary columns that are repeated inside the expanded detail. */
+  .table-wrap > table.api-contract-table { min-width: 0; table-layout: fixed; }
+  .api-contract-table > thead > tr > th:nth-child(4),
+  .api-contract-table > thead > tr > th:nth-child(5),
+  .api-contract-table > tbody > tr > td:nth-child(4),
+  .api-contract-table > tbody > tr > td:nth-child(5) { display: none; }
+  .api-contract-table > thead > tr > th:nth-child(1) { width: 18%; }
+  .api-contract-table > thead > tr > th:nth-child(2) { width: 32%; }
+  .api-contract-table > thead > tr > th:nth-child(3) { width: 30%; }
+  .api-contract-table > thead > tr > th:nth-child(6) { width: 20%; }
+  .api-contract-table th, .api-contract-table td { padding: 8px 7px; white-space: normal; overflow-wrap: anywhere; }
+  .api-contract-table td code { word-break: break-word; }
+  .api-contract-table .expand-detail > td { padding: 8px 4px 12px; }
+  th, td { padding: 8px 9px; }
+  .table-tools { gap: 8px; }
+  .table-tools label { width: 100%; }
+  .table-tools input, .table-tools select { width: 100%; min-width: 0; }
+  .table-tools > span { margin-left: 0; width: 100%; }
+  .table-tools .explanation-status-summary { margin-left: 0; }
+  .pagination { justify-content: center; flex-wrap: wrap; gap: 8px; }
+  .pagination button { min-height: 38px; }
+  .terms-toolbar { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .terms-toolbar .secondary { display: inline-flex; min-height: 38px; align-items: center; }
+  .contract-grid { grid-template-columns: 1fr; }
+  .contract-grid pre { max-height: 140px; }
+  .call-chain span { font-size: 10px; }
+  .seq-details summary { padding: 6px 0; }
+  .seq-actions { justify-content: flex-start; }
+  .api-prompt-panel, .batch-card { padding: 10px; }
+  .api-prompt-heading, .batch-heading { display: block; }
+  .api-prompt-heading > span { display: inline-block; margin-top: 4px; }
+  .api-prompt-actions button { flex: 1 1 45%; min-height: 36px; }
+  .batch-item { flex-wrap: wrap; gap: 4px; }
+  .batch-item code { min-width: 0; overflow-wrap: anywhere; }
+  .api-explanation-heading { display: block; }
+  .api-explanation-actions { margin-top: 8px; justify-content: flex-start; }
+  .api-explanation-actions button { flex: 1 1 45%; min-height: 36px; }
+  .explanation-meta, .coverage-grid { gap: 6px; }
+  .node-explanation header { flex-wrap: wrap; }
+  .business-rule-section h4 { overflow-wrap: anywhere; }
+  .json-view { padding: 10px; font-size: 10px; max-height: 520px; }
+  .project-list { grid-template-columns: 1fr; gap: 12px; }
+  .project-card { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px; }
+  .project-card .primary { width: 100%; text-align: center; }
+  .module-tree { border-radius: 6px; }
+  .tree-row { flex-wrap: wrap; gap: 4px 6px; min-height: 34px; padding-top: 5px; padding-bottom: 5px; }
+  .tree-label { text-align: left; }
+  .tree-meta { font-size: 10px; }
+  .tree-file { word-break: break-all; }
+  .adr-tabs { gap: 4px; }
+  .adr-tab { padding: 6px 10px; font-size: 11px; }
+  .adr-actions { flex-wrap: wrap; }
+  .adr-actions button { flex: 1; min-height: 40px; }
+  .adr-row-actions { flex-wrap: wrap; }
+  .adr-row-actions button { min-height: 32px; }
+  .table-wrap > table[data-testid="adr-drafts-table"] { min-width: 0; table-layout: fixed; }
+  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(3),
+  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(4),
+  table[data-testid="adr-drafts-table"] > tbody > tr > td:nth-child(3),
+  table[data-testid="adr-drafts-table"] > tbody > tr > td:nth-child(4) { display: none; }
+  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(1) { width: 48%; }
+  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(2) { width: 22%; }
+  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(5) { width: 30%; }
+  table[data-testid="adr-drafts-table"] th,
+  table[data-testid="adr-drafts-table"] td { padding: 8px 6px; }
+  .adr-markdown, .adr-debug pre { max-height: 300px; }
+  .sequence-zoom-dialog, .endpoint-prompt-dialog { height: 100dvh; }
+  .sequence-zoom-header { padding: 12px 14px; }
+  .sequence-zoom-header h2 { font-size: 16px; }
+  .sequence-zoom-canvas { padding: 54px 8px 16px; }
+  .sequence-zoom-controls { top: 8px; right: 8px; }
+  .endpoint-prompt-header { padding: 14px; }
+  .endpoint-prompt-body { padding: 12px 14px 4px; }
+  .endpoint-prompt-actions { padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px)); }
+  .endpoint-prompt-actions button { flex: 1; min-height: 40px; }
+  .empty-semantic, .empty-state { padding: 36px 12px; }
+}
+@media (max-width: 380px) {
+  /* Keep the endpoint list readable on the narrowest phones; the explanation
+     status remains visible inside the expanded endpoint detail. */
+  .api-contract-table > thead > tr > th:nth-child(6),
+  .api-contract-table > tbody > tr > td:nth-child(6) { display: none; }
+  .api-contract-table > thead > tr > th:nth-child(1) { width: 20%; }
+  .api-contract-table > thead > tr > th:nth-child(2) { width: 45%; }
+  .api-contract-table > thead > tr > th:nth-child(3) { width: 35%; }
+  .api-contract-table th:first-child, .api-contract-table td:first-child { white-space: nowrap; }
 }
 </style>

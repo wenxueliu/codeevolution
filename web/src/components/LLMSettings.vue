@@ -143,5 +143,5 @@ input { border: 1px solid #cdd2db; border-radius: 6px; padding: 9px 10px; font: 
 .actions button { border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; }.actions button:disabled { opacity: .55; cursor: wait; }
 .primary { background: #e94560; color: white; }.secondary { background: #eceef3; color: #333; }.danger { background: transparent; color: #a82038; }
 .success { margin: 0; color: #16834b; font-size: 12px; }.loading { padding: 40px 22px; color: #777; }
-@media (max-width: 560px) { .settings-backdrop { padding: 0; }.settings-dialog { width: 100vw; height: 100vh; max-height: none; border-radius: 0; }.actions { grid-template-columns: 1fr 1fr; }.actions span { display: none; }.actions button { width: 100%; } }
+@media (max-width: 560px) { .settings-backdrop { padding: 0; }.settings-dialog { width: 100vw; height: 100vh; height: 100dvh; max-height: none; border-radius: 0; }.actions { grid-template-columns: 1fr 1fr; }.actions span { display: none; }.actions button { width: 100%; }.actions .danger { grid-column: 1 / -1; }.settings-dialog form { padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px)); } }
 </style>

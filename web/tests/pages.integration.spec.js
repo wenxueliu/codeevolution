@@ -67,6 +67,29 @@ describe('repository and knowledge pages', () => {
     expect(links.map(link => link.attributes('href'))).toEqual(['/knowledge', '/snapshots', '/graph-views'])
   })
 
+  it('toggles the collapsible navigation menu used on narrow viewports', async () => {
+    const wrapper = mount(App, {
+      global: {
+        components: { RouterLink },
+        stubs: { RepositoryAssistant: true, LLMSettings: true, 'router-view': true },
+        mocks: { $route: { params: {}, query: {} }, $router: { push: vi.fn() } },
+      },
+    })
+    const button = wrapper.find('.nav-menu-button')
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('.nav-scrim').exists()).toBe(false)
+
+    await button.trigger('click')
+    expect(button.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('.nav').classes()).toContain('is-open')
+    expect(wrapper.find('.nav-scrim').exists()).toBe(true)
+
+    await wrapper.find('.nav-links a').trigger('click')
+    expect(button.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('.nav-scrim').exists()).toBe(false)
+  })
+
   it('renders ranked terms and evidence actions for a snapshot', async () => {
     const { wrapper } = mountPage(Terms, {
       '/api/terms': { total: 1, terms: [{ id: 'term-1', rank: 1, canonical_name: 'Order', term_type: 'entity', confidence_score: 0.96, confidence_band: 'high', status: 'accepted', source: 'rule', aliases: [] }] },
@@ -415,6 +438,27 @@ describe('repository and knowledge pages', () => {
       method: 'POST',
       body: JSON.stringify({ display_name: 'mall-admin-web', registered_path: '/workspace/mall-admin-web' }),
     }))
+  })
+
+  it('renders thumb-friendly member cards instead of the wide table on phones', async () => {
+    const originalWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    try {
+      const { wrapper } = mountPage(Snapshots, {
+        '/api/scopes': { scopes: [{ id: 'scope-shop', name: 'shop' }] },
+        '/api/scopes/scope-shop/members': { members: [{ id: 'member-shop', display_name: 'shop', registered_path: '/workspace/shop' }] },
+        '/api/repository-members/member-shop/snapshots': { items: [{ id: 'snapshot-shop' }] },
+      })
+      await flushPromises()
+      expect(wrapper.find('.member-cards').exists()).toBe(true)
+      expect(wrapper.find('.member-card').text()).toContain('shop')
+      expect(wrapper.find('.member-card').text()).toContain('snapshot-shop')
+      expect(wrapper.find('.table-wrap').exists()).toBe(false)
+      expect(wrapper.find('.snapshot-scope table').exists()).toBe(false)
+      wrapper.unmount()
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth })
+    }
   })
 
   it('selects scope members and follows an analysis run through cancel and failed-member retry', async () => {

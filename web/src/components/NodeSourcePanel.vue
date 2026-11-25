@@ -94,4 +94,9 @@ watch(() => props.target && `${props.target.kind}|${props.target.identity}`, loa
 .nsp-code-line { display: grid; grid-template-columns: 42px minmax(0, 1fr); padding-right: 8px; white-space: pre; }
 .nsp-line-number { color: #a0a6b1; text-align: right; padding-right: 9px; user-select: none; }
 .nsp-code-line code { color: #343740; overflow-wrap: normal; font: inherit; }
+@media (max-width: 720px) {
+  .nsp-code { max-height: 320px; font-size: 11px; }
+  .nsp-code-line { grid-template-columns: 34px minmax(0, 1fr); }
+  .nsp-line-number { padding-right: 6px; }
+}
 </style>

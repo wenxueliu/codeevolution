@@ -18,6 +18,7 @@ describe('web internationalization', () => {
     setLocale('en')
     expect(locale.value).toBe('en')
     expect(t('知识中心')).toBe('Knowledge Center')
+    expect(t('打开导航菜单')).toBe('Open navigation menu')
     expect(t('创建当前 View')).toBe('Create current view')
     expect(t('共 {count} 条', { count: 3 })).toBe('3 total')
   })

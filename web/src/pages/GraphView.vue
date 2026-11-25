@@ -32,7 +32,7 @@
       <UiState v-else-if="loading" kind="loading" :title="t('正在加载 Graph View')" />
       <template v-else>
         <el-card class="view-meta" shadow="never">
-          <el-descriptions :column="4" border>
+          <el-descriptions :column="descriptionColumns" border>
             <el-descriptions-item :label="t('View ID')"><code>{{ viewId }}</code></el-descriptions-item>
             <el-descriptions-item :label="t('Artifact')"><el-tag :type="artifact ? 'success' : 'info'">{{ artifact ? t('已生成') : t('未生成') }}</el-tag></el-descriptions-item>
             <el-descriptions-item :label="t('服务')"><b>{{ services.length || '—' }}</b></el-descriptions-item>
@@ -57,7 +57,7 @@
             </el-space>
             <TopologyGraph :graph="serviceGraph" :aria-label="t('服务拓扑图')" :empty-text="t('未在当前快照中发现跨服务调用边。')" />
             <el-divider />
-            <el-table v-if="serviceEdges.length" :data="serviceEdges" size="small" stripe>
+            <el-table v-if="serviceEdges.length" :data="serviceEdges" size="small" stripe :max-height="tableMaxHeight">
               <el-table-column :label="t('调用方')" min-width="150"><template #default="{ row }">{{ serviceName(row.source_member_id) }}</template></el-table-column>
               <el-table-column label="→" width="55" align="center" />
               <el-table-column :label="t('目标服务')" min-width="150"><template #default="{ row }">{{ targetName(row) }}</template></el-table-column>
@@ -85,7 +85,7 @@
             <el-card class="panel" shadow="never">
               <template #header><div class="panel-heading"><h2>{{ t('资源访问图') }}</h2><el-tag type="warning">{{ t('{count} 个资源', { count: resources.length }) }}</el-tag></div></template>
               <TopologyGraph :graph="resourceGraph" :aria-label="t('资源访问图')" :empty-text="t('未发现资源访问')" />
-              <el-table v-if="resources.length" :data="resources" size="small" class="resource-table">
+              <el-table v-if="resources.length" :data="resources" size="small" class="resource-table" :max-height="tableMaxHeight">
                 <el-table-column :label="t('服务')" min-width="120"><template #default="{ row }">{{ serviceName(row.source_member_id) }}</template></el-table-column>
                 <el-table-column :label="t('资源')" min-width="170"><template #default="{ row }">{{ resourceLabel(row) }}</template></el-table-column>
                 <el-table-column :label="t('操作')" width="100"><template #default="{ row }">{{ row.resource?.operation || '—' }}</template></el-table-column>
@@ -97,7 +97,7 @@
             <template #header><h2>{{ t('待确认与边界') }}</h2></template>
             <el-alert v-if="artifact.candidates?.length" :title="t('候选/未解析边（{count}）', { count: artifact.candidates.length })" type="warning" :closable="false" />
             <el-alert v-if="artifact.boundary_dependencies?.length" :title="t('Scope 外边界（{count}）', { count: artifact.boundary_dependencies.length })" type="info" :closable="false" />
-            <el-table :data="[...(artifact.candidates || []), ...(artifact.boundary_dependencies || [])]" size="small" class="compact-table">
+            <el-table :data="[...(artifact.candidates || []), ...(artifact.boundary_dependencies || [])]" size="small" class="compact-table" :max-height="tableMaxHeight">
               <el-table-column :label="t('类型')" width="130"><template #default="{ row }"><el-tag size="small" :type="row.kind === 'known_external' ? 'info' : 'warning'">{{ row.kind }}</el-tag></template></el-table-column>
               <el-table-column :label="t('服务')" min-width="150"><template #default="{ row }">{{ serviceName(row.source_member_id || row.source?.member_id) }}</template></el-table-column>
               <el-table-column :label="t('原因')" min-width="260"><template #default="{ row }">{{ row.reason || '—' }}</template></el-table-column>
@@ -111,7 +111,7 @@
             <template v-else>
               <TopologyGraph :graph="impactGraph" :aria-label="t('影响关系图')" :empty-text="t('没有确认的服务依赖。')" />
               <div class="analysis-columns">
-                <el-card shadow="never"><template #header><h3>{{ selectedService }}{{ t('的下游依赖') }}</h3></template><el-tag v-for="item in impact.downstream_dependencies || []" :key="item.member_id" class="path-tag" type="success">{{ serviceName(item.member_id) }} <small>{{ item.path?.join(' → ') }}</small></el-tag><el-empty v-if="!(impact.downstream_dependencies || []).length" :description="t('没有确认的下游服务。')" :image-size="55" /></el-card>
+                <el-card shadow="never"><template #header><h3>{{ serviceName(selectedService) }}{{ t('的下游依赖') }}</h3></template><el-tag v-for="item in impact.downstream_dependencies || []" :key="item.member_id" class="path-tag" type="success">{{ serviceName(item.member_id) }} <small>{{ item.path?.join(' → ') }}</small></el-tag><el-empty v-if="!(impact.downstream_dependencies || []).length" :description="t('没有确认的下游服务。')" :image-size="55" /></el-card>
                 <el-card shadow="never"><template #header><h3>{{ t('上游依赖方') }}</h3></template><el-tag v-for="item in impact.upstream_dependents || []" :key="item.member_id" class="path-tag" type="primary">{{ serviceName(item.member_id) }} <small>{{ item.path?.slice().reverse().join(' → ') }}</small></el-tag><el-empty v-if="!(impact.upstream_dependents || []).length" :description="impact.upstream_status ? t('上游关系可能受覆盖范围影响。') : t('没有确认的上游服务。')" :image-size="55" /></el-card>
               </div>
               <el-alert v-if="impact.upstream_status" class="analysis-warning" :title="t('上游关系可能受覆盖范围影响。')" type="warning" :closable="false" />
@@ -132,8 +132,14 @@ import { t } from '../i18n.js'
 export default {
   components: { UiState, TopologyGraph },
   props: { viewId: { type: String, default: '' } },
-  data() { return { viewCatalog: [], catalogLoading: false, catalogError: null, artifact: null, selectedService: '', impact: {}, flow: {}, method: 'GET', path: '', loading: false, artifactLoading: false, analysisLoading: false, error: null, analysisError: null, jobStatus: null, pollTimer: null } },
+  data() { return { viewCatalog: [], catalogLoading: false, catalogError: null, artifact: null, selectedService: '', impact: {}, flow: {}, method: 'GET', path: '', loading: false, artifactLoading: false, analysisLoading: false, error: null, analysisError: null, jobStatus: null, pollTimer: null, viewportWidth: typeof window !== 'undefined' ? window.innerWidth : 1280 } },
   computed: {
+    descriptionColumns() {
+      if (this.viewportWidth <= 600) return 1
+      if (this.viewportWidth <= 900) return 2
+      return 4
+    },
+    tableMaxHeight() { return this.viewportWidth <= 900 ? 360 : undefined },
     services() { return this.artifact?.services || [] },
     serviceEdges() {
       const byKey = new Map()
@@ -181,10 +187,18 @@ export default {
     },
   },
   watch: { async viewId(value) { if (value) await this.load(); else await this.loadCatalog() } },
-  async created() { if (this.viewId) await this.load(); else await this.loadCatalog() },
-  beforeUnmount() { this.stopPolling() },
+  async created() {
+    this.syncViewport()
+    window.addEventListener('resize', this.syncViewport)
+    if (this.viewId) await this.load(); else await this.loadCatalog()
+  },
+  beforeUnmount() {
+    this.stopPolling()
+    window.removeEventListener('resize', this.syncViewport)
+  },
   methods: {
     t,
+    syncViewport() { this.viewportWidth = window.innerWidth },
     async loadCatalog() { this.catalogLoading = true; this.catalogError = null; try { const response = await this.$api.get('/api/graph-views'); this.viewCatalog = response.views || [] } catch (error) { this.catalogError = error } finally { this.catalogLoading = false } },
     memberNames(view) { return (view.members || []).map((member) => member.display_name || member.member_id).join('、') || this.t('无成员') },
     async load() { if (!this.viewId) { this.loading = false; this.error = null; return }; this.loading = true; this.error = null; try { const response = await this.$api.get(`/api/graph-views/${this.viewId}/artifacts/topology`); this.artifact = response.artifact; const first = this.services[0]?.member_id; if (first) await this.selectService(first) } catch (error) { if (error.status === 404 && (error.body?.detail === 'artifact_not_generated' || error.body?.error?.code === 'artifact_not_generated')) this.artifact = null; else this.error = error } finally { this.loading = false } },
@@ -216,8 +230,41 @@ export default {
 </script>
 
 <style scoped>
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.page-header h1 { font-size: 24px; margin-bottom: 4px; }
+.page-header p { color: #777; font-size: 13px; }
 .view-meta { margin-bottom: 20px; }.panel { margin-bottom: 20px; }.panel h2, .panel h3 { margin: 0; }.panel-heading, .analysis-heading { display: flex; justify-content: space-between; gap: 20px; align-items: center; }.panel-heading p { margin: 5px 0 0; }.service-list { margin: 0 0 16px; }.service-list small { margin-left: 5px; opacity: .75; }.edge-card pre, pre { overflow: auto; max-height: 180px; padding: 10px; background: #f6f8fa; border-radius: 6px; font-size: 12px; }
 .page-actions { display:flex; gap:10px; align-items:center; }
 .visual-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }.coverage-list { display: grid; gap: 18px; }.coverage-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }.collector-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }.coverage-row p { margin: 5px 0 0; font-size: 12px; }.resource-table { margin-top: 14px; }.compact-table { margin-top: 12px; }.analysis-panel { overflow: hidden; }.analysis-heading { align-items: start; }.analysis-heading h2 { margin-bottom: 4px; }.analysis-heading .el-form { margin: 0; }.analysis-heading :deep(.el-form-item) { margin: 0; }.method-input { width: 82px; }.path-input { width: 190px; margin-left: 6px; }.analysis-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }.analysis-columns :deep(.el-card__header) { padding: 12px 14px; }.analysis-columns :deep(.el-card__body) { min-height: 90px; padding: 14px; }.path-tag { margin: 0 6px 6px 0; }.path-tag small { margin-left: 6px; opacity: .8; }.analysis-warning { margin-top: 14px; }.flow-card { margin-top: 18px; }.muted { color: #667085; }.view-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }.view-card :deep(.el-card__body) { display: flex; align-items: center; justify-content: space-between; gap: 16px; }.view-card h2 { margin: 0 0 6px; font-size: 18px; }.view-card p { margin: 0 0 6px; color: #667085; font-size: 13px; }.view-card code { overflow-wrap: anywhere; font-size: 11px; color: #666; }.artifact-empty { text-align: center; }.primary { border: 0; border-radius: 5px; padding: 9px 15px; color: #fff; background: #315d9b; cursor: pointer; }.secondary { color: #315d9b; text-decoration: none; }.entry-input { display: flex; gap: 6px; }
 @media (max-width: 900px) { .visual-grid, .analysis-columns { grid-template-columns: 1fr; }.analysis-heading { display: block; }.analysis-heading .el-form { margin-top: 12px; } }
+@media (max-width: 720px) {
+  .page-header { display: block; margin-bottom: 14px; }
+  .page-header h1 { font-size: 20px; }
+  .page-header p { font-size: 12px; line-height: 1.5; }
+  .page-actions { flex-wrap: wrap; margin-top: 12px; }
+  .page-actions .secondary { display: inline-flex; min-height: 38px; align-items: center; }
+  .view-list { grid-template-columns: 1fr; }
+  .view-card :deep(.el-card__body) { flex-direction: column; align-items: stretch; gap: 12px; }
+  .view-card :deep(.el-button) { width: 100%; }
+  .panel :deep(.el-card__body) { padding: 12px; }
+  .panel :deep(.el-card__header) { padding: 12px 14px; }
+  .panel-heading { display: block; }
+  .panel-heading .el-tag { margin-top: 8px; }
+  .view-meta :deep(.el-card__body) { padding: 12px; }
+  .view-meta :deep(.el-descriptions__body) { overflow-x: auto; }
+  .view-meta :deep(.el-descriptions__label) { white-space: nowrap; }
+  .view-meta :deep(.el-descriptions__cell) { word-break: break-word; }
+  .service-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .service-list :deep(.el-button) { margin: 0; max-width: 100%; }
+  .service-list :deep(.el-button > span) { overflow: hidden; text-overflow: ellipsis; }
+  .analysis-heading .el-form { margin-top: 10px; width: 100%; }
+  .analysis-heading :deep(.el-form-item) { display: block; margin: 0; width: 100%; }
+  .analysis-heading :deep(.el-form-item__content) { display: flex; gap: 6px; width: 100%; }
+  .method-input { width: 96px; flex: 0 0 auto; }
+  .path-input { width: auto; flex: 1; min-width: 0; margin-left: 0; }
+  .analysis-columns { gap: 12px; margin-top: 14px; }
+  .coverage-label { gap: 8px; }
+  .collector-list { gap: 4px; }
+  pre { font-size: 11px; max-height: 140px; }
+}
 </style>

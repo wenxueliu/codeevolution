@@ -222,9 +222,26 @@ export default {
 .empty-state code { background: #f5f5f5; padding: 8px 16px; border-radius: 4px; font-size: 13px; display: inline-block; margin-bottom: 12px; }
 .empty-state .hint { font-size: 13px; }
 @media (max-width: 720px) {
-  .page-header { align-items: center; }
-  .register-form { grid-template-columns: 1fr; }
+  .page-header { flex-direction: column; align-items: stretch; gap: 12px; }
+  .page-header .primary { width: 100%; min-height: 42px; }
+  .register-form { grid-template-columns: 1fr; padding: 14px; }
   .register-form p { grid-column: auto; }
-  .repo-grid { grid-template-columns: 1fr; }
+  .register-form button { width: 100%; min-height: 42px; }
+  .repo-grid { grid-template-columns: 1fr; gap: 12px; }
+  .repo-card { border-radius: 8px; }
+  .repo-card:hover { transform: none; }
+  .repo-link { padding: 16px; }
+  .repo-card h2 { font-size: 17px; overflow-wrap: anywhere; }
+  .repo-header > span { margin-right: 0; }
+  .repo-path { margin-bottom: 10px; }
+  .repo-actions {
+    position: static; padding: 0 16px 16px;
+    justify-content: flex-end; flex-wrap: wrap;
+  }
+  .repo-actions button { min-height: 36px; padding: 6px 10px; font-size: 12px; }
+  .member-add { padding: 0 16px 12px; flex-wrap: wrap; }
+  .member-add input { flex-basis: 100%; }
+  .empty-state { padding: 36px 0; }
+  .empty-state p { font-size: 15px; }
 }
 </style>

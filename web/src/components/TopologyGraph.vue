@@ -52,6 +52,10 @@ export default {
 <style scoped>
 .topology-graph { min-height: 150px; overflow-x: auto; padding: 8px 0; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; }
 svg { display: block; min-width: 680px; width: 100%; height: auto; max-height: 460px; }
+@media (max-width: 720px) {
+  .topology-graph { padding: 6px 0; -webkit-overflow-scrolling: touch; }
+  svg { min-width: 620px; max-height: 360px; }
+}
 marker path { fill: #94a3b8; }
 .graph-edge { stroke: #94a3b8; stroke-width: 1.8; }
 .edge-message { stroke: #8b5cf6; stroke-dasharray: 5 3; }
