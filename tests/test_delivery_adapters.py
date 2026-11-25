@@ -86,6 +86,7 @@ def test_knowledge_api_returns_all_endpoints_in_report():
         for index in range(101)
     ]
     extractor = KnowledgeExtractor.__new__(KnowledgeExtractor)
+    extractor.extract_adr_records = lambda: {"version": "adr/v1", "available": False}
     extractor.extract_api_contract = lambda: ApiContract(
         endpoints=endpoints,
         resource_groups={"items": endpoints},

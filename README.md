@@ -1,6 +1,6 @@
 # CodeEvolution
 
-代码仓功能演进分析 + 业务知识逆向系统。从代码自动抽取 17 维结构化知识，服务产品经理、架构师、开发、测试、运维五个角色。
+代码仓功能演进分析 + 业务知识逆向系统。从代码自动抽取 18 维结构化知识，服务产品经理、架构师、开发、测试、运维五个角色。
 
 ## 快速开始
 
@@ -42,13 +42,13 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 
 ## 三大子系统
 
-### 1. Knowledge Extractor — 单仓知识提取（12 维）
+### 1. Knowledge Extractor — 单仓知识提取（13 维）
 
 纯图计算 + 规则匹配 + LLM 语义理解，不需要重新解析代码：
 
 | 阶段 | 维度 | 依赖 |
 |------|------|------|
-| Phase 1 | API 契约 / 模块拓扑 / 核心实体 / 分层违规 | CodeGraph SQLite + networkx |
+| Phase 1 | API 契约 / ADR 决策记录 / 模块拓扑 / 核心实体 / 分层违规 | CodeGraph SQLite + networkx + 仓库 ADR 目录 |
 | Phase 2 | 配置消费 / 外部依赖 / 权限模型 / 热力图 | CodeGraph SQLite + 规则引擎 |
 | Phase 3 | 业务描述 / 业务规则 / 错误目录 / 状态机 | CodeGraph SQLite + litellm (LLM) |
 
@@ -68,27 +68,28 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 
 沿 git 历史逐 commit 分析，以"功能"为单位追踪代码演变过程。
 
-## 能力矩阵（17 维 × 5 角色）
+## 能力矩阵（18 维 × 5 角色）
 
 | # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
 |---|------|:---:|:---:|:---:|:---:|:---:|------|
 | 1 | API 契约 | x | x | x | x | | `knowledge --snapshot-id <id> -s api` |
-| 2 | 模块拓扑 | | x | x | | | `knowledge --snapshot-id <id> -s modules` |
-| 3 | 核心实体 | | x | x | | | `knowledge --snapshot-id <id> -s entities` |
-| 4 | 分层违规 | | x | | | | `knowledge --snapshot-id <id> -s layers` |
-| 5 | 配置消费图 | | | | | x | `knowledge --snapshot-id <id> -s config` |
-| 6 | 外部依赖清单 | | x | | | x | `knowledge --snapshot-id <id> -s deps` |
-| 7 | 权限模型 | | x | | | x | `knowledge --snapshot-id <id> -s auth` |
-| 8 | 热力图 | | x | x | | | `knowledge --snapshot-id <id> -s heatmap` |
-| 9 | 业务描述 | x | | x | | | `knowledge --snapshot-id <id> -s business --llm` |
-| 10 | 业务规则 | x | | | x | | `knowledge --snapshot-id <id> -s rules --llm` |
-| 11 | 错误目录 | | | | x | x | `knowledge --snapshot-id <id> -s errors --llm` |
-| 12 | 状态机 | x | | | x | | `knowledge --snapshot-id <id> -s states --llm` |
-| 13 | 统一服务拓扑 | | x | x | | x | `topology` |
-| 14 | 跨仓变更影响 | | x | x | x | | `impact --view-id <id> --service <member-id>` |
-| 15 | 全通道流程追踪 | | x | x | x | x | `flow --view-id <id> --service <member-id> --entry-id <entry-id>` |
-| 16 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
-| 17 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
+| 2 | ADR 决策记录 | x | x | x | | | `knowledge --snapshot-id <id> -s adr` |
+| 3 | 模块拓扑 | | x | x | | | `knowledge --snapshot-id <id> -s modules` |
+| 4 | 核心实体 | | x | x | | | `knowledge --snapshot-id <id> -s entities` |
+| 5 | 分层违规 | | x | | | | `knowledge --snapshot-id <id> -s layers` |
+| 6 | 配置消费图 | | | | | x | `knowledge --snapshot-id <id> -s config` |
+| 7 | 外部依赖清单 | | x | | | x | `knowledge --snapshot-id <id> -s deps` |
+| 8 | 权限模型 | | x | | | x | `knowledge --snapshot-id <id> -s auth` |
+| 9 | 热力图 | | x | x | | | `knowledge --snapshot-id <id> -s heatmap` |
+| 10 | 业务描述 | x | | x | | | `knowledge --snapshot-id <id> -s business --llm` |
+| 11 | 业务规则 | x | | | x | | `knowledge --snapshot-id <id> -s rules --llm` |
+| 12 | 错误目录 | | | | x | x | `knowledge --snapshot-id <id> -s errors --llm` |
+| 13 | 状态机 | x | | | x | | `knowledge --snapshot-id <id> -s states --llm` |
+| 14 | 统一服务拓扑 | | x | x | | x | `topology` |
+| 15 | 跨仓变更影响 | | x | x | x | | `impact --view-id <id> --service <member-id>` |
+| 16 | 全通道流程追踪 | | x | x | x | x | `flow --view-id <id> --service <member-id> --entry-id <entry-id>` |
+| 17 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
+| 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
 
 ## CLI 命令总览
 

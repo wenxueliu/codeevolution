@@ -281,9 +281,10 @@ class RepositoryAttemptWorker:
         inventory = SnapshotSourceInventory(evidence_staging / "sources", manifest)
 
         self._stage(attempt.id, AttemptStage.ANALYZING, 75)
-        rules_digest = _declared_layers_digest(root)
+        rules_digest = _repository_rules_digest(root)
         facts = self.analyzer(graph.path, inventory)
         facts = _apply_declared_layers(facts, graph.path, root)
+        facts = _apply_adr_facts(facts, root)
         snapshot_id = str(uuid4())
         communication = self._communication_artifact(
             graph.path, inventory, snapshot_id, member_id=attempt.member_id, rules_digest=rules_digest
@@ -586,6 +587,40 @@ def _apply_declared_layers(
     finally:
         repository.close()
     return {**facts, "layer_violations": serialize_layer_violations(violations)}
+
+
+def _apply_adr_facts(facts: dict[str, Any], repository_root: Path) -> dict[str, Any]:
+    """Attach the repository's own Architecture Decision Records.
+
+    ADR files live in the checkout (``docs/adr`` and friends), not in CodeGraph
+    and not in the frozen source manifest, so they are read from the live
+    repository at analysis time exactly like the layer declaration.  The
+    extracted records are then frozen into the snapshot facts.
+    """
+    from codeevolution.analysis.knowledge.adr import AdrExtractor
+
+    try:
+        report = AdrExtractor(repository_root).extract()
+    except Exception:  # never fail a snapshot because decision records are odd
+        logger.exception("ADR extraction failed for %s", repository_root)
+        return facts
+    return {**facts, "adr": report}
+
+
+def _repository_rules_digest(repository_root: Path) -> str:
+    """Fold repository-owned rules and decision records into snapshot identity.
+
+    The layer declaration and ADR Markdown both live in the checkout rather
+    than in the frozen source manifest.  Their content must join ``rules_digest``
+    so an edit produces a new snapshot instead of reusing stale facts.
+    """
+    from codeevolution.analysis.knowledge.adr import adr_content_digest
+
+    digest = _declared_layers_digest(repository_root)
+    adr = adr_content_digest(repository_root)
+    if not adr:
+        return digest
+    return "sha256:" + hashlib.sha256(digest.encode() + b"\0adr\0" + adr.encode()).hexdigest()
 
 
 def _declared_layers_digest(repository_root: Path) -> str:

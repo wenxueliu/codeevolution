@@ -22,6 +22,7 @@ class KnowledgeService:
     def section(self, name: str, **options):
         methods = {
             "api": self.extractor.extract_api_contract,
+            "adr": self.extractor.extract_adr_records,
             "interface": self.extractor.extract_interface_contract,
             "modules": self.extractor.extract_module_topology,
             "entities": self.extractor.extract_core_entities,

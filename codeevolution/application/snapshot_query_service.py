@@ -86,6 +86,10 @@ class SnapshotQueryService:
             # from real read sites when the frozen payload predates this.
             facts = self._with_config_consumption(handle, facts)
             facts = self._with_interface_contract(handle, facts)
+            # ADR files live outside the frozen source manifest, so snapshots
+            # published before this dimension existed cannot be projected.
+            # Serve a stable empty report rather than failing the section.
+            facts = self._with_adr(facts)
             if section is None:
                 # API contracts were historically persisted with only the
                 # first 100 endpoints.  Keep the normal knowledge boundary
@@ -93,7 +97,7 @@ class SnapshotQueryService:
                 # and topology) sees the same endpoint set.
                 api_contract = self._complete_api_contract(handle, facts)
                 return {**facts, "api_contract": api_contract}
-            aliases = {"deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "interface": "interface_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map", "pages": "page_api_map"}
+            aliases = {"deps": "external_dependencies", "auth": "authorization_model", "layers": "layer_violations", "config": "config_consumption", "api": "api_contract", "adr": "adr", "interface": "interface_contract", "modules": "module_topology", "entities": "core_entities", "heatmap": "heat_map", "pages": "page_api_map"}
             key = aliases.get(section, section)
             if key not in facts:
                 raise KeyError(section)
@@ -185,6 +189,14 @@ class SnapshotQueryService:
                 "issues": (taxonomy or {}).get("issues", []),
             }
         return {**facts, "module_topology": serialized}
+
+    def _with_adr(self, facts: dict) -> dict:
+        from codeevolution.analysis.knowledge.adr import empty_adr_report
+
+        existing = facts.get("adr")
+        if isinstance(existing, dict) and existing.get("version"):
+            return facts
+        return {**facts, "adr": empty_adr_report("snapshot predates ADR extraction")}
 
     def _with_heat_map(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
         from codeevolution.analysis.knowledge.heatmap import HEATMAP_VERSION

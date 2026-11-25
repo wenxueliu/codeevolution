@@ -5,6 +5,7 @@ from pathlib import Path
 
 import networkx as nx
 
+from .analysis.knowledge.adr import AdrExtractor
 from .analysis.knowledge.api_contract import ApiContractExtractor
 from .analysis.knowledge.authorization import AuthorizationExtractor
 from .analysis.knowledge.config_usage import CONFIG_USAGE_VERSION, ConfigUsageExtractor
@@ -64,6 +65,7 @@ class KnowledgeExtractor:
         repo_root = Path(reader.db_path).parent.parent
         self.source_provider = source_provider or FileSystemSourceProvider(repo_root)
         self._api = ApiContractExtractor(reader)
+        self._adr = AdrExtractor(repo_root)
         self._modules = ModuleTopologyExtractor(reader)
         # Layers are repository data, not a built-in table: read the repo's own
         # declaration when it has one and fall back to the legacy defaults.
@@ -85,6 +87,9 @@ class KnowledgeExtractor:
 
     def extract_api_contract(self) -> ApiContract:
         return self._api.extract()
+
+    def extract_adr_records(self) -> dict:
+        return self._adr.extract()
 
     def extract_module_topology(self, resolution: float = 0.8) -> ModuleTopology:
         return self._modules.extract(resolution)
@@ -164,6 +169,7 @@ class KnowledgeExtractor:
                     for name, items in api.resource_groups.items()
                 },
             },
+            "adr": self.extract_adr_records(),
             "module_topology": serialize_module_topology(modules),
             "interface_contract": self._serialize_interface(
                 self.extract_interface_contract()

@@ -253,6 +253,53 @@
           </div>
         </template>
 
+        <template v-else-if="activeSection === 'adr'">
+          <UiState
+            v-if="!activeData.available"
+            kind="empty"
+            :title="t('该 Snapshot 未包含 ADR 决策记录')"
+            :message="t('ADR 读取自被分析仓库的 docs/adr（或 doc/adr、docs/decisions、adr），需在生成 Snapshot 前提交。')"
+          />
+          <template v-else>
+            <div class="metrics">
+              <div class="metric">{{ activeData.total ?? 0 }} <small>{{ t('条决策') }}</small></div>
+              <div class="metric">{{ adrStatusCount('accepted') }} <small>{{ t('已接受') }}</small></div>
+              <div class="metric">{{ adrStatusCount('proposed') }} <small>{{ t('提议中') }}</small></div>
+              <div class="metric" :class="{ danger: (activeData.error_count || 0) > 0 }">{{ activeData.error_count ?? 0 }} <small>{{ t('个校验错误') }}</small></div>
+            </div>
+            <p class="muted">
+              {{ t('目录') }}: <code>{{ activeData.adr_dir }}</code>
+              <span v-if="!activeData.index_present"> · {{ t('缺少 index.md 索引') }}</span>
+              <span v-else-if="activeData.index_stale"> · {{ t('索引已过期，需运行 adr-index 重建') }}</span>
+            </p>
+            <div class="table-wrap"><table data-testid="adr-table"><thead><tr>
+              <th>{{ t('编号') }}</th><th>{{ t('标题') }}</th><th>{{ t('状态') }}</th><th>{{ t('日期') }}</th><th>{{ t('替代关系') }}</th><th>{{ t('文件') }}</th>
+            </tr></thead><tbody>
+              <tr v-for="row in activeData.records || []" :key="row.path">
+                <td><b>{{ row.id }}</b></td>
+                <td>{{ row.title || '-' }}</td>
+                <td><span class="term-status" :class="adrStatusKey(row.status)">{{ adrStatusLabel(row.status) }}</span></td>
+                <td>{{ row.date || '-' }}</td>
+                <td>{{ adrSupersedeText(row) }}</td>
+                <td><code>{{ row.path }}</code></td>
+              </tr>
+            </tbody></table></div>
+            <template v-if="(activeData.violations || []).length">
+              <h3>{{ t('结构校验') }} ({{ activeData.violations.length }})</h3>
+              <div class="table-wrap"><table data-testid="adr-violations"><thead><tr>
+                <th>{{ t('规则') }}</th><th>{{ t('级别') }}</th><th>{{ t('文件') }}</th><th>{{ t('说明') }}</th>
+              </tr></thead><tbody>
+                <tr v-for="(issue, index) in activeData.violations" :key="index">
+                  <td><code>{{ issue.rule }}</code></td>
+                  <td>{{ issue.level === 'error' ? t('错误') : t('警告') }}</td>
+                  <td><code>{{ issue.path }}</code></td>
+                  <td>{{ issue.message }}</td>
+                </tr>
+              </tbody></table></div>
+            </template>
+          </template>
+        </template>
+
         <template v-else-if="activeSection === 'module_topology'">
           <div class="topology-toolbar">
             <span class="source-badge" :class="'source-' + topologySource">{{ t('分类来源：{source}', { source: topologySourceLabel }) }}</span>
@@ -583,6 +630,7 @@ function snapshotIdFromRoute(route) {
 
 const SECTIONS = [
   ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
+  ['adr', 'ADR 决策记录', '阶段1', '架构决策记录（MADR 4.0）与 R1/R2 结构校验'],
   ['interface_contract', '公开接口', '阶段1', '导出的公共函数与类的公开方法——外部可访问面'],
   ['page_api_map', '页面接口映射', '阶段1', '路由页面与触发的 HTTP API 端点'],
   ['terms', '术语识别', '阶段1', '从 API 契约、实体定义和前端页面生成按可信度排序的业务术语'],
@@ -880,6 +928,30 @@ export default {
     termStatusLabel(status) {
       const labels = { accepted: '已接纳', needs_review: '待审核', rejected: '已排除' }
       return labels[status] ? this.t(labels[status]) : status || '-'
+    },
+    adrStatusCount(status) {
+      return this.report?.adr?.by_status?.[status] ?? 0
+    },
+    adrStatusKey(status) {
+      const value = String(status || '').toLowerCase()
+      if (value.startsWith('superseded')) return 'superseded'
+      return value || 'unknown'
+    },
+    adrStatusLabel(status) {
+      const value = String(status || '')
+      if (value.toLowerCase().startsWith('superseded by')) {
+        return this.t('被 {id} 替代', { id: value.replace(/^superseded by /i, '') })
+      }
+      const labels = { accepted: '已接受', proposed: '提议中', rejected: '已拒绝', deprecated: '已废弃' }
+      return labels[value] ? this.t(labels[value]) : value || '-'
+    },
+    adrSupersedeText(row) {
+      const parts = []
+      if (row.superseded_by) parts.push(this.t('被 ADR-{id} 替代', { id: String(row.superseded_by).padStart(4, '0') }))
+      if (row.supersedes?.length) {
+        parts.push(this.t('替代 {ids}', { ids: row.supersedes.map(id => `ADR-${String(id).padStart(4, '0')}`).join(', ') }))
+      }
+      return parts.length ? parts.join(' · ') : '-'
     },
     async loadCatalog() {
       this.catalogLoading = true

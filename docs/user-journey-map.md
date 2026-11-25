@@ -39,7 +39,7 @@ flowchart LR
 
     subgraph I[理解与定位]
         I1[打开 Knowledge]
-        I2[浏览 12 维知识]
+        I2[浏览 13 维知识]
         I3[筛选 API 契约]
         I4[展开调用树/时序图]
         I5[定位源码文件与行号]
@@ -76,7 +76,7 @@ flowchart LR
 | 2. 接入 | 把仓库放入正确的分析范围 | Home 创建 Scope，添加一个或多个绝对路径 | 保存 Scope/Member 身份；不修改目标代码；允许多个成员组成逻辑服务 | Scope、Repository Member | 担心误删/误改仓库 | 成员路径、名称和状态可辨识 |
 | 3. 分析 | 获得某个时间点的可信结果 | Snapshots 选择成员，点击“运行分析” | 创建异步 Run；按成员执行；显示校验、init/sync、冻结、分析、发布阶段 | Run、Attempt、进度和错误 | 等待时间、失败原因不明 | 成功成员拥有 current Snapshot |
 | 4. 冻结 | 确保结果与源码现场一致 | 等待或查看 Snapshot 元数据 | 对源码做前后 digest；冻结源码、图谱、manifest；中途变化则不发布 | Evidence Bundle、Snapshot ID/digest | 担心结果过时 | 结果能追溯到 branch/head/dirty 和 digest |
-| 5. 探索 | 找到与当前问题有关的结构事实 | Knowledge 选择分区、搜索 API/实体/函数 | 从 Snapshot 读取 12 维知识，给出统计、列表、证据位置 | Knowledge Report | 信息量大、维度多 | 用户找到目标入口或关键实体 |
+| 5. 探索 | 找到与当前问题有关的结构事实 | Knowledge 选择分区、搜索 API/实体/函数 | 从 Snapshot 读取 13 维知识，给出统计、列表、证据位置 | Knowledge Report | 信息量大、维度多 | 用户找到目标入口或关键实体 |
 | 6. 深挖 | 理解功能如何执行 | 展开 API、调用树、时序图和节点 | 按节点惰性加载调用树，绑定 Snapshot，显示文件/行号 | Call Tree、Sequence Diagram | 调用深度大、命名偏技术 | 用户能从入口走到关键实现证据 |
 | 7. 语义化 | 把代码事实转成业务语言 | 配置 LLM；生成 API 解释、业务规则或节点规则 | 异步/可重试生成；显示模型、状态、覆盖率和失败 | Business Explanation、Rule、Error/State | 可能误解为真相、会产生 API 费用 | 用户能审阅解释并回到源代码验证 |
 | 8. 跨仓判断 | 评估服务依赖和传播影响 | 选成员创建 Graph View，生成拓扑，选择服务/API | 以固定 View 生成 HTTP/MQ/gRPC/Redis 等证据边；查询上下游和流程 | Topology、Impact、Flow | 依赖可能歧义或未解析 | 用户能区分确定边、候选边和资源依赖 |

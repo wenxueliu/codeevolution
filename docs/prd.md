@@ -76,7 +76,7 @@ flowchart LR
     Run --> Attempt[Member Attempt\n按成员执行/失败/重试]
     Attempt --> Evidence[Evidence Bundle\n冻结源码 + CodeGraph + manifest]
     Evidence --> Snapshot[Repository Snapshot\n不可变单仓事实]
-    Snapshot --> Knowledge[Knowledge Report\n12 维单仓知识]
+    Snapshot --> Knowledge[Knowledge Report\n13 维单仓知识]
     Snapshot --> Chain[Call Tree / API 解释]
     Snapshot --> Chat[受控问答 + Audit Log]
     Snapshot --> Rule[节点规则/业务规则]
@@ -128,7 +128,7 @@ flowchart LR
     E -->|取消/失败| H[修复环境或重新选择]
     H --> D
     F --> I[创建 Graph View]
-    F --> J[Knowledge：12 维结构化知识]
+    F --> J[Knowledge：13 维结构化知识]
     J --> R[Terms：术语识别与审核]
     J --> K[API 契约 → 调用树 → 源码证据]
     K --> L[LLM 业务解释/规则]
@@ -323,7 +323,7 @@ flowchart LR
 
 | 版本 | 目标 | 能力范围 |
 |---|---|---|
-| MVP | 从仓库到可信代码证据 | Scope/Member、Analysis Run、Snapshot、12 维结构化知识、API 调用树、错误恢复 |
+| MVP | 从仓库到可信代码证据 | Scope/Member、Analysis Run、Snapshot、13 维结构化知识、API 调用树、错误恢复 |
 | V1 | 从单仓理解到跨仓决策 | Graph View、Topology Artifact、Impact、Flow、固定 View 导出、历史引用保护 |
 | V1.1 | 从事实到语义 | LLM 设置、API 功能解释（单条/批量/提示词模板）、业务规则、节点解释、业务术语识别与审核、语义产物覆盖与审计 |
 | V2 | 从分析到验证 | UI 录制/回放、更多检查点、跨 Snapshot diff、趋势、报告和团队协作 |
