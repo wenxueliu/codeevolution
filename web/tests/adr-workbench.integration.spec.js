@@ -270,6 +270,14 @@ describe('ADR workbench integration', () => {
     expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="adr-commit-row-sha-docs"]').exists()).toBe(false)
 
+    // Selecting 全部 clears the filter and requests the unfiltered list again.
+    await wrapper.find('[data-testid="adr-stage-filter-all"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.adrStageFilter).toBe('')
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('shows how many selected commits finished executing', async () => {
     const { wrapper } = await openWorkbench()
     wrapper.vm.adrBatchId = 'batch-1'
@@ -288,14 +296,6 @@ describe('ADR workbench integration', () => {
     expect(progress.text()).toContain('批量生成进度（已选 3 个提交）')
     expect(progress.text()).toContain('已完成 2/3（67%）')
     expect(wrapper.vm.adrBatchProgress).toMatchObject({ total: 3, completed: 2, percent: 67 })
-    wrapper.unmount()
-  })
-
-    // Selecting 全部 clears the filter and requests the unfiltered list again.
-    await wrapper.find('[data-testid="adr-stage-filter-all"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.vm.adrStageFilter).toBe('')
-    expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(true)
     wrapper.unmount()
   })
 

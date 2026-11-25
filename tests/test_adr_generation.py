@@ -432,10 +432,25 @@ def test_batch_generation_from_selected_commits(tmp_path):
         assert response.status_code == 202
         batch = response.json()
         assert batch["total"] == 2
+        assert batch["progress"]["total"] == 2
+        assert batch["progress"]["skipped"] == 1
+        assert batch["progress"]["queued"] == 1
+        assert batch["progress"]["percent"] == 50
+
         progress = client.get(f"/api/adr/batches/{batch['batch_id']}").json()
         statuses = {item["source_ref"]: item["status"] for item in progress["generations"]}
         assert statuses[shas["feat: add payment gateway"]] == "succeeded"
         assert statuses[shas["docs: update readme"]] == "skipped"
+        # Progress tracks how many of the selected commits finished executing.
+        assert progress["progress"] == {
+            "total": 2,
+            "completed": 1,
+            "failed": 0,
+            "skipped": 1,
+            "running": 0,
+            "queued": 0,
+            "percent": 100,
+        }
 
 
 def test_output_template_is_customizable_per_service(tmp_path):
