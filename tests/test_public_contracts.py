@@ -85,6 +85,7 @@ def test_cli_help_lists_all_public_commands():
         "register",
         "repos",
         "knowledge",
+        "adr",
         "terms",
         "topology",
         "impact",
@@ -102,6 +103,15 @@ def test_openapi_path_snapshot():
     schema = app.openapi()
     assert schema["info"]["title"] == "CodeEvolution API"
     assert sorted(schema["paths"]) == [
+        "/api/adr/batches/{batch_id}",
+        "/api/adr/drafts",
+        "/api/adr/drafts/{draft_id}",
+        "/api/adr/drafts/{draft_id}/export",
+        "/api/adr/generations",
+        "/api/adr/generations/{generation_id}",
+        "/api/adr/history",
+        "/api/adr/mapping",
+        "/api/adr/prompts",
         "/api/analysis-runs",
         "/api/analysis-runs/{run_id}",
         "/api/analysis-runs/{run_id}/cancel",

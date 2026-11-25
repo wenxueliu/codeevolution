@@ -33,6 +33,17 @@ npm i -g @colbymchenry/codegraph@0.9.x && cd <repo> && codegraph init
 # 快照分析：先通过 Web API 创建 analysis run，再对已发布快照查询知识
 codeevolution knowledge --snapshot-id <snapshot-id> [-s api]
 
+# ADR：从提交/文件/文本/历史生成草稿，查看调试映射，导出到仓库 docs/adr
+codeevolution adr gen --snapshot-id <id> --commit HEAD
+codeevolution adr gen --snapshot-id <id> --text "网关从 Node 迁移到 Rust"
+codeevolution adr gen --snapshot-id <id> --file app/payments.py
+codeevolution adr gen --snapshot-id <id> --history --limit 20
+codeevolution adr list --snapshot-id <id>
+codeevolution adr show <draft-id>
+codeevolution adr debug <generation-id>
+codeevolution adr export <draft-id>
+codeevolution adr prompts set --snapshot-id <id> --kind commit --file prompt.md
+
 # 分层规则：从现有代码图反推声明，再按声明检查（支持基线，存量渐进收紧）
 codeevolution layers init --db .codegraph/codegraph.db
 codeevolution layers check --db .codegraph/codegraph.db
@@ -67,7 +78,7 @@ codeevolution web                    # http://0.0.0.0:8765
 | # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
 |---|------|:---:|:---:|:---:|:---:|:---:|------|
 | 1 | API 契约 | x | x | x | x | | `knowledge --snapshot-id <id> -s api` |
-| 2 | ADR 决策记录 | x | x | x | | | `knowledge --snapshot-id <id> -s adr` |
+| 2 | ADR 生成与导出 | x | x | x | | | `adr gen --commit HEAD` / `adr export <draft-id>` |
 | 3 | 模块拓扑 | | x | x | | | `knowledge --snapshot-id <id> -s modules` |
 | 4 | 核心实体 (PageRank) | | x | x | | | `knowledge --snapshot-id <id> -s entities` |
 | 5 | 分层违规 | | x | | | | `knowledge --snapshot-id <id> -s layers` |
@@ -85,10 +96,14 @@ codeevolution web                    # http://0.0.0.0:8765
 | 17 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
 | 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
 
-ADR 维度在分析发布时读取被分析仓库的 `docs/adr`（或 `doc/adr`、`docs/decisions`、`adr`），
-解析 MADR 4.0 frontmatter，并执行 R1/R2 结构校验（文件名、编号、状态、日期、模板占位符、
-必需章节、替代关系双向一致性与环检测）。决策记录属于仓库数据，需在生成 Snapshot 前提交；
-发布后的记录随 facts 冻结，旧 Snapshot 返回 `available: false` 而不是报错。
+ADR 的核心是**用模型生成**，不是读取已有文档：`adr gen` 支持 `--commit`、`--file`、
+`--text`、`--history` 四种来源，按「服务 × 来源类型」解析提示词（可在 CLI/API/Web 修改并
+版本化），模型输出 MADR 4.0 草稿写入 `~/.codeevolution/adr.db`（`adr_prompts` /
+`adr_generations` / `adr_drafts`）。每次生成保存完整调试映射（来源内容、实际提示词、
+模型原始响应、解析结果、耗时），`adr debug <generation-id>` 可直接查看。草稿状态恒为
+`proposed`，只有人能改为 `accepted`；`adr export <draft-id>` 或 Web 客户端把草稿写入仓库
+`docs/adr` 并重建索引。分析发布时仍会读取仓库已有 ADR 进入 Snapshot facts（`-s adr`），
+执行 R1/R2 结构校验；旧 Snapshot 返回 `available: false` 而不是报错。
 
 ## 自动打包与重启
 

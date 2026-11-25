@@ -112,6 +112,228 @@ def cmd_knowledge(args):
         runtime.close()
 
 
+def _adr_member(runtime, snapshot_id: str, member_id: str):
+    if member_id:
+        member = runtime.store.get_member(member_id)
+        if member is None:
+            member = next(
+                (item for item in runtime.store.list_members() if item.display_name == member_id),
+                None,
+            )
+        if member is None:
+            _fail(f"repository member not found: {member_id}", 2)
+        return member
+    if not snapshot_id:
+        _fail("--snapshot-id or --member-id is required", 2)
+    snapshot = runtime.store.get_snapshot(snapshot_id)
+    if snapshot is None:
+        _fail(f"snapshot not found: {snapshot_id}", 2)
+    member = runtime.store.get_member(snapshot.member_id)
+    if member is None:
+        _fail(f"repository member not found for snapshot: {snapshot_id}", 2)
+    return member
+
+
+def _print_json(value) -> None:
+    print(json.dumps(value, indent=2, ensure_ascii=False, default=str))
+
+
+def cmd_adr(args):
+    """Generate, inspect and export Architecture Decision Records."""
+    from .adr.service import AdrService, AdrServiceError
+    from .adr.store import AdrStore
+
+    runtime = SnapshotRuntime(analysis_data_dir())
+    store = None
+    try:
+        store = AdrStore(analysis_data_dir() / "adr.db")
+        service = AdrService(store, runtime.store.get_member)
+        command = args.adr_command
+
+        if command == "gen":
+            member = _adr_member(runtime, args.snapshot_id, args.member_id)
+            if args.history:
+                batch = service.start_history(
+                    member,
+                    since=args.since,
+                    until=args.until,
+                    limit=args.limit,
+                    include_merges=args.include_merges,
+                    force=args.force,
+                )
+                generations = [
+                    service.run(item["id"]) if item["status"] == "queued" else item
+                    for item in batch["generations"]
+                ]
+                result = {"batch_id": batch["batch_id"], "generations": generations}
+                if args.json:
+                    _print_json(result)
+                else:
+                    for item in generations:
+                        _print_adr_generation(item, store)
+                return
+
+            kind, source = _adr_source_from_args(args)
+            generation = service.generate(member, source, force=args.force)
+            detail = service.get_generation(generation["id"])
+            if args.json:
+                _print_json(detail)
+            else:
+                _print_adr_generation(detail["generation"], store, detail["draft"])
+            return
+
+        if command == "list":
+            member = _adr_member(runtime, args.snapshot_id, args.member_id)
+            generations = service.list_generations(member.id, limit=args.limit)
+            drafts = service.list_drafts(member.id, limit=args.limit)
+            if args.json:
+                _print_json({"generations": generations, "drafts": drafts})
+            else:
+                for draft in drafts:
+                    print(
+                        f"{draft['id']}  {draft['status']:<10} {draft['title']}"
+                        f"  [{draft['source_kind']}:{draft['source_ref'][:12]}]"
+                        + (f"  exported:{draft['exported_path']}" if draft.get("exported_path") else "")
+                    )
+                if not drafts:
+                    print("no ADR drafts yet")
+                for generation in generations:
+                    if generation["status"] in {"failed", "skipped", "queued", "running"}:
+                        print(
+                            f"(generation) {generation['id']}  {generation['status']:<10} "
+                            f"{generation.get('skip_reason') or generation.get('error_message') or ''}"
+                        )
+            return
+
+        if command == "show":
+            detail = service.get_draft(args.draft_id)
+            if args.json:
+                _print_json(detail)
+            else:
+                print(detail["draft"]["markdown"])
+            return
+
+        if command == "debug":
+            detail = service.get_generation(args.generation_id)
+            generation = detail["generation"]
+            mapping = {
+                "generation_id": generation["id"],
+                "status": generation["status"],
+                "source": {
+                    "kind": generation["source_kind"],
+                    "ref": generation["source_ref"],
+                    "digest": generation["source_digest"],
+                    "payload": generation["source_payload"],
+                },
+                "prompt": {
+                    "origin": "member" if generation["prompt_id"] else "default",
+                    "version": generation["prompt_version"],
+                    "digest": generation["prompt_digest"],
+                    "template": generation["prompt_text"],
+                    "rendered": generation.get("prompt_rendered", ""),
+                },
+                "model": generation["model"],
+                "raw_response": generation["raw_response"],
+                "parsed": generation.get("parsed"),
+                "draft": detail.get("draft"),
+                "error": generation.get("error_message") or generation.get("skip_reason") or "",
+                "duration_ms": generation["duration_ms"],
+            }
+            _print_json(mapping)
+            return
+
+        if command == "export":
+            result = service.export_draft(args.draft_id)
+            if args.json:
+                _print_json(result)
+            else:
+                print(f"wrote {result['path']}")
+                print(f"index {result['index_path']}")
+            return
+
+        if command == "mapping":
+            member = _adr_member(runtime, args.snapshot_id, args.member_id)
+            result = service.source_mapping(member.id)
+            if args.json:
+                _print_json(result)
+            else:
+                for row in result["sources"]:
+                    latest = row["latest_draft"]
+                    suffix = f" -> {latest['title']}" if latest else ""
+                    print(
+                        f"{row['source_kind']:<8} prompt={row['prompt_origin']} v{row['prompt_version']}"
+                        f" generations={row['generation_count']}{suffix}"
+                    )
+            return
+
+        if command == "prompts":
+            member = _adr_member(runtime, args.snapshot_id, args.member_id)
+            if args.prompts_command == "list":
+                result = service.prompts(member.id)
+                if args.json:
+                    _print_json(result)
+                else:
+                    for item in result["kinds"]:
+                        prompt = item["prompt"]
+                        origin = "member" if prompt else "default"
+                        version = prompt["version"] if prompt else 0
+                        print(f"{item['source_kind']:<8} {origin:<8} v{version}")
+                return
+            if args.prompts_command == "set":
+                text = args.text or ""
+                if args.file:
+                    text = Path(args.file).read_text(encoding="utf-8")
+                prompt = service.save_prompt(member.id, args.kind, text)
+                result = {"prompt": prompt, "kinds": service.prompts(member.id)["kinds"]}
+                _print_json(result) if args.json else print(
+                    f"saved {args.kind} prompt v{prompt['version']}"
+                )
+                return
+            if args.prompts_command == "reset":
+                reset = service.reset_prompt(member.id, args.kind)
+                result = {"reset": reset, "kinds": service.prompts(member.id)["kinds"]}
+                _print_json(result) if args.json else print(
+                    f"reset {args.kind} prompt: {'ok' if reset else 'already default'}"
+                )
+                return
+            _fail("unknown adr prompts command", 2)
+
+        _fail("unknown adr command", 2)
+    except AdrServiceError as error:
+        _fail(str(error), 2)
+    finally:
+        if store is not None:
+            store.close()
+        runtime.close()
+
+
+def _adr_source_from_args(args) -> tuple[str, dict]:
+    if args.commit:
+        return "commit", {"kind": "commit", "ref": args.commit}
+    if args.file:
+        return "file", {"kind": "file", "path": args.file}
+    if args.text:
+        return "text", {"kind": "text", "text": args.text}
+    _fail("one of --commit, --file, --text or --history is required", 2)
+
+
+def _print_adr_generation(generation: dict, store, draft: dict | None = None) -> None:
+    print(
+        f"[{generation['status']}] {generation['source_kind']}:{generation['source_ref'][:20]}"
+        f" model={generation['model'] or '-'} prompt=V{generation['prompt_version'] or 'default'}"
+    )
+    if draft is None and generation.get("draft_id"):
+        draft = store.get_draft(generation["draft_id"])
+    if draft:
+        print(f"  {draft['title']}")
+        print(f"  draft: {draft['id']}")
+        print(f"  path:  {draft['exported_path'] or '(not exported)'}")
+    if generation.get("skip_reason"):
+        print(f"  skipped: {generation['skip_reason']}")
+    if generation.get("error_message"):
+        print(f"  error: {generation['error_message']}")
+
+
 def _layers_graph(args) -> tuple[Path, Path]:
     """Resolve the CodeGraph database and the repository root that owns it."""
     db_path = Path(args.db) if args.db else Path(".codegraph") / "codegraph.db"
@@ -1073,6 +1295,67 @@ def main():
         help="Which knowledge section to extract (default: all)",
     )
     p.set_defaults(handler=cmd_knowledge)
+
+    # adr
+    p = subparsers.add_parser("adr", help="Generate and export Architecture Decision Records")
+    adr_sub = p.add_subparsers(dest="adr_command", help="ADR sub-commands")
+
+    gen = adr_sub.add_parser("gen", help="Generate an ADR draft from a commit, file or text")
+    gen.add_argument("--snapshot-id", default="", help="Snapshot used to resolve the repository service")
+    gen.add_argument("--member-id", default="", help="Repository member id or display name")
+    source = gen.add_mutually_exclusive_group()
+    source.add_argument("--commit", nargs="?", const="HEAD", default="", help="Commit ref (default HEAD)")
+    source.add_argument("--file", default="", help="Repository-relative file path")
+    source.add_argument("--text", default="", help="One-sentence decision description")
+    source.add_argument("--history", action="store_true", help="Generate from recent commits")
+    gen.add_argument("--since", default="", help="History lower bound (git --since)")
+    gen.add_argument("--until", default="", help="History upper bound (git --until)")
+    gen.add_argument("--limit", type=int, default=10, help="History candidate limit (default 10)")
+    gen.add_argument("--include-merges", action="store_true", help="Include merge commits")
+    gen.add_argument("--force", action="store_true", help="Bypass the docs/tests/lockfile signal filter")
+    gen.add_argument("--json", action="store_true", help="Machine-readable output")
+    gen.set_defaults(handler=cmd_adr)
+
+    listing = adr_sub.add_parser("list", help="List ADR drafts and recent generations")
+    listing.add_argument("--snapshot-id", default="")
+    listing.add_argument("--member-id", default="")
+    listing.add_argument("--limit", type=int, default=50)
+    listing.add_argument("--json", action="store_true")
+    listing.set_defaults(handler=cmd_adr)
+
+    show = adr_sub.add_parser("show", help="Print one ADR draft as MADR Markdown")
+    show.add_argument("draft_id")
+    show.add_argument("--json", action="store_true")
+    show.set_defaults(handler=cmd_adr)
+
+    debug = adr_sub.add_parser("debug", help="Show the source -> prompt -> model -> ADR mapping")
+    debug.add_argument("generation_id")
+    debug.set_defaults(handler=cmd_adr)
+
+    export = adr_sub.add_parser("export", help="Write a draft into the repository ADR directory")
+    export.add_argument("draft_id")
+    export.add_argument("--json", action="store_true")
+    export.set_defaults(handler=cmd_adr)
+
+    mapping = adr_sub.add_parser("mapping", help="Show source -> prompt -> ADR mapping")
+    mapping.add_argument("--snapshot-id", default="")
+    mapping.add_argument("--member-id", default="")
+    mapping.add_argument("--json", action="store_true")
+    mapping.set_defaults(handler=cmd_adr)
+
+    prompts = adr_sub.add_parser("prompts", help="Inspect or override per-service ADR prompts")
+    prompts_sub = prompts.add_subparsers(dest="prompts_command", help="Prompt sub-commands")
+    for name in ("list", "set", "reset"):
+        sub = prompts_sub.add_parser(name)
+        sub.add_argument("--snapshot-id", default="")
+        sub.add_argument("--member-id", default="")
+        if name != "list":
+            sub.add_argument("--kind", required=True, choices=["commit", "file", "text"])
+        if name == "set":
+            sub.add_argument("--file", default="", help="Read the prompt from a file")
+            sub.add_argument("--text", default="", help="Prompt text")
+        sub.add_argument("--json", action="store_true")
+        sub.set_defaults(handler=cmd_adr)
 
     # layers
     p = subparsers.add_parser("layers", help="Generate or check architecture-layer rules")

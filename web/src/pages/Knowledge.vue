@@ -254,50 +254,254 @@
         </template>
 
         <template v-else-if="activeSection === 'adr'">
-          <UiState
-            v-if="!activeData.available"
-            kind="empty"
-            :title="t('该 Snapshot 未包含 ADR 决策记录')"
-            :message="t('ADR 读取自被分析仓库的 docs/adr（或 doc/adr、docs/decisions、adr），需在生成 Snapshot 前提交。')"
-          />
-          <template v-else>
-            <div class="metrics">
-              <div class="metric">{{ activeData.total ?? 0 }} <small>{{ t('条决策') }}</small></div>
-              <div class="metric">{{ adrStatusCount('accepted') }} <small>{{ t('已接受') }}</small></div>
-              <div class="metric">{{ adrStatusCount('proposed') }} <small>{{ t('提议中') }}</small></div>
-              <div class="metric" :class="{ danger: (activeData.error_count || 0) > 0 }">{{ activeData.error_count ?? 0 }} <small>{{ t('个校验错误') }}</small></div>
-            </div>
-            <p class="muted">
-              {{ t('目录') }}: <code>{{ activeData.adr_dir }}</code>
-              <span v-if="!activeData.index_present"> · {{ t('缺少 index.md 索引') }}</span>
-              <span v-else-if="activeData.index_stale"> · {{ t('索引已过期，需运行 adr-index 重建') }}</span>
-            </p>
-            <div class="table-wrap"><table data-testid="adr-table"><thead><tr>
-              <th>{{ t('编号') }}</th><th>{{ t('标题') }}</th><th>{{ t('状态') }}</th><th>{{ t('日期') }}</th><th>{{ t('替代关系') }}</th><th>{{ t('文件') }}</th>
-            </tr></thead><tbody>
-              <tr v-for="row in activeData.records || []" :key="row.path">
-                <td><b>{{ row.id }}</b></td>
-                <td>{{ row.title || '-' }}</td>
-                <td><span class="term-status" :class="adrStatusKey(row.status)">{{ adrStatusLabel(row.status) }}</span></td>
-                <td>{{ row.date || '-' }}</td>
-                <td>{{ adrSupersedeText(row) }}</td>
-                <td><code>{{ row.path }}</code></td>
-              </tr>
-            </tbody></table></div>
-            <template v-if="(activeData.violations || []).length">
-              <h3>{{ t('结构校验') }} ({{ activeData.violations.length }})</h3>
-              <div class="table-wrap"><table data-testid="adr-violations"><thead><tr>
-                <th>{{ t('规则') }}</th><th>{{ t('级别') }}</th><th>{{ t('文件') }}</th><th>{{ t('说明') }}</th>
+          <section class="adr-workbench" data-testid="adr-workbench">
+            <section class="adr-card" data-testid="adr-generate">
+              <div class="adr-card-heading">
+                <div>
+                  <h3>{{ t('生成 ADR') }}</h3>
+                  <p>{{ t('按来源调用模型生成 MADR 4.0 草稿；草稿保存在本地数据库，导出后才会写入仓库 docs/adr。') }}</p>
+                </div>
+              </div>
+              <div class="adr-tabs" role="tablist">
+                <button
+                  v-for="tab in adrSourceTabs"
+                  :key="tab.key"
+                  type="button"
+                  role="tab"
+                  class="adr-tab"
+                  :class="{ active: adrSourceKind === tab.key }"
+                  :aria-selected="adrSourceKind === tab.key"
+                  :data-testid="`adr-tab-${tab.key}`"
+                  @click="adrSourceKind = tab.key"
+                >{{ tab.label }}</button>
+              </div>
+              <div class="adr-form">
+                <template v-if="adrSourceKind === 'commit'">
+                  <label class="adr-field"><span>{{ t('提交引用') }}</span><input v-model.trim="adrCommitRef" type="text" :placeholder="t('例如 HEAD 或提交 SHA')" data-testid="adr-commit-ref" /></label>
+                  <label class="adr-check"><input v-model="adrForce" type="checkbox" /> <span>{{ t('绕过过滤（force）') }}</span></label>
+                  <p class="prompt-hint">{{ t('默认跳过合并提交，以及只修改文档、测试或 lockfile 的提交。') }}</p>
+                </template>
+                <template v-else-if="adrSourceKind === 'file'">
+                  <label class="adr-field"><span>{{ t('仓库内文件路径') }}</span><input v-model.trim="adrFilePath" type="text" :placeholder="t('例如 src/app/main.py')" data-testid="adr-file-path" /></label>
+                  <label class="adr-field"><span>{{ t('或选择本地文件') }}</span><input type="file" accept=".md,.txt,.py,.ts,.js,.json,.yaml,.yml,.java,.go,.rs" data-testid="adr-file-picker" @change="onAdrFilePicked" /></label>
+                  <p v-if="adrPickedFile" class="adr-file-note">{{ t('已选择本地文件：{name}', { name: adrPickedFile.name }) }} <button class="link-button" type="button" @click="clearAdrPickedFile">{{ t('清除') }}</button></p>
+                  <p class="prompt-hint">{{ t('填写仓库内路径时由后端读取文件；选择本地文件时直接提交文件内容，文件名保留在来源中。') }}</p>
+                </template>
+                <template v-else-if="adrSourceKind === 'text'">
+                  <label class="adr-field"><span>{{ t('一句话决策') }}</span><textarea v-model="adrText" rows="3" :placeholder="t('例如：网关从 Node 迁移到 Rust，以降低尾延迟')" data-testid="adr-text-input"></textarea></label>
+                </template>
+                <template v-else>
+                  <div class="adr-grid">
+                    <label class="adr-field"><span>{{ t('起始日期（since）') }}</span><input v-model.trim="adrSince" type="date" data-testid="adr-since" /></label>
+                    <label class="adr-field"><span>{{ t('结束日期（until）') }}</span><input v-model.trim="adrUntil" type="date" data-testid="adr-until" /></label>
+                    <label class="adr-field"><span>{{ t('生成数量上限') }}</span><input v-model.number="adrLimit" type="number" min="1" max="50" data-testid="adr-limit" /></label>
+                  </div>
+                  <label class="adr-check"><input v-model="adrIncludeMerges" type="checkbox" /> <span>{{ t('包含合并提交') }}</span></label>
+                  <label class="adr-check"><input v-model="adrForce" type="checkbox" /> <span>{{ t('绕过过滤（force）') }}</span></label>
+                  <p class="prompt-hint">{{ t('日期留空表示不限；数量上限按最新提交截取。') }}</p>
+                </template>
+              </div>
+              <div class="adr-actions">
+                <button v-if="adrSourceKind === 'history'" class="primary" :disabled="adrSubmitting || adrBatchActive" data-testid="adr-history-submit" @click="submitAdrHistory">{{ adrSubmitting ? t('提交中...') : t('按历史批量生成') }}</button>
+                <button v-else class="primary" :disabled="adrSubmitting || adrActiveGeneration" data-testid="adr-generate-submit" @click="submitAdrGeneration">{{ adrSubmitting || adrActiveGeneration ? t('生成中...') : t('生成') }}</button>
+              </div>
+              <p v-if="adrError" class="explanation-error" data-testid="adr-generation-error">{{ adrError }}</p>
+              <div class="llm-progress" v-if="adrActiveGeneration" data-testid="adr-generation-progress">
+                <div class="llm-progress-heading"><span>{{ t('ADR 生成中') }}</span><strong>{{ adrGeneration.progress || 0 }}%</strong></div>
+                <div class="llm-progress-track"><span :style="{ width: `${adrGeneration.progress || 0}%` }"></span></div>
+                <p>{{ t('状态：{status}', { status: adrGenerationStatusText(adrGeneration.status) }) }} · {{ t('当前阶段：{stage}', { stage: adrStageText(adrGeneration.stage) }) }}</p>
+              </div>
+              <div class="llm-error" v-if="adrGeneration?.status === 'failed'" data-testid="adr-generation-failed">
+                {{ t('ADR 生成失败') }}：{{ adrGeneration.error_message || t('未知错误') }}
+              </div>
+              <div class="notice" v-if="adrGeneration?.status === 'skipped'" data-testid="adr-generation-skipped">
+                {{ t('已跳过本次生成') }}：{{ adrGeneration.skip_reason || t('未说明原因') }}
+              </div>
+              <p class="adr-success" v-if="adrSuccessNote" data-testid="adr-generation-success">
+                {{ adrSuccessNote }}
+                <button v-if="adrSuccessDraftId" class="link-button" type="button" @click="openAdrDraft({ id: adrSuccessDraftId })">{{ t('查看草稿') }}</button>
+              </p>
+              <div class="llm-progress" v-if="adrBatchId" data-testid="adr-batch-progress">
+                <div class="llm-progress-heading"><span>{{ t('历史批量生成（{total} 个提交）', { total: adrBatchTotal }) }}</span><strong>{{ adrBatchPercent }}%</strong></div>
+                <div class="llm-progress-track"><span :style="{ width: `${adrBatchPercent}%` }"></span></div>
+                <p>{{ t('排队 {queued} · 进行中 {running} · 成功 {succeeded} · 跳过 {skipped} · 失败 {failed}', adrBatchCounts) }}</p>
+                <p v-if="adrBatchNote" class="adr-batch-note">{{ adrBatchNote }}</p>
+              </div>
+            </section>
+
+            <section class="adr-card" data-testid="adr-drafts">
+              <div class="adr-card-heading">
+                <div>
+                  <h3>{{ t('ADR 草稿') }}</h3>
+                  <p>{{ t('草稿保存在本地数据库，导出后才会写入仓库 docs/adr 并刷新索引。') }}</p>
+                </div>
+                <button class="secondary sm" :disabled="adrDraftsLoading" @click="loadAdrDrafts">{{ adrDraftsLoading ? t('加载中...') : t('刷新') }}</button>
+              </div>
+              <p v-if="adrDraftsError" class="explanation-error">{{ adrDraftsError }}</p>
+              <div v-if="adrDrafts.length" class="table-wrap">
+                <table data-testid="adr-drafts-table">
+                  <thead><tr><th>{{ t('标题') }}</th><th>{{ t('状态') }}</th><th>{{ t('来源') }}</th><th>{{ t('生成时间') }}</th><th>{{ t('操作') }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="draft in adrDrafts" :key="draft.id" :class="{ selected: adrDetail?.draft?.id === draft.id }">
+                      <td>
+                        <b>{{ draft.title || draft.slug || draft.id }}</b>
+                        <small v-if="draft.exported_path" class="adr-exported">{{ t('已导出到 {path}', { path: draft.exported_path }) }}</small>
+                      </td>
+                      <td><span class="term-status" :class="adrDraftStatusKey(draft.status)">{{ adrDraftStatusText(draft.status) }}</span></td>
+                      <td>{{ adrSourceKindLabel(draft.source_kind) }} · <code>{{ shortAdrRef(draft.source_ref) }}</code></td>
+                      <td>{{ formatSnapshotTime(draft.created_at) }}</td>
+                      <td class="adr-row-actions">
+                        <button class="secondary sm" :disabled="adrDetailLoading" @click="openAdrDraft(draft)">{{ t('查看') }}</button>
+                        <button class="secondary sm" :disabled="adrExportingId === draft.id" @click="exportAdrDraft(draft)">{{ adrExportingId === draft.id ? t('导出中...') : t('导出') }}</button>
+                        <button class="secondary sm danger" :disabled="adrDeletingId === draft.id" @click="deleteAdrDraft(draft)">{{ adrDeletingId === draft.id ? t('删除中...') : t('删除') }}</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-if="adrExportState.path" class="adr-success" data-testid="adr-export-result">{{ t('已导出到 {path}', { path: adrExportState.path }) }}</p>
+              <p v-if="adrExportState.error" class="explanation-error">{{ t('导出失败') }}：{{ adrExportState.error }}</p>
+              <UiState v-if="!adrDrafts.length && !adrDraftsLoading && !adrDraftsError" kind="empty" :title="t('还没有 ADR 草稿')" :message="t('在上方选择来源并生成第一条 ADR 草稿。')" />
+              <p v-else-if="adrDraftsLoading && !adrDrafts.length" class="muted">{{ t('正在加载 ADR 草稿') }}</p>
+
+              <section v-if="adrDetail || adrDetailLoading || adrDetailError" class="adr-detail" data-testid="adr-detail">
+                <div class="adr-detail-heading">
+                  <h4>{{ t('ADR 草稿详情') }}<template v-if="adrDetail?.draft?.title"> · {{ adrDetail.draft.title }}</template></h4>
+                  <button class="secondary sm" type="button" @click="closeAdrDetail">{{ t('关闭') }}</button>
+                </div>
+                <p v-if="adrDetailLoading" class="muted">{{ t('正在加载 ADR 草稿详情...') }}</p>
+                <p v-else-if="adrDetailError" class="explanation-error">{{ adrDetailError }}</p>
+                <template v-else-if="adrDetail">
+                  <div class="adr-detail-meta">
+                    <span>{{ t('状态：{status}', { status: adrDraftStatusText(adrDetail.draft?.status) }) }}</span>
+                    <span>{{ t('生成时间：{time}', { time: formatSnapshotTime(adrDetail.draft?.created_at) }) }}</span>
+                    <span v-if="adrDetail.draft?.exported_path">{{ t('已导出到 {path}', { path: adrDetail.draft.exported_path }) }}</span>
+                  </div>
+                  <h5>{{ t('MADR 草稿内容') }}</h5>
+                  <pre class="adr-markdown">{{ adrDetail.draft?.markdown || '' }}</pre>
+                  <details class="adr-debug" open>
+                    <summary>{{ t('调试映射') }}</summary>
+                    <template v-if="adrDetail.generation">
+                      <h6>{{ t('来源') }}</h6>
+                      <p class="muted">
+                        {{ t('来源类型：{kind}', { kind: adrSourceKindLabel(adrDetail.generation.source_kind) }) }}
+                        · {{ t('来源引用：{ref}', { ref: adrDetail.generation.source_ref || '-' }) }}
+                        · {{ t('来源摘要：{digest}', { digest: adrDetail.generation.source_digest || '-' }) }}
+                      </p>
+                      <details>
+                        <summary>{{ t('来源载荷（source_payload）') }}</summary>
+                        <pre>{{ formatJson(adrDetail.generation.source_payload || {}) }}</pre>
+                      </details>
+                      <h6>{{ t('提示词') }}</h6>
+                      <p class="muted">
+                        {{ t('提示词来源：{origin}', { origin: adrDetail.generation.prompt_id ? t('服务自定义') : t('系统默认') }) }}
+                        · {{ t('版本：v{version}', { version: adrDetail.generation.prompt_version ?? 0 }) }}
+                        · {{ t('摘要：{digest}', { digest: adrDetail.generation.prompt_digest || '-' }) }}
+                      </p>
+                      <pre>{{ adrDetail.generation.prompt_text || '-' }}</pre>
+                      <h6>{{ t('模型') }}</h6>
+                      <p>{{ adrDetail.generation.model || '-' }}</p>
+                      <h6>{{ t('原始响应') }}</h6>
+                      <pre>{{ adrDetail.generation.raw_response || '-' }}</pre>
+                      <h6>{{ t('解析结果') }}</h6>
+                      <pre>{{ adrDetail.generation.parsed ? formatJson(adrDetail.generation.parsed) : '-' }}</pre>
+                      <h6>{{ t('错误 / 跳过原因') }}</h6>
+                      <p>{{ adrDetail.generation.error_message || adrDetail.generation.skip_reason || '-' }}</p>
+                      <h6>{{ t('耗时') }}</h6>
+                      <p>{{ adrDetail.generation.duration_ms ?? '-' }} ms</p>
+                    </template>
+                    <p v-else class="muted">{{ t('该草稿没有关联的生成记录。') }}</p>
+                  </details>
+                </template>
+              </section>
+            </section>
+
+            <details class="adr-card adr-prompt-card" data-testid="adr-prompt-settings">
+              <summary>{{ t('ADR 提示词 · 按服务') }}</summary>
+              <div class="adr-prompt-body">
+                <div class="adr-card-heading">
+                  <div>
+                    <p>{{ t('提示词按服务保存版本，生成时按来源类型解析；未自定义时使用系统默认模板。') }}</p>
+                  </div>
+                  <span v-if="adrPrompts?.member_id" class="adr-member">{{ t('当前服务') }}：<code>{{ adrPrompts.member_id }}</code></span>
+                </div>
+                <div class="adr-tabs">
+                  <button
+                    v-for="tab in adrPromptTabs"
+                    :key="tab.key"
+                    type="button"
+                    class="adr-tab"
+                    :class="{ active: adrPromptKind === tab.key }"
+                    @click="selectAdrPromptKind(tab.key)"
+                  >{{ tab.label }}</button>
+                </div>
+                <p class="adr-prompt-meta">
+                  <span class="term-status" :class="{ accepted: adrPromptIsCustom }">{{ adrPromptVersionLabel }}</span>
+                  <span>{{ t('提示词摘要：{digest}', { digest: adrPromptDigestValue || '-' }) }}</span>
+                </p>
+                <label class="prompt-field">
+                  <span>{{ t('生效提示词') }}</span>
+                  <textarea v-model="adrPromptText" rows="14" :placeholder="t('留空无法保存；点击“恢复默认”可回到系统模板。')" data-testid="adr-prompt-textarea"></textarea>
+                </label>
+                <p class="prompt-hint">{{ adrPromptPlaceholderHint }}</p>
+                <div class="api-prompt-actions">
+                  <button class="secondary sm" :disabled="adrPromptSaving || !adrPromptText.trim()" @click="saveAdrPrompt">{{ adrPromptSaving ? t('保存中...') : t('保存') }}</button>
+                  <button class="secondary sm" :disabled="adrPromptSaving || !adrPromptIsCustom" @click="resetAdrPrompt">{{ t('恢复默认') }}</button>
+                </div>
+                <p v-if="adrPromptNotice" class="adr-success">{{ adrPromptNotice }}</p>
+                <p v-if="adrPromptError" class="explanation-error">{{ adrPromptError }}</p>
+              </div>
+            </details>
+          </section>
+
+          <section class="adr-facts" data-testid="adr-facts">
+            <h3>{{ t('仓库已有 ADR（Snapshot 冻结）') }}</h3>
+            <p class="muted">{{ t('以下记录读取自被分析仓库中已提交的 ADR，随 Snapshot 冻结，仅作只读查看；与上方生成的草稿互不影响。') }}</p>
+            <UiState
+              v-if="!activeData.available"
+              kind="empty"
+              :title="t('该 Snapshot 未包含 ADR 决策记录')"
+              :message="t('ADR 读取自被分析仓库的 docs/adr（或 doc/adr、docs/decisions、adr），需在生成 Snapshot 前提交。')"
+            />
+            <template v-else>
+              <div class="metrics">
+                <div class="metric">{{ activeData.total ?? 0 }} <small>{{ t('条决策') }}</small></div>
+                <div class="metric">{{ adrStatusCount('accepted') }} <small>{{ t('已接受') }}</small></div>
+                <div class="metric">{{ adrStatusCount('proposed') }} <small>{{ t('提议中') }}</small></div>
+                <div class="metric" :class="{ danger: (activeData.error_count || 0) > 0 }">{{ activeData.error_count ?? 0 }} <small>{{ t('个校验错误') }}</small></div>
+              </div>
+              <p class="muted">
+                {{ t('目录') }}: <code>{{ activeData.adr_dir }}</code>
+                <span v-if="!activeData.index_present"> · {{ t('缺少 index.md 索引') }}</span>
+                <span v-else-if="activeData.index_stale"> · {{ t('索引已过期，需运行 adr-index 重建') }}</span>
+              </p>
+              <div class="table-wrap"><table data-testid="adr-table"><thead><tr>
+                <th>{{ t('编号') }}</th><th>{{ t('标题') }}</th><th>{{ t('状态') }}</th><th>{{ t('日期') }}</th><th>{{ t('替代关系') }}</th><th>{{ t('文件') }}</th>
               </tr></thead><tbody>
-                <tr v-for="(issue, index) in activeData.violations" :key="index">
-                  <td><code>{{ issue.rule }}</code></td>
-                  <td>{{ issue.level === 'error' ? t('错误') : t('警告') }}</td>
-                  <td><code>{{ issue.path }}</code></td>
-                  <td>{{ issue.message }}</td>
+                <tr v-for="row in activeData.records || []" :key="row.path">
+                  <td><b>{{ row.id }}</b></td>
+                  <td>{{ row.title || '-' }}</td>
+                  <td><span class="term-status" :class="adrStatusKey(row.status)">{{ adrStatusLabel(row.status) }}</span></td>
+                  <td>{{ row.date || '-' }}</td>
+                  <td>{{ adrSupersedeText(row) }}</td>
+                  <td><code>{{ row.path }}</code></td>
                 </tr>
               </tbody></table></div>
+              <template v-if="(activeData.violations || []).length">
+                <h3>{{ t('结构校验') }} ({{ activeData.violations.length }})</h3>
+                <div class="table-wrap"><table data-testid="adr-violations"><thead><tr>
+                  <th>{{ t('规则') }}</th><th>{{ t('级别') }}</th><th>{{ t('文件') }}</th><th>{{ t('说明') }}</th>
+                </tr></thead><tbody>
+                  <tr v-for="(issue, index) in activeData.violations" :key="index">
+                    <td><code>{{ issue.rule }}</code></td>
+                    <td>{{ issue.level === 'error' ? t('错误') : t('警告') }}</td>
+                    <td><code>{{ issue.path }}</code></td>
+                    <td>{{ issue.message }}</td>
+                  </tr>
+                </tbody></table></div>
+              </template>
             </template>
-          </template>
+          </section>
         </template>
 
         <template v-else-if="activeSection === 'module_topology'">
@@ -700,6 +904,16 @@ export default {
       promptText: DEFAULT_ENDPOINT_GUIDANCE, promptDefaults: { ...DEFAULT_PROMPT_TEMPLATES }, promptTemplates: { ...DEFAULT_PROMPT_TEMPLATES }, promptCurrent: null, promptProfiles: [], promptSaving: false, promptError: '',
       batchJob: null, batchPollTimer: null, exporting: false,
       endpointCustomPrompts: {}, endpointPromptEditor: null,
+      adrSourceKind: 'commit', adrCommitRef: '', adrForce: false,
+      adrFilePath: '', adrPickedFile: null, adrText: '',
+      adrSince: '', adrUntil: '', adrLimit: 10, adrIncludeMerges: false,
+      adrSubmitting: false, adrError: '', adrGeneration: null, adrDraft: null, adrPollTimer: null,
+      adrSuccessNote: '', adrSuccessDraftId: '',
+      adrBatchId: '', adrBatch: null, adrBatchPollTimer: null, adrBatchNote: '',
+      adrDrafts: [], adrDraftsLoading: false, adrDraftsError: '',
+      adrExportingId: '', adrDeletingId: '', adrExportState: { id: '', path: '', error: '' },
+      adrDetail: null, adrDetailLoading: false, adrDetailError: '',
+      adrPrompts: null, adrPromptKind: 'commit', adrPromptText: '', adrPromptSaving: false, adrPromptError: '', adrPromptNotice: '',
     }
   },
   computed: {
@@ -840,6 +1054,66 @@ export default {
       return this.t(({ queued: '排队中', inventory: '读取文件清单', domains: '提出业务域', classifying: '分类中', completed: '已完成', failed: '失败' })[stage] || stage || '排队中')
     },
     batchActive() { return ['queued', 'running'].includes(this.batchJob?.status) },
+    adrSourceTabs() {
+      return [
+        { key: 'commit', label: this.t('提交') },
+        { key: 'file', label: this.t('文件') },
+        { key: 'text', label: this.t('一句话') },
+        { key: 'history', label: this.t('历史') },
+      ]
+    },
+    adrPromptTabs() {
+      return [
+        { key: 'commit', label: this.t('提交') },
+        { key: 'file', label: this.t('文件') },
+        { key: 'text', label: this.t('一句话') },
+      ]
+    },
+    adrActiveGeneration() { return ['queued', 'running'].includes(this.adrGeneration?.status) },
+    adrBatchActive() {
+      return (this.adrBatch?.generations || []).some(item => ['queued', 'running'].includes(item.status))
+    },
+    adrBatchCounts() {
+      const counts = this.adrBatch?.counts || {}
+      if (Object.keys(counts).length) {
+        return {
+          queued: Number(counts.queued || 0),
+          running: Number(counts.running || 0),
+          succeeded: Number(counts.succeeded || 0),
+          skipped: Number(counts.skipped || 0),
+          failed: Number(counts.failed || 0),
+        }
+      }
+      const result = { queued: 0, running: 0, succeeded: 0, skipped: 0, failed: 0 }
+      for (const item of this.adrBatch?.generations || []) {
+        if (result[item.status] !== undefined) result[item.status] += 1
+      }
+      return result
+    },
+    adrBatchTotal() {
+      const counts = this.adrBatchCounts
+      return counts.queued + counts.running + counts.succeeded + counts.skipped + counts.failed
+    },
+    adrBatchPercent() {
+      const counts = this.adrBatchCounts
+      const total = this.adrBatchTotal
+      return total ? Math.round(((counts.succeeded + counts.skipped + counts.failed) / total) * 100) : 0
+    },
+    adrPromptEntry() {
+      return (this.adrPrompts?.kinds || []).find(item => item.source_kind === this.adrPromptKind) || null
+    },
+    adrPromptIsCustom() { return Boolean(this.adrPromptEntry?.prompt) },
+    adrPromptVersionLabel() {
+      const prompt = this.adrPromptEntry?.prompt
+      return prompt ? this.t('自定义 v{version}', { version: prompt.version ?? 0 }) : this.t('系统默认')
+    },
+    adrPromptDigestValue() {
+      const entry = this.adrPromptEntry
+      return entry?.prompt?.prompt_digest || entry?.prompt_digest || ''
+    },
+    adrPromptPlaceholderHint() {
+      return this.t('可用占位符：{{service}}、{{repo}}、{{source_ref}}、{{commit_message}}、{{commit_files}}、{{diff}}、{{content}}、{{text}}、{{schema}}、{{existing_adrs}}；未使用的占位符生成时为空。')
+    },
     llmProgress() {
       const progress = this.llmJob?.progress || {}
       return {
@@ -886,6 +1160,14 @@ export default {
         this.clearLlmPoll()
         this.promptText = DEFAULT_ENDPOINT_GUIDANCE; this.promptDefaults = { ...DEFAULT_PROMPT_TEMPLATES }; this.promptTemplates = { ...DEFAULT_PROMPT_TEMPLATES }; this.promptCurrent = null; this.promptProfiles = []; this.promptError = ''
         this.batchJob = null; this.clearBatchPoll()
+        this.clearAdrPoll(); this.clearAdrBatchPoll()
+        this.adrGeneration = null; this.adrDraft = null; this.adrSubmitting = false; this.adrError = ''
+        this.adrSuccessNote = ''; this.adrSuccessDraftId = ''
+        this.adrBatchId = ''; this.adrBatch = null; this.adrBatchNote = ''
+        this.adrDrafts = []; this.adrDraftsError = ''; this.adrDetail = null; this.adrDetailError = ''
+        this.adrExportingId = ''; this.adrDeletingId = ''; this.adrExportState = { id: '', path: '', error: '' }
+        this.adrPrompts = null; this.adrPromptText = ''; this.adrPromptError = ''; this.adrPromptNotice = ''
+        this.adrPickedFile = null; this.adrFilePath = ''; this.adrCommitRef = ''; this.adrText = ''
         this.endpointCustomPrompts = {}; this.endpointPromptEditor = null
         this.projectCatalog = []
         this.error = null
@@ -909,6 +1191,8 @@ export default {
     this.clearLlmPoll()
     this.clearTaxonomyPoll()
     this.clearBatchPoll()
+    this.clearAdrPoll()
+    this.clearAdrBatchPoll()
     for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
   },
   methods: {
@@ -952,6 +1236,328 @@ export default {
         parts.push(this.t('替代 {ids}', { ids: row.supersedes.map(id => `ADR-${String(id).padStart(4, '0')}`).join(', ') }))
       }
       return parts.length ? parts.join(' · ') : '-'
+    },
+    // ── ADR workbench: generation, drafts, prompts ──
+    adrErrorMessage(err, fallbackKey) {
+      return (err?.body && (err.body.detail || err.body.message)) || err?.message || this.t(fallbackKey)
+    },
+    adrSourceKindLabel(kind) {
+      const labels = { commit: '提交', file: '文件', text: '一句话', history: '历史' }
+      return labels[kind] ? this.t(labels[kind]) : (kind || '-')
+    },
+    adrDraftStatusKey(status) {
+      const value = String(status || '').toLowerCase()
+      return ['proposed', 'accepted', 'rejected', 'deprecated', 'superseded'].includes(value) ? value : 'unknown'
+    },
+    adrDraftStatusText(status) {
+      const labels = { proposed: '提议中', accepted: '已接受', rejected: '已拒绝', deprecated: '已废弃', superseded: '已替代' }
+      return labels[status] ? this.t(labels[status]) : (status || '-')
+    },
+    adrGenerationStatusText(status) {
+      const labels = { queued: '排队中', running: '生成中', succeeded: '成功', skipped: '已跳过', failed: '失败' }
+      return labels[status] ? this.t(labels[status]) : (status || '-')
+    },
+    adrStageText(stage) {
+      const labels = {
+        generating: '生成中', calling_model: '调用模型', parse_failed: '解析响应失败',
+        not_a_decision: '判定为非决策', draft_ready: '草稿已生成', skipped: '已跳过',
+        failed: '失败', interrupted: '服务重启中断',
+      }
+      return this.t(labels[stage] || stage || '排队中')
+    },
+    shortAdrRef(ref) {
+      const value = String(ref || '')
+      return value.length > 24 ? `${value.slice(0, 24)}…` : value
+    },
+    async loadAdrPrompts() {
+      if (!this.snapshotId) return
+      try {
+        const data = await this.$api.get('/api/adr/prompts', { snapshot_id: this.snapshotId })
+        this.adrPrompts = data
+        this.adrPromptError = ''
+        if (!this.adrPromptText.trim()) this.adrPromptText = this.adrPromptTextFor(this.adrPromptKind, data.kinds)
+      } catch (err) {
+        this.adrPromptError = this.adrErrorMessage(err, '读取 ADR 提示词失败')
+      }
+    },
+    adrPromptTextFor(kind, kinds = this.adrPrompts?.kinds) {
+      const entry = (kinds || []).find(item => item.source_kind === kind)
+      return entry?.prompt?.prompt_text || entry?.default_prompt || ''
+    },
+    selectAdrPromptKind(kind) {
+      this.adrPromptKind = kind
+      this.adrPromptText = this.adrPromptTextFor(kind)
+      this.adrPromptError = ''
+      this.adrPromptNotice = ''
+    },
+    async loadAdrDrafts() {
+      if (!this.snapshotId) return
+      this.adrDraftsLoading = true
+      this.adrDraftsError = ''
+      try {
+        const data = await this.$api.get('/api/adr/drafts', { snapshot_id: this.snapshotId })
+        this.adrDrafts = data?.drafts || []
+      } catch (err) {
+        this.adrDraftsError = this.adrErrorMessage(err, '读取 ADR 草稿失败')
+      } finally {
+        this.adrDraftsLoading = false
+      }
+    },
+    async onAdrFilePicked(event) {
+      const file = event?.target?.files?.[0]
+      if (!file) {
+        this.adrPickedFile = null
+        return
+      }
+      try {
+        const text = await file.text()
+        this.adrPickedFile = { name: file.name, content: text }
+        this.adrError = ''
+      } catch (err) {
+        this.adrPickedFile = null
+        this.adrError = this.t('读取本地文件失败：{message}', { message: err?.message || '' })
+      }
+    },
+    clearAdrPickedFile() {
+      this.adrPickedFile = null
+      const input = this.$el?.querySelector('[data-testid="adr-file-picker"]')
+      if (input) input.value = ''
+    },
+    buildAdrSource() {
+      const kind = this.adrSourceKind
+      if (kind === 'commit') return { kind: 'commit', ref: (this.adrCommitRef || 'HEAD').trim() }
+      if (kind === 'file') {
+        if (this.adrPickedFile) {
+          return { kind: 'file', filename: this.adrPickedFile.name, content: this.adrPickedFile.content }
+        }
+        if (this.adrFilePath.trim()) return { kind: 'file', path: this.adrFilePath.trim() }
+        this.adrError = this.t('请填写仓库内文件路径，或选择一个本地文件。')
+        return null
+      }
+      if (kind === 'text') {
+        const text = this.adrText.trim()
+        if (!text) {
+          this.adrError = this.t('请填写一句话决策描述。')
+          return null
+        }
+        return { kind: 'text', text }
+      }
+      return null
+    },
+    async submitAdrGeneration() {
+      if (!this.snapshotId || this.adrSubmitting || this.adrActiveGeneration) return
+      this.adrError = ''
+      this.adrSuccessNote = ''
+      this.adrSuccessDraftId = ''
+      const source = this.buildAdrSource()
+      if (!source) return
+      this.adrSubmitting = true
+      try {
+        const data = await this.$api.request('/api/adr/generations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ snapshot_id: this.snapshotId, source, force: this.adrForce }),
+        })
+        this.adrGeneration = data?.generation || data || null
+        this.adrDraft = data?.draft || null
+        if (this.adrActiveGeneration) this.scheduleAdrPoll()
+        else await this.afterAdrGeneration()
+      } catch (err) {
+        this.adrError = this.adrErrorMessage(err, '创建 ADR 生成任务失败')
+      } finally {
+        this.adrSubmitting = false
+      }
+    },
+    async submitAdrHistory() {
+      if (!this.snapshotId || this.adrSubmitting || this.adrBatchActive) return
+      this.adrError = ''
+      this.adrBatchNote = ''
+      this.adrSuccessNote = ''
+      this.adrSuccessDraftId = ''
+      this.adrBatchId = ''
+      this.adrBatch = null
+      this.clearAdrPoll()
+      this.adrGeneration = null
+      this.adrDraft = null
+      this.adrSubmitting = true
+      try {
+        const limit = Number(this.adrLimit) > 0 ? Math.min(Number(this.adrLimit), 50) : 10
+        const data = await this.$api.request('/api/adr/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            snapshot_id: this.snapshotId,
+            since: this.adrSince || '',
+            until: this.adrUntil || '',
+            limit,
+            include_merges: this.adrIncludeMerges,
+            force: this.adrForce,
+          }),
+        })
+        this.adrBatchId = data?.batch_id || ''
+        this.adrBatch = data || null
+        if (!(data?.generations || []).length) {
+          this.adrBatchNote = this.t('没有匹配到可生成的提交。')
+          return
+        }
+        if (this.adrBatchActive) {
+          this.scheduleAdrBatchPoll()
+        } else {
+          this.adrBatchNote = this.t('该批次没有需要执行的提交。')
+          await this.loadAdrDrafts()
+        }
+      } catch (err) {
+        this.adrError = this.adrErrorMessage(err, '创建历史批量生成任务失败')
+      } finally {
+        this.adrSubmitting = false
+      }
+    },
+    async afterAdrGeneration() {
+      const generation = this.adrGeneration
+      if (!generation) return
+      if (generation.status === 'succeeded') {
+        this.adrSuccessNote = this.t('草稿已生成：{title}', { title: this.adrDraft?.title || generation.draft_id || '' })
+        this.adrSuccessDraftId = this.adrDraft?.id || generation.draft_id || ''
+        await this.loadAdrDrafts()
+      }
+    },
+    scheduleAdrPoll() {
+      this.clearAdrPoll()
+      this.adrPollTimer = setTimeout(() => this.refreshAdrGeneration(), 1200)
+    },
+    clearAdrPoll() {
+      if (this.adrPollTimer) clearTimeout(this.adrPollTimer)
+      this.adrPollTimer = null
+    },
+    async refreshAdrGeneration() {
+      this.adrPollTimer = null
+      if (!this.snapshotId || !this.adrGeneration?.id) return
+      try {
+        const data = await this.$api.get(`/api/adr/generations/${encodeURIComponent(this.adrGeneration.id)}`)
+        this.adrGeneration = data?.generation || this.adrGeneration
+        this.adrDraft = data?.draft || null
+        if (this.adrActiveGeneration) this.scheduleAdrPoll()
+        else await this.afterAdrGeneration()
+      } catch (err) {
+        this.adrError = this.adrErrorMessage(err, '读取 ADR 生成状态失败')
+        if (this.adrActiveGeneration) this.scheduleAdrPoll()
+      }
+    },
+    scheduleAdrBatchPoll() {
+      this.clearAdrBatchPoll()
+      this.adrBatchPollTimer = setTimeout(() => this.refreshAdrBatch(), 1500)
+    },
+    clearAdrBatchPoll() {
+      if (this.adrBatchPollTimer) clearTimeout(this.adrBatchPollTimer)
+      this.adrBatchPollTimer = null
+    },
+    async refreshAdrBatch() {
+      this.adrBatchPollTimer = null
+      if (!this.snapshotId || !this.adrBatchId) return
+      const wasActive = this.adrBatchActive
+      try {
+        const data = await this.$api.get(`/api/adr/batches/${encodeURIComponent(this.adrBatchId)}`)
+        this.adrBatch = data
+      } catch (err) {
+        this.adrError = this.adrErrorMessage(err, '读取批量生成进度失败')
+      }
+      if (this.adrBatchActive) {
+        this.scheduleAdrBatchPoll()
+      } else if (wasActive) {
+        this.adrBatchNote = this.t('批量生成结束：成功 {succeeded}，跳过 {skipped}，失败 {failed}。', this.adrBatchCounts)
+        await this.loadAdrDrafts()
+      }
+    },
+    async openAdrDraft(draft) {
+      if (!draft?.id) return
+      this.adrDetailLoading = true
+      this.adrDetailError = ''
+      try {
+        const data = await this.$api.get(`/api/adr/drafts/${encodeURIComponent(draft.id)}`)
+        this.adrDetail = { draft: data?.draft || null, generation: data?.generation || null }
+      } catch (err) {
+        this.adrDetailError = this.adrErrorMessage(err, '读取 ADR 草稿详情失败')
+      } finally {
+        this.adrDetailLoading = false
+      }
+    },
+    closeAdrDetail() {
+      this.adrDetail = null
+      this.adrDetailError = ''
+    },
+    async exportAdrDraft(draft) {
+      if (!draft?.id || this.adrExportingId) return
+      this.adrExportingId = draft.id
+      this.adrExportState = { id: draft.id, path: '', error: '' }
+      try {
+        const data = await this.$api.request(`/api/adr/drafts/${encodeURIComponent(draft.id)}/export`, { method: 'POST' })
+        this.adrExportState = { id: draft.id, path: data?.relative_path || data?.path || '', error: '' }
+        if (this.adrDetail?.draft?.id === draft.id && data?.draft) {
+          this.adrDetail = { ...this.adrDetail, draft: data.draft }
+        }
+        await this.loadAdrDrafts()
+      } catch (err) {
+        this.adrExportState = { id: draft.id, path: '', error: this.adrErrorMessage(err, '导出 ADR 草稿失败') }
+      } finally {
+        this.adrExportingId = ''
+      }
+    },
+    async deleteAdrDraft(draft) {
+      if (!draft?.id || this.adrDeletingId) return
+      if (!window.confirm(this.t('删除草稿「{title}」？已导出到仓库的文件不会被删除。', { title: draft.title || draft.id }))) return
+      this.adrDeletingId = draft.id
+      try {
+        await this.$api.delete(`/api/adr/drafts/${encodeURIComponent(draft.id)}`)
+        if (this.adrExportState.id === draft.id) this.adrExportState = { id: '', path: '', error: '' }
+        if (this.adrDetail?.draft?.id === draft.id) this.closeAdrDetail()
+        await this.loadAdrDrafts()
+      } catch (err) {
+        this.adrDraftsError = this.adrErrorMessage(err, '删除 ADR 草稿失败')
+      } finally {
+        this.adrDeletingId = ''
+      }
+    },
+    async saveAdrPrompt() {
+      if (!this.snapshotId || this.adrPromptSaving || !this.adrPromptText.trim()) return
+      this.adrPromptSaving = true
+      this.adrPromptError = ''
+      this.adrPromptNotice = ''
+      try {
+        const data = await this.$api.request('/api/adr/prompts', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ snapshot_id: this.snapshotId, source_kind: this.adrPromptKind, prompt_text: this.adrPromptText }),
+        })
+        const kinds = data?.kinds || this.adrPrompts?.kinds || []
+        this.adrPrompts = { ...(this.adrPrompts || {}), kinds }
+        this.adrPromptText = this.adrPromptTextFor(this.adrPromptKind, kinds)
+        this.adrPromptNotice = this.t('已保存为自定义 v{version}', { version: data?.prompt?.version ?? '' })
+      } catch (err) {
+        this.adrPromptError = this.adrErrorMessage(err, '保存 ADR 提示词失败')
+      } finally {
+        this.adrPromptSaving = false
+      }
+    },
+    async resetAdrPrompt() {
+      if (!this.snapshotId || this.adrPromptSaving) return
+      if (!window.confirm(this.t('恢复该来源的系统默认提示词？自定义版本将被删除。'))) return
+      this.adrPromptSaving = true
+      this.adrPromptError = ''
+      this.adrPromptNotice = ''
+      try {
+        const data = await this.$api.request('/api/adr/prompts', {
+          method: 'DELETE',
+          query: { snapshot_id: this.snapshotId, source_kind: this.adrPromptKind },
+        })
+        const kinds = data?.kinds || this.adrPrompts?.kinds || []
+        this.adrPrompts = { ...(this.adrPrompts || {}), kinds }
+        this.adrPromptText = this.adrPromptTextFor(this.adrPromptKind, kinds)
+        this.adrPromptNotice = this.t('已恢复系统默认提示词')
+      } catch (err) {
+        this.adrPromptError = this.adrErrorMessage(err, '恢复默认 ADR 提示词失败')
+      } finally {
+        this.adrPromptSaving = false
+      }
     },
     async loadCatalog() {
       this.catalogLoading = true
@@ -997,7 +1603,7 @@ export default {
       }
       await this.$runAsync(async () => {
         this.report = await this.$api.get('/api/knowledge', { snapshot_id: this.snapshotId, include_llm: includeLlm, complete: true })
-        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus(), this.loadTerms(), this.loadExplanationStatuses(), this.loadTaxonomyState()])
+        await Promise.all([this.loadPromptProfiles(), this.loadBatchStatus(), this.loadTerms(), this.loadExplanationStatuses(), this.loadTaxonomyState(), this.loadAdrPrompts(), this.loadAdrDrafts()])
         for (const timer of Object.values(this.explanationPollTimers)) clearTimeout(timer)
         this.explanationPollTimers = {}
         this.apiExplanations = {}
@@ -1813,6 +2419,57 @@ td code { color: #666; word-break: break-all; }
 .project-card code { color: #666; font-size: 11px; overflow-wrap: anywhere; }
 .empty-semantic, .empty-state { text-align: center; padding: 60px 20px; color: #888; }
 .empty-semantic p { margin-bottom: 14px; }
+/* ── ADR workbench ── */
+.adr-workbench { display: grid; gap: 14px; margin-bottom: 20px; }
+.adr-card { padding: 14px; border: 1px solid #e2e5eb; border-radius: 8px; background: #fafafd; }
+.adr-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.adr-card-heading h3 { margin: 0 0 4px; font-size: 14px; color: #333; }
+.adr-card-heading p { margin: 0; color: #888; font-size: 11px; line-height: 1.5; }
+.adr-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 10px; }
+.adr-tab { border: 1px solid #d9dce3; background: white; color: #555; border-radius: 14px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+.adr-tab.active { border-color: #e94560; background: #fff0f2; color: #c82d48; font-weight: 600; }
+.adr-form { display: grid; gap: 8px; }
+.adr-field { display: grid; gap: 4px; color: #555; font-size: 11px; }
+.adr-field > span { font-weight: 600; }
+.adr-field input[type="text"], .adr-field input[type="date"], .adr-field input[type="number"], .adr-field textarea { min-width: 0; border: 1px solid #cfd3da; border-radius: 5px; padding: 7px 8px; background: white; font: 12px/1.5 sans-serif; }
+.adr-field textarea { resize: vertical; }
+.adr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.adr-check { display: inline-flex; align-items: center; gap: 6px; color: #555; font-size: 12px; cursor: pointer; }
+.adr-actions { display: flex; gap: 8px; margin-top: 12px; }
+.adr-actions button { border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+.adr-file-note { margin: 0; color: #2a6496; font-size: 11px; }
+.adr-success { margin: 10px 0 0; padding: 8px 12px; border: 1px solid #bfe5cd; border-radius: 6px; background: #eef9f2; color: #23764a; font-size: 12px; }
+.adr-success .link-button { margin-left: 6px; }
+.adr-batch-note { margin: 6px 0 0; color: #555; }
+.adr-member { color: #666; font-size: 11px; }
+.adr-prompt-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; color: #666; font-size: 11px; }
+.adr-prompt-meta code { color: #2a6496; word-break: break-all; }
+.adr-prompt-card summary { cursor: pointer; color: #333; font-size: 14px; font-weight: 600; }
+.adr-prompt-body { margin-top: 12px; }
+.adr-prompt-body textarea { width: 100%; box-sizing: border-box; }
+.adr-detail { margin-top: 14px; padding: 12px; border: 1px solid #e2e5eb; border-radius: 7px; background: #fff; }
+.adr-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.adr-detail-heading h4 { margin: 0; font-size: 13px; color: #333; }
+.adr-detail-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0; color: #888; font-size: 11px; }
+.adr-detail h5, .adr-debug h6 { margin: 12px 0 5px; font-size: 12px; color: #444; }
+.adr-markdown { max-height: 420px; overflow: auto; margin: 0; padding: 10px; border: 1px solid #eee; border-radius: 5px; background: #fbfbfd; white-space: pre-wrap; word-break: break-word; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.adr-debug { margin-top: 12px; border-top: 1px solid #eee; padding-top: 8px; font-size: 11px; }
+.adr-debug > summary { cursor: pointer; color: #2a6496; font-weight: 600; }
+.adr-debug pre { max-height: 260px; overflow: auto; margin: 4px 0 8px; padding: 8px; border-radius: 4px; background: #f5f6f8; white-space: pre-wrap; word-break: break-word; font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.adr-debug details { margin: 4px 0 8px; }
+.adr-debug details summary { cursor: pointer; color: #555; }
+.adr-row-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.adr-row-actions button { border: 0; border-radius: 5px; padding: 4px 8px; font-size: 11px; cursor: pointer; }
+.adr-row-actions .danger { background: #fcebed; color: #b8324a; }
+.adr-exported { display: block; margin-top: 3px; color: #23764a; font-size: 10px; }
+tr.selected { background: #fff0f2; }
+.adr-facts h3 { margin: 0 0 4px; font-size: 14px; color: #333; }
+.adr-facts > p.muted { margin: 0 0 12px; }
+@media (max-width: 900px) {
+  .adr-grid { grid-template-columns: 1fr; }
+  .adr-card-heading { display: block; }
+  .adr-member { display: block; margin-top: 4px; }
+}
 @media (max-width: 900px) {
   .page-header { display: block; } .actions { margin-top: 12px; }
   .summary-grid { grid-template-columns: repeat(2, 1fr); }

@@ -48,9 +48,14 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 
 | 阶段 | 维度 | 依赖 |
 |------|------|------|
-| Phase 1 | API 契约 / ADR 决策记录 / 模块拓扑 / 核心实体 / 分层违规 | CodeGraph SQLite + networkx + 仓库 ADR 目录 |
+| Phase 1 | API 契约 / 模块拓扑 / 核心实体 / 分层违规 | CodeGraph SQLite + networkx |
 | Phase 2 | 配置消费 / 外部依赖 / 权限模型 / 热力图 | CodeGraph SQLite + 规则引擎 |
 | Phase 3 | 业务描述 / 业务规则 / 错误目录 / 状态机 | CodeGraph SQLite + litellm (LLM) |
+
+**ADR 生成**：`adr gen --commit/--file/--text/--history` 让模型从提交、文件、一句话或
+历史批量生成 MADR 4.0 草稿（提示词按服务维度版本化），写入 `adr.db`；`adr list/show/debug`
+查看草稿与「来源 → 提示词 → 模型输出」调试映射，`adr export` 把草稿写入仓库 `docs/adr`
+并重建索引。分析发布时仓库已有 ADR 进入 `-s adr` 快照事实并执行 R1/R2 结构校验。
 
 ### 2. Cross-Repo Analyzer — 多仓微服务分析（5 维）
 
@@ -73,7 +78,7 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 | # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
 |---|------|:---:|:---:|:---:|:---:|:---:|------|
 | 1 | API 契约 | x | x | x | x | | `knowledge --snapshot-id <id> -s api` |
-| 2 | ADR 决策记录 | x | x | x | | | `knowledge --snapshot-id <id> -s adr` |
+| 2 | ADR 生成与导出 | x | x | x | | | `adr gen --commit HEAD` / `adr export <draft-id>` |
 | 3 | 模块拓扑 | | x | x | | | `knowledge --snapshot-id <id> -s modules` |
 | 4 | 核心实体 | | x | x | | | `knowledge --snapshot-id <id> -s entities` |
 | 5 | 分层违规 | | x | | | | `knowledge --snapshot-id <id> -s layers` |

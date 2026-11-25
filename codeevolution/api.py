@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
+from .adr.service import AdrServiceError
 from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService, SnapshotChatService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
@@ -67,6 +68,9 @@ _ui_test_store: UiTestStore | None = None
 _explanation_snapshot_store: ExplanationSnapshotStore | None = None
 _term_store: TermStore | None = None
 _api_explanation_batch_scheduler = None
+_adr_store = None
+_adr_service = None
+_adr_scheduler = None
 _snapshot_runtime: SnapshotRuntime | None = None
 _request_dependencies: ContextVar[dict] = ContextVar("codeevolution_dependencies", default={})
 _explanation_generation_lock = threading.Lock()
@@ -153,6 +157,39 @@ class LLMConfigRequest(BaseModel):
 
 class KnowledgeExtractionRequest(BaseModel):
     snapshot_id: str = Field(min_length=1, max_length=200)
+
+
+class AdrSourceRequest(BaseModel):
+    kind: str = Field(default="commit", pattern="^(commit|file|text)$")
+    ref: str = Field(default="", max_length=200)
+    path: str = Field(default="", max_length=2000)
+    filename: str = Field(default="", max_length=500)
+    content: str = Field(default="", max_length=400_000)
+    text: str = Field(default="", max_length=40_000)
+
+
+class AdrGenerationRequest(BaseModel):
+    snapshot_id: str = Field(default="", max_length=200)
+    member_id: str = Field(default="", max_length=200)
+    source: AdrSourceRequest
+    force: bool = False
+
+
+class AdrHistoryRequest(BaseModel):
+    snapshot_id: str = Field(default="", max_length=200)
+    member_id: str = Field(default="", max_length=200)
+    since: str = Field(default="", max_length=100)
+    until: str = Field(default="", max_length=100)
+    limit: int = Field(default=10, ge=1, le=100)
+    include_merges: bool = False
+    force: bool = False
+
+
+class AdrPromptRequest(BaseModel):
+    snapshot_id: str = Field(default="", max_length=200)
+    member_id: str = Field(default="", max_length=200)
+    source_kind: str = Field(pattern="^(commit|file|text)$")
+    prompt_text: str = Field(min_length=1, max_length=40_000)
 
 
 class TermExtractionRequest(BaseModel):
@@ -559,6 +596,60 @@ def get_snapshot_store():
     if runtime := dependencies.get("snapshot_runtime"):
         return runtime.store
     return get_snapshot_runtime().store
+
+
+def get_adr_store():
+    global _adr_store
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("adr_store"):
+        return injected
+    if _adr_store is None:
+        from .adr.store import AdrStore
+
+        _adr_store = AdrStore(analysis_data_dir() / "adr.db")
+    return _adr_store
+
+
+def get_adr_service():
+    global _adr_service
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("adr_service"):
+        return injected
+    if _adr_service is None:
+        from .adr.service import AdrService
+
+        completer = dependencies.get("adr_completer")
+        _adr_service = AdrService(get_adr_store(), get_snapshot_store().get_member, completer)
+    return _adr_service
+
+
+def get_adr_scheduler():
+    global _adr_scheduler
+    dependencies = _request_dependencies.get()
+    if injected := dependencies.get("adr_scheduler"):
+        return injected
+    if _adr_scheduler is None:
+        from .adr.service import AdrScheduler
+
+        _adr_scheduler = AdrScheduler(get_adr_service())
+    return _adr_scheduler
+
+
+def _adr_member_id(snapshot_id: str, member_id: str) -> str:
+    if member_id:
+        return member_id
+    snapshot = get_snapshot_store().get_snapshot(snapshot_id) if snapshot_id else None
+    if snapshot is None:
+        raise HTTPException(400, "snapshot_id or member_id is required")
+    return snapshot.member_id
+
+
+def _adr_member(snapshot_id: str, member_id: str):
+    service = get_adr_service()
+    try:
+        return service.member(_adr_member_id(snapshot_id, member_id))
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
 
 
 def get_api_explanation_batch_scheduler():
@@ -1753,6 +1844,156 @@ def start_llm_knowledge_extraction(request: KnowledgeExtractionRequest):
     return {"job": job}
 
 
+# ── ADR generation ──
+
+
+@app.get("/api/adr/prompts")
+def list_adr_prompts(
+    snapshot_id: str = Query("", max_length=200),
+    member_id: str = Query("", max_length=200),
+):
+    mid = _adr_member_id(snapshot_id, member_id)
+    try:
+        return get_adr_service().prompts(mid)
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.get("/api/adr/mapping")
+def adr_source_mapping(
+    snapshot_id: str = Query("", max_length=200),
+    member_id: str = Query("", max_length=200),
+):
+    mid = _adr_member_id(snapshot_id, member_id)
+    return get_adr_service().source_mapping(mid)
+
+
+@app.put("/api/adr/prompts")
+def save_adr_prompt(request: AdrPromptRequest):
+    mid = _adr_member_id(request.snapshot_id, request.member_id)
+    service = get_adr_service()
+    try:
+        prompt = service.save_prompt(mid, request.source_kind, request.prompt_text)
+        return {"prompt": prompt, "kinds": service.prompts(mid)["kinds"]}
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.delete("/api/adr/prompts")
+def reset_adr_prompt(
+    snapshot_id: str = Query("", max_length=200),
+    member_id: str = Query("", max_length=200),
+    source_kind: str = Query(..., pattern="^(commit|file|text)$"),
+):
+    mid = _adr_member_id(snapshot_id, member_id)
+    service = get_adr_service()
+    try:
+        reset = service.reset_prompt(mid, source_kind)
+        return {"reset": reset, "kinds": service.prompts(mid)["kinds"]}
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.post("/api/adr/generations", status_code=202)
+def create_adr_generation(request: AdrGenerationRequest):
+    member = _adr_member(request.snapshot_id, request.member_id)
+    service = get_adr_service()
+    try:
+        generation = service.create_generation(member, request.source.model_dump(), force=request.force)
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+    if generation["status"] == "queued":
+        get_adr_scheduler().submit(generation["id"])
+    return {"generation": generation}
+
+
+@app.post("/api/adr/history", status_code=202)
+def create_adr_history(request: AdrHistoryRequest):
+    member = _adr_member(request.snapshot_id, request.member_id)
+    service = get_adr_service()
+    try:
+        batch = service.start_history(
+            member,
+            since=request.since,
+            until=request.until,
+            limit=request.limit,
+            include_merges=request.include_merges,
+            force=request.force,
+        )
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+    scheduler = get_adr_scheduler()
+    for generation in batch["generations"]:
+        if generation["status"] == "queued":
+            scheduler.submit(generation["id"])
+    return batch
+
+
+@app.get("/api/adr/generations")
+def list_adr_generations(
+    snapshot_id: str = Query("", max_length=200),
+    member_id: str = Query("", max_length=200),
+    batch_id: str = Query("", max_length=100),
+    limit: int = Query(50, ge=1, le=200),
+):
+    service = get_adr_service()
+    if batch_id:
+        return service.batch_progress(batch_id)
+    mid = member_id
+    if not mid and snapshot_id:
+        mid = _adr_member_id(snapshot_id, "")
+    return {"generations": service.list_generations(member_id=mid, limit=limit)}
+
+
+@app.get("/api/adr/generations/{generation_id}")
+def get_adr_generation(generation_id: str):
+    try:
+        return get_adr_service().get_generation(generation_id)
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.get("/api/adr/batches/{batch_id}")
+def get_adr_batch(batch_id: str):
+    return get_adr_service().batch_progress(batch_id)
+
+
+@app.get("/api/adr/drafts")
+def list_adr_drafts(
+    snapshot_id: str = Query("", max_length=200),
+    member_id: str = Query("", max_length=200),
+    limit: int = Query(100, ge=1, le=500),
+):
+    mid = member_id
+    if not mid and snapshot_id:
+        mid = _adr_member_id(snapshot_id, "")
+    return {"drafts": get_adr_service().list_drafts(member_id=mid, limit=limit)}
+
+
+@app.get("/api/adr/drafts/{draft_id}")
+def get_adr_draft(draft_id: str):
+    try:
+        return get_adr_service().get_draft(draft_id)
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.post("/api/adr/drafts/{draft_id}/export")
+def export_adr_draft(draft_id: str):
+    try:
+        return get_adr_service().export_draft(draft_id)
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.delete("/api/adr/drafts/{draft_id}")
+def delete_adr_draft(draft_id: str):
+    deleted = get_adr_store().delete_draft(draft_id)
+    if not deleted:
+        raise HTTPException(404, "draft not found")
+    return {"deleted": True}
+
+
 # ── LLM business taxonomy for module topology ──
 
 
@@ -2764,7 +3005,7 @@ _route_app = app
 
 @asynccontextmanager
 async def _lifespan(application):
-    global _audit_store, _ui_test_store
+    global _audit_store, _ui_test_store, _adr_store, _adr_service, _adr_scheduler
     global _explanation_snapshot_store, _term_store
     global _api_explanation_batch_scheduler
     runtime = application.state.dependencies.get("snapshot_runtime")
@@ -2777,6 +3018,11 @@ async def _lifespan(application):
         batch_scheduler = get_api_explanation_batch_scheduler()
     if batch_scheduler is not None and hasattr(batch_scheduler, "start"):
         batch_scheduler.start()
+    adr_scheduler = application.state.dependencies.get("adr_scheduler")
+    if adr_scheduler is None and application.state.use_default_snapshot_runtime:
+        adr_scheduler = get_adr_scheduler()
+    if adr_scheduler is not None and hasattr(adr_scheduler, "start"):
+        adr_scheduler.start()
     yield
     owned_batch_scheduler = batch_scheduler is _api_explanation_batch_scheduler
     if batch_scheduler is not None and hasattr(batch_scheduler, "close"):
@@ -2786,6 +3032,16 @@ async def _lifespan(application):
     elif application.state.dependencies.get("api_explanation_batch_scheduler") is None and _api_explanation_batch_scheduler is not None:
         _api_explanation_batch_scheduler.close()
         _api_explanation_batch_scheduler = None
+    owned_adr_scheduler = adr_scheduler is _adr_scheduler
+    if adr_scheduler is not None and hasattr(adr_scheduler, "close"):
+        adr_scheduler.close()
+    if owned_adr_scheduler:
+        _adr_scheduler = None
+    if _adr_service is not None:
+        _adr_service = None
+    if _adr_store is not None:
+        _adr_store.close()
+        _adr_store = None
     if runtime is not None:
         runtime.close()
     for store in list(_stores.values()):

@@ -210,6 +210,32 @@ API 功能解释采用人工触发、叶子优先的节点解释与快照发布�
 
 ---
 
+### 4.1 ADR 生成子系统（模型驱动）
+
+ADR 不只是被读取的事实，核心是**用模型生成**：从 git 提交、文件、一句话描述或历史批量
+生成 MADR 4.0 决策草稿，落库后由 CLI/API 返回，客户端再写入代码仓的 `docs/adr`。
+
+- **输入**：`commit`（提交信息 + 变更文件 + patch，diff 截断 60k 字符）、`file`（仓库
+  内路径或客户端上传的文件内容，截断 120k 字符）、`text`（一句话描述，截断 20k 字符）、
+  `history`（按时间倒序的提交批量，`--since/--until/--limit`）。提交输入默认过滤
+  docs/tests/lockfile 等噪声提交和 merge commit，`force` 可绕过。
+- **提示词**：内置 `commit`/`file`/`text` 三套默认模板，按**服务（repository member）
+  × 来源类型**版本化覆盖；占位符为 `{{service}} {{repo}} {{source_ref}} {{commit_message}}
+  {{commit_files}} {{diff}} {{content}} {{text}} {{schema}} {{existing_adrs}}`。
+  每次生成冻结 `prompt_id/version/digest/text`，提示词改动不会污染历史记录。
+- **存储**：`analysis_data_dir()/adr.db`，三张表：`adr_prompts`（版本化提示词）、
+  `adr_generations`（生成任务与调试轨迹）、`adr_drafts`（MADR 草稿）。状态机：
+  `queued → running → succeeded | failed`；模型判定「不是架构决策」时为 `skipped`。
+  生成状态一律 `proposed`，只有人能改为 `accepted`。
+- **调试映射**：一次 generation 完整记录 `source_payload`（提交 diff / 文件内容 / 文本）、
+  来源摘要、实际提示词全文与摘要、模型名、原始响应、解析后的决策对象、错误或跳过原因、
+  耗时。`adr debug <generation-id>` 与 `GET /api/adr/generations/{id}` 暴露同一份映射。
+- **导出**：`adr export <draft-id>` 或 `POST /api/adr/drafts/{id}/export` 写入仓库
+  `docs/adr`（已有 `doc/adr`/`docs/decisions`/`adr` 则复用），按现有编号续号、
+  slug 化文件名、重建 `index.md`；重复导出同一草稿复用原路径，不产生重复文件。
+- **与快照的关系**：导出的 Markdown 是仓库数据，只有重新分析生成 Snapshot 后才会进入
+  `-s adr` 的快照事实；ADR 内容摘要并入 `rules_digest`，决策变更会产生新 Snapshot。
+
 ## 5. 多仓微服务分析：三阶段 5 维
 
 ### P0 — 跨服务调用拼接
