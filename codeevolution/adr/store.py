@@ -73,6 +73,57 @@ CREATE TABLE IF NOT EXISTS adr_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_adr_drafts_member
     ON adr_drafts(member_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS adr_templates (
+    id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL,
+    template_text TEXT NOT NULL,
+    template_digest TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_adr_templates_member
+    ON adr_templates(member_id, version);
+
+CREATE TABLE IF NOT EXISTS adr_commit_scans (
+    id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '',
+    committed_at TEXT NOT NULL DEFAULT '',
+    files_json TEXT NOT NULL DEFAULT '[]',
+    rule_candidate INTEGER NOT NULL DEFAULT 1,
+    rule_reason TEXT NOT NULL DEFAULT '',
+    ai_candidate INTEGER,
+    ai_reason TEXT NOT NULL DEFAULT '',
+    change_type TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_digest TEXT NOT NULL DEFAULT '',
+    scanned_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(member_id, sha)
+);
+CREATE INDEX IF NOT EXISTS idx_adr_commit_scans_member
+    ON adr_commit_scans(member_id, scanned_at);
+
+CREATE TABLE IF NOT EXISTS adr_backtests (
+    id TEXT PRIMARY KEY,
+    draft_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    verdict TEXT NOT NULL DEFAULT '',
+    confidence REAL,
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    recommendation TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_text TEXT NOT NULL DEFAULT '',
+    prompt_rendered TEXT NOT NULL DEFAULT '',
+    raw_response TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
 """
 
 
@@ -131,6 +182,21 @@ class AdrStore:
                 self._connection.execute(
                     "ALTER TABLE adr_generations ADD COLUMN prompt_rendered TEXT NOT NULL DEFAULT ''"
                 )
+        draft_columns = {
+            row["name"] for row in self._connection.execute("PRAGMA table_info(adr_drafts)")
+        }
+        additions = {
+            "review_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "rating": "INTEGER",
+            "review_comment": "TEXT NOT NULL DEFAULT ''",
+            "reviewed_at": "TEXT",
+        }
+        for column, definition in additions.items():
+            if column not in draft_columns:
+                with self._connection:
+                    self._connection.execute(
+                        f"ALTER TABLE adr_drafts ADD COLUMN {column} {definition}"
+                    )
 
     def close(self) -> None:
         self._connection.close()
@@ -438,6 +504,207 @@ class AdrStore:
         with self._connection:
             cursor = self._connection.execute("DELETE FROM adr_drafts WHERE id=?", (draft_id,))
         return cursor.rowcount > 0
+
+
+    # ── output templates ─────────────────────────────────────────────
+
+    @_synchronized
+    def create_template(self, member_id: str, template_text: str, digest: str) -> dict[str, Any]:
+        current = self.current_template(member_id)
+        version = (current["version"] + 1) if current else 1
+        template_id = str(uuid.uuid4())
+        created_at = _now()
+        with self._connection:
+            self._connection.execute(
+                """INSERT INTO adr_templates
+                   (id, member_id, template_text, template_digest, version, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (template_id, member_id, template_text, digest, version, created_at),
+            )
+        return {
+            "id": template_id,
+            "member_id": member_id,
+            "template_text": template_text,
+            "template_digest": digest,
+            "version": version,
+            "created_at": created_at,
+        }
+
+    @_synchronized
+    def current_template(self, member_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT * FROM adr_templates WHERE member_id=? ORDER BY version DESC LIMIT 1",
+            (member_id,),
+        ).fetchone()
+        return _row(row)
+
+    @_synchronized
+    def delete_templates(self, member_id: str) -> bool:
+        with self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM adr_templates WHERE member_id=?", (member_id,)
+            )
+        return cursor.rowcount > 0
+
+    # ── commit triage cache ──────────────────────────────────────────
+
+    @_synchronized
+    def upsert_scan(self, record: dict[str, Any]) -> dict[str, Any]:
+        existing = self._connection.execute(
+            "SELECT id FROM adr_commit_scans WHERE member_id=? AND sha=?",
+            (record["member_id"], record["sha"]),
+        ).fetchone()
+        payload = (
+            record["member_id"],
+            record["sha"],
+            record.get("subject", ""),
+            record.get("author", ""),
+            record.get("committed_at", ""),
+            json.dumps(record.get("files") or [], ensure_ascii=False),
+            1 if record.get("rule_candidate", True) else 0,
+            record.get("rule_reason", ""),
+            None if record.get("ai_candidate") is None else (1 if record["ai_candidate"] else 0),
+            record.get("ai_reason", ""),
+            record.get("change_type", ""),
+            record.get("model", ""),
+            record.get("prompt_digest", ""),
+            record.get("scanned_at") or _now(),
+        )
+        with self._connection:
+            if existing:
+                self._connection.execute(
+                    """UPDATE adr_commit_scans SET
+                       subject=?, author=?, committed_at=?, files_json=?, rule_candidate=?,
+                       rule_reason=?, ai_candidate=?, ai_reason=?, change_type=?, model=?,
+                       prompt_digest=?, scanned_at=?
+                       WHERE member_id=? AND sha=?""",
+                    (*payload[2:], payload[0], payload[1]),
+                )
+            else:
+                self._connection.execute(
+                    """INSERT INTO adr_commit_scans
+                       (id, member_id, sha, subject, author, committed_at, files_json,
+                        rule_candidate, rule_reason, ai_candidate, ai_reason, change_type,
+                        model, prompt_digest, scanned_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), *payload),
+                )
+        return self.get_scan(record["member_id"], record["sha"])  # type: ignore[return-value]
+
+    @_synchronized
+    def get_scan(self, member_id: str, sha: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT * FROM adr_commit_scans WHERE member_id=? AND sha=?", (member_id, sha)
+        ).fetchone()
+        return self._decode_scan(row)
+
+    @_synchronized
+    def list_scans(self, member_id: str, shas: list[str] | None = None) -> list[dict[str, Any]]:
+        if shas:
+            placeholders = ",".join("?" for _ in shas)
+            rows = self._connection.execute(
+                f"SELECT * FROM adr_commit_scans WHERE member_id=? AND sha IN ({placeholders})",
+                (member_id, *shas),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM adr_commit_scans WHERE member_id=? ORDER BY committed_at DESC",
+                (member_id,),
+            ).fetchall()
+        return [decoded for row in rows if (decoded := self._decode_scan(row))]
+
+    @staticmethod
+    def _decode_scan(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        data = dict(row)
+        data["files"] = _loads(data.pop("files_json", "[]"), [])
+        data["rule_candidate"] = bool(data.get("rule_candidate"))
+        if data.get("ai_candidate") is not None:
+            data["ai_candidate"] = bool(data["ai_candidate"])
+        return data
+
+    # ── backtests ────────────────────────────────────────────────────
+
+    @_synchronized
+    def upsert_backtest(self, record: dict[str, Any]) -> dict[str, Any]:
+        existing = self._connection.execute(
+            "SELECT id FROM adr_backtests WHERE draft_id=?", (record["draft_id"],)
+        ).fetchone()
+        backtest_id = existing["id"] if existing else str(uuid.uuid4())
+        payload = (
+            record["draft_id"],
+            record.get("status", "ready"),
+            record.get("verdict", ""),
+            record.get("confidence"),
+            json.dumps(record.get("reasons") or [], ensure_ascii=False),
+            json.dumps(record.get("evidence") or [], ensure_ascii=False),
+            record.get("recommendation", ""),
+            record.get("model", ""),
+            record.get("prompt_text", ""),
+            record.get("prompt_rendered", ""),
+            record.get("raw_response", ""),
+            record.get("error_message", ""),
+            int(record.get("duration_ms") or 0),
+            record.get("created_at") or _now(),
+            record.get("completed_at") or _now(),
+        )
+        with self._connection:
+            if existing:
+                self._connection.execute(
+                    """UPDATE adr_backtests SET status=?, verdict=?, confidence=?, reasons_json=?,
+                       evidence_json=?, recommendation=?, model=?, prompt_text=?, prompt_rendered=?,
+                       raw_response=?, error_message=?, duration_ms=?, created_at=?, completed_at=?
+                       WHERE draft_id=?""",
+                    (*payload[1:], payload[0]),
+                )
+            else:
+                self._connection.execute(
+                    """INSERT INTO adr_backtests
+                       (id, draft_id, status, verdict, confidence, reasons_json, evidence_json,
+                        recommendation, model, prompt_text, prompt_rendered, raw_response,
+                        error_message, duration_ms, created_at, completed_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (backtest_id, *payload),
+                )
+        return self.get_backtest(record["draft_id"])  # type: ignore[return-value]
+
+    @_synchronized
+    def get_backtest(self, draft_id: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT * FROM adr_backtests WHERE draft_id=?", (draft_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["reasons"] = _loads(data.pop("reasons_json", "[]"), [])
+        data["evidence"] = _loads(data.pop("evidence_json", "[]"), [])
+        return data
+
+    # ── draft review ─────────────────────────────────────────────────
+
+    @_synchronized
+    def update_draft(self, draft_id: str, **fields: Any) -> dict[str, Any] | None:
+        allowed = {
+            "status",
+            "markdown",
+            "review_status",
+            "rating",
+            "review_comment",
+            "reviewed_at",
+            "exported_path",
+            "exported_at",
+        }
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return self.get_draft(draft_id)
+        assignments = ", ".join(f"{key}=?" for key in updates)
+        with self._connection:
+            self._connection.execute(
+                f"UPDATE adr_drafts SET {assignments} WHERE id=?",
+                (*updates.values(), draft_id),
+            )
+        return self.get_draft(draft_id)
 
 
 __all__ = ["AdrStore"]

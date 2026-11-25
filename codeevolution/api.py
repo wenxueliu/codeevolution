@@ -168,6 +168,39 @@ class AdrSourceRequest(BaseModel):
     text: str = Field(default="", max_length=40_000)
 
 
+class AdrCommitScanRequest(BaseModel):
+    snapshot_id: str = Field(default="", max_length=200)
+    member_id: str = Field(default="", max_length=200)
+    since: str = Field(default="", max_length=100)
+    until: str = Field(default="", max_length=100)
+    limit: int = Field(default=50, ge=1, le=100)
+    include_merges: bool = False
+    refresh: bool = False
+
+
+class AdrBatchGenerationRequest(BaseModel):
+    snapshot_id: str = Field(default="", max_length=200)
+    member_id: str = Field(default="", max_length=200)
+    commits: list[str] = Field(min_length=1, max_length=100)
+    force: bool = False
+
+
+class AdrTemplateRequest(BaseModel):
+    snapshot_id: str = Field(default="", max_length=200)
+    member_id: str = Field(default="", max_length=200)
+    template_text: str = Field(min_length=1, max_length=40_000)
+
+
+class AdrReviewRequest(BaseModel):
+    action: str = Field(pattern="^(approve|reject)$")
+    rating: int | None = Field(default=None, ge=1, le=5)
+    comment: str = Field(default="", max_length=2000)
+
+
+class AdrBacktestRequest(BaseModel):
+    force: bool = False
+
+
 class AdrGenerationRequest(BaseModel):
     snapshot_id: str = Field(default="", max_length=200)
     member_id: str = Field(default="", max_length=200)
@@ -188,7 +221,7 @@ class AdrHistoryRequest(BaseModel):
 class AdrPromptRequest(BaseModel):
     snapshot_id: str = Field(default="", max_length=200)
     member_id: str = Field(default="", max_length=200)
-    source_kind: str = Field(pattern="^(commit|file|text)$")
+    source_kind: str = Field(pattern="^(commit|file|text|triage|backtest)$")
     prompt_text: str = Field(min_length=1, max_length=40_000)
 
 
@@ -1883,7 +1916,7 @@ def save_adr_prompt(request: AdrPromptRequest):
 def reset_adr_prompt(
     snapshot_id: str = Query("", max_length=200),
     member_id: str = Query("", max_length=200),
-    source_kind: str = Query(..., pattern="^(commit|file|text)$"),
+    source_kind: str = Query(..., pattern="^(commit|file|text|triage|backtest)$"),
 ):
     mid = _adr_member_id(snapshot_id, member_id)
     service = get_adr_service()
@@ -1892,6 +1925,89 @@ def reset_adr_prompt(
         return {"reset": reset, "kinds": service.prompts(mid)["kinds"]}
     except AdrServiceError as error:
         raise HTTPException(error.status, str(error)) from error
+
+
+@app.get("/api/adr/commits")
+def list_adr_commits(
+    snapshot_id: str = Query("", max_length=200),
+    member_id: str = Query("", max_length=200),
+    since: str = Query("", max_length=100),
+    until: str = Query("", max_length=100),
+    limit: int = Query(50, ge=1, le=100),
+    include_merges: bool = Query(False),
+):
+    member = _adr_member(snapshot_id, member_id)
+    try:
+        return get_adr_service().list_commits(
+            member,
+            since=since,
+            until=until,
+            limit=limit,
+            include_merges=include_merges,
+        )
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.post("/api/adr/commits/scan")
+def scan_adr_commits(request: AdrCommitScanRequest):
+    member = _adr_member(request.snapshot_id, request.member_id)
+    try:
+        return get_adr_service().scan_commits(
+            member,
+            since=request.since,
+            until=request.until,
+            limit=request.limit,
+            include_merges=request.include_merges,
+            refresh=request.refresh,
+        )
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.post("/api/adr/generations/batch", status_code=202)
+def create_adr_batch(request: AdrBatchGenerationRequest):
+    member = _adr_member(request.snapshot_id, request.member_id)
+    try:
+        batch = get_adr_service().batch_generate(member, request.commits, force=request.force)
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+    scheduler = get_adr_scheduler()
+    for generation in batch["generations"]:
+        if generation["status"] == "queued":
+            scheduler.submit(generation["id"])
+    return batch
+
+
+@app.get("/api/adr/template")
+def get_adr_template(
+    snapshot_id: str = Query("", max_length=200),
+    member_id: str = Query("", max_length=200),
+):
+    mid = _adr_member_id(snapshot_id, member_id)
+    return get_adr_service().template(mid)
+
+
+@app.put("/api/adr/template")
+def save_adr_template(request: AdrTemplateRequest):
+    mid = _adr_member_id(request.snapshot_id, request.member_id)
+    service = get_adr_service()
+    try:
+        template = service.save_template(mid, request.template_text)
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+    return {"template": template, **service.template(mid)}
+
+
+@app.delete("/api/adr/template")
+def reset_adr_template(
+    snapshot_id: str = Query("", max_length=200),
+    member_id: str = Query("", max_length=200),
+):
+    mid = _adr_member_id(snapshot_id, member_id)
+    service = get_adr_service()
+    reset = service.reset_template(mid)
+    return {"reset": reset, **service.template(mid)}
 
 
 @app.post("/api/adr/generations", status_code=202)
@@ -1974,6 +2090,27 @@ def list_adr_drafts(
 def get_adr_draft(draft_id: str):
     try:
         return get_adr_service().get_draft(draft_id)
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.post("/api/adr/drafts/{draft_id}/backtest")
+def backtest_adr_draft(draft_id: str, request: AdrBacktestRequest | None = None):
+    try:
+        return {"backtest": get_adr_service().backtest(draft_id, force=bool(request and request.force))}
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.post("/api/adr/drafts/{draft_id}/review")
+def review_adr_draft(draft_id: str, request: AdrReviewRequest):
+    try:
+        return get_adr_service().review(
+            draft_id,
+            action=request.action,
+            rating=request.rating,
+            comment=request.comment,
+        )
     except AdrServiceError as error:
         raise HTTPException(error.status, str(error)) from error
 

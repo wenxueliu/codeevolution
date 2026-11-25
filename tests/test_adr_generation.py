@@ -7,6 +7,7 @@ stored trace -> MADR draft -> export into the repository.
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -76,6 +77,31 @@ def _setup(tmp_path, decision=None):
 
     def completer(prompt: str) -> str:
         prompts.append(prompt)
+        if "代码仓变更分诊器" in prompt:
+            shas = re.findall(r'"sha":\s*"([0-9a-f]+)"', prompt)
+            return json.dumps(
+                [
+                    {
+                        "sha": sha,
+                        "candidate": True,
+                        "reason": "涉及支付网关契约",
+                        "change_type": "architecture",
+                    }
+                    for sha in shas
+                ],
+                ensure_ascii=False,
+            )
+        if "ADR 回测器" in prompt:
+            return json.dumps(
+                {
+                    "verdict": "partial",
+                    "confidence": 0.66,
+                    "reasons": ["适配器接口仍存在", "但缺少部分渠道实现"],
+                    "evidence": [{"path": "app/payments.py", "line": 1, "note": "入口仍在"}],
+                    "recommendation": "补全渠道实现后重新回测",
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(decision or DECISION, ensure_ascii=False)
 
     store = AdrStore(tmp_path / "data" / "adr.db")
@@ -235,6 +261,12 @@ def test_export_writes_madr_file_and_refreshes_index(tmp_path):
 
     with client:
         draft = _generate(client, {"kind": "text", "text": "导出测试"})["draft"]
+        denied = client.post(f"/api/adr/drafts/{draft['id']}/export")
+        assert denied.status_code == 409
+        client.post(
+            f"/api/adr/drafts/{draft['id']}/review",
+            json={"action": "approve", "rating": 4, "comment": "ok"},
+        )
         exported = client.post(f"/api/adr/drafts/{draft['id']}/export").json()
 
         target = Path(exported["path"])
@@ -242,7 +274,7 @@ def test_export_writes_madr_file_and_refreshes_index(tmp_path):
         assert target.parent == repo / "docs" / "adr"
         assert target.name == "0001-add-payment-gateway-adapter.md"
         content = target.read_text(encoding="utf-8")
-        assert "status: proposed" in content
+        assert "status: accepted" in content
         index = Path(exported["index_path"]).read_text(encoding="utf-8")
         assert "* [ADR-0001](0001-add-payment-gateway-adapter.md)" in index
 
@@ -251,6 +283,35 @@ def test_export_writes_madr_file_and_refreshes_index(tmp_path):
         assert client.get(f"/api/adr/drafts/{draft['id']}").json()["draft"][
             "exported_path"
         ].endswith("0001-add-payment-gateway-adapter.md")
+
+
+def test_triage_and_backtest_prompts_are_editable(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        for kind, text in (
+            ("triage", "TRIAGE {{commits}}"),
+            ("backtest", "BACKTEST {{adr}} {{code}}"),
+        ):
+            saved = client.put(
+                "/api/adr/prompts",
+                json={"member_id": "member-1", "source_kind": kind, "prompt_text": text},
+            )
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["prompt"]["source_kind"] == kind
+
+        listing = client.get("/api/adr/prompts", params={"member_id": "member-1"}).json()
+        by_kind = {item["source_kind"]: item for item in listing["kinds"]}
+        assert set(by_kind) == {"commit", "file", "text", "triage", "backtest"}
+        assert by_kind["triage"]["prompt"]["prompt_text"] == "TRIAGE {{commits}}"
+        assert by_kind["backtest"]["prompt"]["version"] == 1
+
+        reset = client.delete(
+            "/api/adr/prompts",
+            params={"member_id": "member-1", "source_kind": "backtest"},
+        )
+        assert reset.status_code == 200
+        assert reset.json()["kinds"][4]["prompt"] is None
 
 
 def test_source_mapping_links_sources_prompts_and_latest_draft(tmp_path):
@@ -279,6 +340,134 @@ def test_snapshot_id_resolves_the_service_for_prompt_edits(tmp_path):
     assert response.json()["member_id"] == "member-1"
 
 
+def test_commit_table_triages_noise_and_caches_results(tmp_path):
+    _repo, _store, _service, prompts, client = _setup(tmp_path)
+
+    with client:
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        assert listing["total"] == 2
+        by_subject = {item["subject"]: item for item in listing["items"]}
+        docs = by_subject["docs: update readme"]
+        feature = by_subject["feat: add payment gateway"]
+        assert docs["candidate"] is False and docs["scanned"] is False
+        assert feature["rule_candidate"] is True
+
+        scanned = client.post("/api/adr/commits/scan", json={"member_id": "member-1"}).json()
+        assert scanned["scanned"] == 2
+        by_subject = {item["subject"]: item for item in scanned["items"]}
+        assert by_subject["feat: add payment gateway"]["candidate"] is True
+        assert by_subject["feat: add payment gateway"]["change_type"] == "architecture"
+        assert by_subject["docs: update readme"]["candidate"] is False
+
+        calls = len(prompts)
+        again = client.post("/api/adr/commits/scan", json={"member_id": "member-1"}).json()
+        assert again["scanned"] == 2
+        assert len(prompts) == calls  # cached triage is not re-sent to the model
+
+
+def test_batch_generation_from_selected_commits(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        scanned = client.post("/api/adr/commits/scan", json={"member_id": "member-1"}).json()
+        shas = {item["subject"]: item["sha"] for item in scanned["items"]}
+        response = client.post(
+            "/api/adr/generations/batch",
+            json={
+                "member_id": "member-1",
+                "commits": [shas["feat: add payment gateway"], shas["docs: update readme"]],
+            },
+        )
+        assert response.status_code == 202
+        batch = response.json()
+        assert batch["total"] == 2
+        progress = client.get(f"/api/adr/batches/{batch['batch_id']}").json()
+        statuses = {item["source_ref"]: item["status"] for item in progress["generations"]}
+        assert statuses[shas["feat: add payment gateway"]] == "succeeded"
+        assert statuses[shas["docs: update readme"]] == "skipped"
+
+
+def test_output_template_is_customizable_per_service(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        default = client.get("/api/adr/template", params={"member_id": "member-1"}).json()
+        assert "{{title}}" in default["default_template"]
+        assert default["template"] is None
+
+        custom = "# {{title}}\n\nSERVICE={{service}}\n\n{{context}}\n"
+        saved = client.put(
+            "/api/adr/template",
+            json={"member_id": "member-1", "template_text": custom},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["template"]["version"] == 1
+
+        detail = _generate(client, {"kind": "text", "text": "模板测试"})
+        markdown = detail["draft"]["markdown"]
+        assert markdown.startswith("# 引入支付网关适配器")
+        assert "SERVICE=shop" in markdown
+
+        reset = client.delete("/api/adr/template", params={"member_id": "member-1"})
+        assert reset.status_code == 200
+        assert reset.json()["reset"] is True
+        assert reset.json()["default_template"] == default["default_template"]
+
+        invalid = client.put(
+            "/api/adr/template",
+            json={"member_id": "member-1", "template_text": "no title placeholder"},
+        )
+        assert invalid.status_code == 400
+
+
+def test_backtest_reports_confidence_and_reasons(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        draft = _generate(client, {"kind": "text", "text": "回测测试"})["draft"]
+        result = client.post(f"/api/adr/drafts/{draft['id']}/backtest").json()["backtest"]
+        assert result["status"] == "ready"
+        assert result["verdict"] == "partial"
+        assert result["confidence"] == 0.66
+        assert result["reasons"]
+        assert result["prompt_rendered"]
+
+        detail = client.get(f"/api/adr/drafts/{draft['id']}").json()
+        assert detail["backtest"]["verdict"] == "partial"
+        listing = client.get("/api/adr/drafts", params={"member_id": "member-1"}).json()
+        assert listing["drafts"][0]["backtest"]["confidence"] == 0.66
+
+
+def test_review_records_rating_and_gates_export(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        draft = _generate(client, {"kind": "text", "text": "审批测试"})["draft"]
+        blocked = client.post(f"/api/adr/drafts/{draft['id']}/export")
+        assert blocked.status_code == 409
+
+        reviewed = client.post(
+            f"/api/adr/drafts/{draft['id']}/review",
+            json={"action": "approve", "rating": 4, "comment": "同意"},
+        ).json()
+        updated = reviewed["draft"]
+        assert updated["status"] == "accepted"
+        assert updated["review_status"] == "approved"
+        assert updated["rating"] == 4
+        assert "status: accepted" in updated["markdown"]
+
+        exported = client.post(f"/api/adr/drafts/{draft['id']}/export")
+        assert exported.status_code == 200
+
+        rejected_draft = _generate(client, {"kind": "text", "text": "拒绝测试"})["draft"]
+        rejected = client.post(
+            f"/api/adr/drafts/{rejected_draft['id']}/review",
+            json={"action": "reject", "comment": "证据不足"},
+        ).json()["draft"]
+        assert rejected["status"] == "rejected"
+        assert rejected["review_status"] == "rejected"
+
+
 def test_cli_lists_prompts_and_exports_a_draft(tmp_path):
     data_root = tmp_path / "data"
     store = AnalysisSnapshotSQLiteStore(data_root / "analysis-snapshots.db")
@@ -287,7 +476,7 @@ def test_cli_lists_prompts_and_exports_a_draft(tmp_path):
     # AnalysisSnapshotSQLiteStore opens short-lived connections.
 
     adr_store = AdrStore(data_root / "adr.db")
-    adr_store.create_draft(
+    draft = adr_store.create_draft(
         generation_id="gen-1",
         member_id=member.id,
         source_kind="text",
@@ -297,6 +486,12 @@ def test_cli_lists_prompts_and_exports_a_draft(tmp_path):
         markdown="# CLI 导出决策\n\n## Context and Problem Statement\n\nx\n",
         status="proposed",
         confidence=0.5,
+    )
+    adr_store.update_draft(
+        draft["id"],
+        status="accepted",
+        review_status="approved",
+        markdown="---\nstatus: accepted\n---\n\n# CLI 导出决策\n",
     )
     draft_id = adr_store.list_drafts(member.id)[0]["id"]
     adr_store.close()

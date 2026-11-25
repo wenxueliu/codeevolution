@@ -230,6 +230,19 @@ ADR 不只是被读取的事实，核心是**用模型生成**：从 git 提交�
 - **调试映射**：一次 generation 完整记录 `source_payload`（提交 diff / 文件内容 / 文本）、
   来源摘要、实际提示词全文与摘要、模型名、原始响应、解析后的决策对象、错误或跳过原因、
   耗时。`adr debug <generation-id>` 与 `GET /api/adr/generations/{id}` 暴露同一份映射。
+- **提交表格与 AI 分诊**：`adr commits` 列出 git log，规则层先过滤文档/测试/lockfile
+  噪声，再由「提交分诊」提示词（批量 12 条/次）判断 bug fix、lint、test-only 等是否值得
+  记录；判定缓存到 `adr_commit_scans`（按 `member + sha`），表格支持单选/勾选批量生成
+  （`adr gen --commits`、`POST /api/adr/generations/batch`）。`force` 可绕过分诊与噪声过滤。
+- **输出模板**：默认内置 MADR 4.0（`{{frontmatter}} {{title}} {{context}} {{drivers}}
+  {{options}} {{outcome}} {{consequences}} {{confirmation}} {{options_detail}}
+  {{evidence}} {{service}} {{date}} {{status}}`），按服务版本化覆盖；`{{title}}` 必填。
+- **回测**：`adr backtest <draft-id>` 用「回测」提示词把 ADR 与当前代码证据（ADR 引用的
+  文件内容、仓库文件清单、最近提交）交给模型，输出 verdict（consistent/partial/
+  contradicted/unverifiable）、confidence、理由与证据，存入 `adr_backtests`。
+- **人工审批**：`adr review <draft-id> --approve|--reject [--rating 1-5] [--comment]`
+  写入 `review_status`、评分与意见，并把 MADR frontmatter 状态改为 accepted/rejected；
+  只有 approved 的草稿才允许导出，否则返回 409。
 - **导出**：`adr export <draft-id>` 或 `POST /api/adr/drafts/{id}/export` 写入仓库
   `docs/adr`（已有 `doc/adr`/`docs/decisions`/`adr` 则复用），按现有编号续号、
   slug 化文件名、重建 `index.md`；重复导出同一草稿复用原路径，不产生重复文件。

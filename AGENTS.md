@@ -38,6 +38,11 @@ codeevolution adr gen --snapshot-id <id> --commit HEAD
 codeevolution adr gen --snapshot-id <id> --text "网关从 Node 迁移到 Rust"
 codeevolution adr gen --snapshot-id <id> --file app/payments.py
 codeevolution adr gen --snapshot-id <id> --history --limit 20
+codeevolution adr gen --snapshot-id <id> --commits <sha1>,<sha2>
+codeevolution adr commits --snapshot-id <id> --scan --limit 50
+codeevolution adr template show --snapshot-id <id>
+codeevolution adr backtest <draft-id>
+codeevolution adr review <draft-id> --approve --rating 4 --comment "同意"
 codeevolution adr list --snapshot-id <id>
 codeevolution adr show <draft-id>
 codeevolution adr debug <generation-id>
@@ -96,14 +101,28 @@ codeevolution web                    # http://0.0.0.0:8765
 | 17 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
 | 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
 
-ADR 的核心是**用模型生成**，不是读取已有文档：`adr gen` 支持 `--commit`、`--file`、
-`--text`、`--history` 四种来源，按「服务 × 来源类型」解析提示词（可在 CLI/API/Web 修改并
-版本化），模型输出 MADR 4.0 草稿写入 `~/.codeevolution/adr.db`（`adr_prompts` /
-`adr_generations` / `adr_drafts`）。每次生成保存完整调试映射（来源内容、实际提示词、
-模型原始响应、解析结果、耗时），`adr debug <generation-id>` 可直接查看。草稿状态恒为
-`proposed`，只有人能改为 `accepted`；`adr export <draft-id>` 或 Web 客户端把草稿写入仓库
-`docs/adr` 并重建索引。分析发布时仍会读取仓库已有 ADR 进入 Snapshot facts（`-s adr`），
-执行 R1/R2 结构校验；旧 Snapshot 返回 `available: false` 而不是报错。
+ADR 的核心是**用模型生成**，不是读取已有文档：
+
+- **提交表格**：`adr commits` 列出 git log，先用规则过滤文档/测试/lockfile 噪声，再由
+  「提交分诊」提示词让模型判断 bug fix、lint、test-only 等；结果按 `(member, sha)` 缓存，
+  表格支持单个生成、勾选批量生成（`adr gen --commits`）。
+- **生成**：`adr gen` 支持 `--commit`、`--file`、`--text`、`--history`、`--commits`；
+  提示词按「服务 × 来源类型」版本化（commit/file/text/triage/backtest 五类）。
+- **输出模板**：默认 MADR 4.0，可按服务覆盖；占位符包括 `{{frontmatter}}`、`{{title}}`、
+  `{{context}}`、`{{drivers}}`、`{{options}}`、`{{outcome}}`、`{{consequences}}`、
+  `{{confirmation}}`、`{{options_detail}}`、`{{evidence}}`，`{{title}}` 必填。
+- **回测**：`adr backtest <draft-id>` 把 ADR 与当前代码证据（evidence 文件、仓库文件清单、
+  最近提交）交给「回测」提示词，输出 verdict（consistent/partial/contradicted/
+  unverifiable）、confidence、理由与证据。
+- **人工审批**：`adr review <draft-id> --approve|--reject [--rating 1-5]`；审批后才允许
+  `adr export` 写入仓库 `docs/adr` 并重建索引（未审批返回 409）。
+- **调试映射**：每次生成/回测都保存来源内容、实际渲染提示词、模型原始响应、解析结果与
+  耗时；`adr debug <generation-id>` 与 `GET /api/adr/generations/{id}` 可直接查看。
+
+所有状态机数据落在 `~/.codeevolution/adr.db`（`adr_prompts` / `adr_generations` /
+`adr_drafts` / `adr_templates` / `adr_commit_scans` / `adr_backtests`）。分析发布时仍会读取
+仓库已有 ADR 进入 Snapshot facts（`-s adr`）并执行 R1/R2 结构校验；旧 Snapshot 返回
+`available: false` 而不是报错。
 
 ## 自动打包与重启
 

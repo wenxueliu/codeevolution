@@ -14,8 +14,12 @@ import re
 from typing import Any
 
 SOURCE_KINDS = ("commit", "file", "text")
+GENERATION_KINDS = SOURCE_KINDS
 HISTORY_KIND = "history"
-PROMPT_SOURCE_KINDS = SOURCE_KINDS  # history reuses the commit prompt
+# Prompt kinds extend generation sources with the two auxiliary model calls:
+# commit triage (which commits deserve an ADR) and backtesting (does the ADR
+# still hold against the current checkout?).
+PROMPT_SOURCE_KINDS = ("commit", "file", "text", "triage", "backtest")
 DEFAULT_STATUS = "proposed"
 MAX_TITLE_CHARS = 120
 
@@ -57,6 +61,87 @@ _COMMON_RULES = """\
 - 用中文填写，title 不超过 60 个字符。
 只输出一个 JSON 对象，不要 Markdown 代码块，不要解释。字段契约：
 {{schema}}
+"""
+
+DEFAULT_ADR_TEMPLATE = """\
+{{frontmatter}}
+# {{title}}
+
+## Context and Problem Statement
+
+{{context}}
+
+## Decision Drivers
+
+{{drivers}}
+
+## Considered Options
+
+{{options}}
+
+## Decision Outcome
+
+{{outcome}}
+
+### Consequences
+
+{{consequences}}
+
+### Confirmation
+
+{{confirmation}}
+
+## Pros and Cons of the Options
+
+{{options_detail}}
+
+## More Information
+
+{{evidence}}
+"""
+
+TRIAGE_PROMPT = """\
+你是代码仓变更分诊器。请判断每个 commit 是否值得记录为架构决策（ADR）。
+
+服务：{{service}}
+仓库：{{repo}}
+
+候选提交（JSON）：
+{{commits}}
+
+判定规则：
+1. 跳过 bug fix、lint/format、test-only、docs-only、依赖升级、版本号、纯重命名、回滚；
+2. 保留模块边界、外部契约、数据模型、部署拓扑、关键技术选型、长期约束，或包含明确取舍的重构；
+3. 只依据提交信息与变更文件判断，不得臆测。
+
+只输出 JSON 数组，每个元素字段：sha、candidate（bool）、reason（中文，<=80 字）、
+change_type（bugfix|docs|test|lint|dependency|chore|refactor|feature|architecture|unknown）。
+不要 Markdown，不要解释。
+"""
+
+BACKTEST_PROMPT = """\
+你是 ADR 回测器。给定一条架构决策记录与当前代码仓的证据，判断该决策现在是否仍然成立、
+是否已经在代码中实现，并给出置信度与理由。
+
+服务：{{service}}
+仓库：{{repo}}
+
+ADR 内容：
+{{adr}}
+
+当前代码证据：
+{{code}}
+
+要求：
+1. 只依据给出的证据判断，不得臆测；证据不足时必须用 unverifiable；
+2. verdict 取值：consistent（仍成立/已实现）、partial（部分成立）、contradicted（与代码矛盾）、
+   unverifiable（证据不足）；
+3. confidence 为 0-1 的小数；reasons 逐条说明并引用文件/行；
+4. evidence 使用仓库相对路径。
+
+只输出 JSON 对象，字段：verdict、confidence、reasons（字符串数组）、
+evidence（[{path,line,note}]）、recommendation（中文，<=120 字）。
+不要 Markdown，不要解释。
 """
 
 DEFAULT_PROMPTS: dict[str, str] = {
@@ -103,6 +188,8 @@ DEFAULT_PROMPTS: dict[str, str] = {
 - title 说明“问题 + 选中的方案”；
 - evidence.path 使用上面给出的文件路径。
 """,
+    "triage": TRIAGE_PROMPT,
+    "backtest": BACKTEST_PROMPT,
     "text": """\
 你是资深架构师，负责把用户的一句话决策描述整理成架构决策记录（ADR）。
 
@@ -227,6 +314,84 @@ def normalize_decision(value: Any) -> dict[str, Any]:
     }
 
 
+def template_values(
+    decision: dict[str, Any],
+    *,
+    source_kind: str,
+    source_ref: str,
+    service: str,
+    today: str | None = None,
+) -> dict[str, str]:
+    """Pre-rendered Markdown fragments available to the output template."""
+    date = today or _dt.date.today().isoformat()
+    frontmatter = ["---", f"status: {DEFAULT_STATUS}", f"date: {date}"]
+    if source_kind == "commit":
+        frontmatter.append(f"source-commit: {source_ref}")
+    frontmatter.append(f"source: {source_kind}:{source_ref}".rstrip(":"))
+    if decision.get("confidence") is not None:
+        frontmatter.append(f"confidence: {decision['confidence']:.2f}")
+    frontmatter += ["---", ""]
+
+    drivers = decision.get("drivers") or []
+    options = decision.get("options") or []
+    good = decision["consequences"]["good"]
+    bad = decision["consequences"]["bad"]
+    chosen = decision.get("chosen_option") or ""
+    outcome = decision.get("outcome") or ""
+
+    detail_lines: list[str] = []
+    for option in options:
+        detail_lines += [f"### {option['name']}", ""]
+        rows = [f"* Good, because {item}" for item in option["pros"]]
+        rows += [f"* Bad, because {item}" for item in option["cons"]]
+        detail_lines += rows or ["* 待补充"]
+        detail_lines.append("")
+
+    evidence_lines: list[str] = []
+    for item in decision.get("evidence") or []:
+        location = item["path"]
+        if item.get("line"):
+            location += f":{item['line']}"
+        note = f" — {item['note']}" if item.get("note") else ""
+        evidence_lines.append(f"* `{location}`{note}")
+
+    return {
+        "frontmatter": "\n".join(frontmatter),
+        "status": DEFAULT_STATUS,
+        "date": date,
+        "service": service,
+        "source_kind": source_kind,
+        "source_ref": source_ref,
+        "title": _as_text(decision.get("title"), "未命名架构决策").strip(),
+        "context": decision.get("context") or "待补充",
+        "drivers": "\n".join(f"* {item}" for item in drivers) or "* 待补充",
+        "options": "\n".join(f"* {item['name']}" for item in options) or "* 待补充",
+        "outcome": (
+            f'Chosen option: "{chosen}", because {outcome or "待补充"}'
+            if chosen
+            else (outcome or "待补充")
+        ),
+        "consequences": "\n".join(
+            [f"* Good, because {item}" for item in good]
+            + [f"* Bad, because {item}" for item in bad]
+        )
+        or "* 待补充",
+        "confirmation": decision.get("confirmation") or "待补充",
+        "options_detail": "\n".join(detail_lines).rstrip() or "* 待补充",
+        "evidence": "\n".join(evidence_lines) or "* 待补充",
+    }
+
+
+def validate_template(template: str) -> str:
+    """Reject templates that cannot produce a titled ADR."""
+    text = (template or "").strip()
+    if not text:
+        raise ValueError("template is required")
+    if "{{title}}" not in text:
+        raise ValueError("template must contain the {{title}} placeholder")
+    return text
+
+
 def render_madr(
     decision: dict[str, Any],
     *,
@@ -234,91 +399,34 @@ def render_madr(
     source_ref: str,
     service: str,
     today: str | None = None,
+    template: str | None = None,
 ) -> tuple[str, str, str]:
-    """Render a MADR 4.0 document; return ``(title, slug, markdown)``.
+    """Render a MADR 4.0 document from the configurable output template.
 
-    The status is always ``proposed``: only a human can accept a decision.
+    The status comes from the template's ``{{frontmatter}}`` (always
+    ``proposed`` at generation time): only a human can accept a decision.
     """
     title = _as_text(decision.get("title"), "未命名架构决策").strip()
     title = re.sub(r"\s+", " ", title)[:MAX_TITLE_CHARS]
     slug = slugify(decision.get("slug") or title)
-    date = today or _dt.date.today().isoformat()
-
-    lines = ["---", f"status: {DEFAULT_STATUS}", f"date: {date}"]
-    if source_kind == "commit":
-        lines.append(f"source-commit: {source_ref}")
-    lines += [f"source: {source_kind}:{source_ref}".rstrip(":"), "---", "", f"# {title}", ""]
-
-    lines += ["## Context and Problem Statement", "", decision.get("context") or "待补充", ""]
-
-    lines.append("## Decision Drivers")
-    lines.append("")
-    drivers = decision.get("drivers") or []
-    lines += [f"* {item}" for item in drivers] or ["* 待补充"]
-    lines.append("")
-
-    lines.append("## Considered Options")
-    lines.append("")
-    options = decision.get("options") or []
-    lines += [f"* {item['name']}" for item in options] or ["* 待补充"]
-    lines.append("")
-
-    lines.append("## Decision Outcome")
-    lines.append("")
-    chosen = decision.get("chosen_option") or ""
-    outcome = decision.get("outcome") or ""
-    if chosen:
-        lines.append(f'Chosen option: "{chosen}", because {outcome or "待补充"}')
-    else:
-        lines.append(outcome or "待补充")
-    lines.append("")
-
-    lines.append("### Consequences")
-    lines.append("")
-    good = decision["consequences"]["good"]
-    bad = decision["consequences"]["bad"]
-    lines += [f"* Good, because {item}" for item in good]
-    lines += [f"* Bad, because {item}" for item in bad]
-    if not good and not bad:
-        lines.append("* 待补充")
-    lines.append("")
-
-    lines.append("### Confirmation")
-    lines.append("")
-    lines.append(decision.get("confirmation") or "待补充")
-    lines.append("")
-
-    if options:
-        lines.append("## Pros and Cons of the Options")
-        lines.append("")
-        for option in options:
-            lines.append(f"### {option['name']}")
-            lines.append("")
-            rows = [f"* Good, because {item}" for item in option["pros"]]
-            rows += [f"* Bad, because {item}" for item in option["cons"]]
-            lines += rows or ["* 待补充"]
-            lines.append("")
-
-    evidence = decision.get("evidence") or []
-    if evidence:
-        lines.append("## More Information")
-        lines.append("")
-        for item in evidence:
-            location = item["path"]
-            if item.get("line"):
-                location += f":{item['line']}"
-            note = f" — {item['note']}" if item.get("note") else ""
-            lines.append(f"* `{location}`{note}")
-        lines.append("")
-
-    if decision.get("confidence") is not None:
-        lines.append(f"<!-- confidence: {decision['confidence']:.2f}, service: {service} -->")
-
-    return title, slug, "\n".join(lines).rstrip("\n") + "\n"
+    values = template_values(
+        decision,
+        source_kind=source_kind,
+        source_ref=source_ref,
+        service=service,
+        today=today,
+    )
+    values["title"] = title
+    text = render_prompt(template or DEFAULT_ADR_TEMPLATE, values)
+    return title, slug, text.rstrip("\n") + "\n"
 
 
 __all__ = [
+    "DEFAULT_ADR_TEMPLATE",
     "DEFAULT_PROMPTS",
+    "BACKTEST_PROMPT",
+    "GENERATION_KINDS",
+    "TRIAGE_PROMPT",
     "DEFAULT_STATUS",
     "HISTORY_KIND",
     "PROMPT_SOURCE_KINDS",
@@ -330,4 +438,6 @@ __all__ = [
     "render_madr",
     "render_prompt",
     "slugify",
+    "template_values",
+    "validate_template",
 ]

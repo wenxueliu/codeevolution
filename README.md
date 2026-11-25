@@ -52,10 +52,12 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 | Phase 2 | 配置消费 / 外部依赖 / 权限模型 / 热力图 | CodeGraph SQLite + 规则引擎 |
 | Phase 3 | 业务描述 / 业务规则 / 错误目录 / 状态机 | CodeGraph SQLite + litellm (LLM) |
 
-**ADR 生成**：`adr gen --commit/--file/--text/--history` 让模型从提交、文件、一句话或
-历史批量生成 MADR 4.0 草稿（提示词按服务维度版本化），写入 `adr.db`；`adr list/show/debug`
-查看草稿与「来源 → 提示词 → 模型输出」调试映射，`adr export` 把草稿写入仓库 `docs/adr`
-并重建索引。分析发布时仓库已有 ADR 进入 `-s adr` 快照事实并执行 R1/R2 结构校验。
+**ADR 生成**：`adr commits` 列出 git log 并由 AI 分诊（跳过 bug fix / lint / test-only
+等），可单个或勾选批量生成；`adr gen --commit/--file/--text/--history/--commits` 让模型
+生成 MADR 4.0 草稿（输出模板可按服务自定义），写入 `adr.db`。`adr backtest` 把草稿与
+当前代码证据回测，输出置信度、结论与理由；`adr review` 人工审批并打分后，`adr export`
+才能写入仓库 `docs/adr` 并重建索引。`adr debug` 查看「来源 → 提示词 → 模型输出 → 回测」
+的完整映射。分析发布时仓库已有 ADR 进入 `-s adr` 快照事实并执行 R1/R2 结构校验。
 
 ### 2. Cross-Repo Analyzer — 多仓微服务分析（5 维）
 

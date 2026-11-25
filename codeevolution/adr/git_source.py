@@ -144,11 +144,31 @@ def list_commits(
     return commits
 
 
+def current_files(repo: str | Path, limit: int = 300) -> list[str]:
+    """Tracked files in the working tree, used as backtest evidence context."""
+    try:
+        output = _run(repo, "ls-files")
+    except AdrGitError:
+        return []
+    files = [line.strip() for line in output.splitlines() if line.strip()]
+    return files[: max(1, limit)]
+
+
+def recent_subjects(repo: str | Path, limit: int = 10) -> list[str]:
+    try:
+        output = _run(repo, "log", f"-n{max(1, limit)}", "--format=%h %s")
+    except AdrGitError:
+        return []
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
 __all__ = [
     "AdrGitError",
     "CommitContext",
+    "current_files",
     "list_commits",
     "read_commit",
+    "recent_subjects",
     "resolve_commit",
     "significant_files",
 ]

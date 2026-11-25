@@ -152,6 +152,20 @@ def cmd_adr(args):
 
         if command == "gen":
             member = _adr_member(runtime, args.snapshot_id, args.member_id)
+            if getattr(args, "commits", ""):
+                shas = [item.strip() for item in args.commits.split(",") if item.strip()]
+                batch = service.batch_generate(member, shas, force=args.force)
+                generations = [
+                    service.run(item["id"]) if item["status"] == "queued" else item
+                    for item in batch["generations"]
+                ]
+                result = {"batch_id": batch["batch_id"], "generations": generations}
+                if args.json:
+                    _print_json(result)
+                else:
+                    for item in generations:
+                        _print_adr_generation(item, store)
+                return
             if args.history:
                 batch = service.start_history(
                     member,
@@ -190,9 +204,13 @@ def cmd_adr(args):
                 _print_json({"generations": generations, "drafts": drafts})
             else:
                 for draft in drafts:
+                    backtest = draft.get("backtest") or {}
+                    confidence = backtest.get("confidence")
                     print(
                         f"{draft['id']}  {draft['status']:<10} {draft['title']}"
                         f"  [{draft['source_kind']}:{draft['source_ref'][:12]}]"
+                        f"  review={draft.get('review_status') or 'pending'}"
+                        + (f"  backtest={backtest.get('verdict')}:{confidence}" if confidence is not None else "")
                         + (f"  exported:{draft['exported_path']}" if draft.get("exported_path") else "")
                     )
                 if not drafts:
@@ -249,6 +267,92 @@ def cmd_adr(args):
             else:
                 print(f"wrote {result['path']}")
                 print(f"index {result['index_path']}")
+            return
+
+        if command == "commits":
+            member = _adr_member(runtime, args.snapshot_id, args.member_id)
+            if args.scan:
+                result = service.scan_commits(
+                    member,
+                    since=args.since,
+                    until=args.until,
+                    limit=args.limit,
+                    include_merges=args.include_merges,
+                    refresh=args.refresh,
+                )
+            else:
+                result = service.list_commits(
+                    member,
+                    since=args.since,
+                    until=args.until,
+                    limit=args.limit,
+                    include_merges=args.include_merges,
+                )
+            if args.json:
+                _print_json(result)
+            else:
+                for item in result["items"]:
+                    mark = "Y" if item["candidate"] else "-"
+                    reason = item["skip_reason"] or item.get("change_type") or ""
+                    draft = f" -> {item['draft_title']}" if item.get("draft_title") else ""
+                    print(
+                        f"{item['sha'][:10]}  {mark}  {item['subject'][:60]:60s}"
+                        f"  {reason}{draft}"
+                    )
+            return
+
+        if command == "template":
+            member = _adr_member(runtime, args.snapshot_id, args.member_id)
+            if args.template_command == "show":
+                result = service.template(member.id)
+                if args.json:
+                    _print_json(result)
+                else:
+                    current = result["template"]
+                    print(f"template: {'member v' + str(current['version']) if current else 'default'}")
+                    print(current["template_text"] if current else result["default_template"])
+                return
+            if args.template_command == "set":
+                text = args.text or ""
+                if args.file:
+                    text = Path(args.file).read_text(encoding="utf-8")
+                template = service.save_template(member.id, text)
+                result = {"template": template, **service.template(member.id)}
+                _print_json(result) if args.json else print(f"saved template v{template['version']}")
+                return
+            if args.template_command == "reset":
+                reset = service.reset_template(member.id)
+                result = {"reset": reset, **service.template(member.id)}
+                _print_json(result) if args.json else print(
+                    f"reset template: {'ok' if reset else 'already default'}"
+                )
+                return
+            _fail("unknown adr template command", 2)
+
+        if command == "backtest":
+            result = service.backtest(args.draft_id, force=args.force)
+            if args.json:
+                _print_json(result)
+            else:
+                print(f"verdict={result['verdict']} confidence={result['confidence']}")
+                for reason in result.get("reasons") or []:
+                    print(f"- {reason}")
+                if result.get("error_message"):
+                    print(f"error: {result['error_message']}")
+            return
+
+        if command == "review":
+            action = "approve" if args.approve else "reject"
+            result = service.review(
+                args.draft_id,
+                action=action,
+                rating=args.rating,
+                comment=args.comment,
+            )
+            if args.json:
+                _print_json(result)
+            else:
+                print(f"draft {result['draft']['id']} -> {result['draft']['status']}")
             return
 
         if command == "mapping":
@@ -1308,6 +1412,7 @@ def main():
     source.add_argument("--file", default="", help="Repository-relative file path")
     source.add_argument("--text", default="", help="One-sentence decision description")
     source.add_argument("--history", action="store_true", help="Generate from recent commits")
+    source.add_argument("--commits", default="", help="Comma-separated commit SHAs to generate")
     gen.add_argument("--since", default="", help="History lower bound (git --since)")
     gen.add_argument("--until", default="", help="History upper bound (git --until)")
     gen.add_argument("--limit", type=int, default=10, help="History candidate limit (default 10)")
@@ -1337,6 +1442,46 @@ def main():
     export.add_argument("--json", action="store_true")
     export.set_defaults(handler=cmd_adr)
 
+    commits = adr_sub.add_parser("commits", help="List commits with AI triage and draft status")
+    commits.add_argument("--snapshot-id", default="")
+    commits.add_argument("--member-id", default="")
+    commits.add_argument("--since", default="")
+    commits.add_argument("--until", default="")
+    commits.add_argument("--limit", type=int, default=50)
+    commits.add_argument("--include-merges", action="store_true")
+    commits.add_argument("--scan", action="store_true", help="Run the AI triage before printing")
+    commits.add_argument("--refresh", action="store_true", help="Re-run triage for cached commits")
+    commits.add_argument("--json", action="store_true")
+    commits.set_defaults(handler=cmd_adr)
+
+    template = adr_sub.add_parser("template", help="Inspect or override the MADR output template")
+    template_sub = template.add_subparsers(dest="template_command", help="Template sub-commands")
+    for name in ("show", "set", "reset"):
+        sub = template_sub.add_parser(name)
+        sub.add_argument("--snapshot-id", default="")
+        sub.add_argument("--member-id", default="")
+        if name == "set":
+            sub.add_argument("--file", default="", help="Read the template from a file")
+            sub.add_argument("--text", default="", help="Template text")
+        sub.add_argument("--json", action="store_true")
+        sub.set_defaults(handler=cmd_adr)
+
+    backtest = adr_sub.add_parser("backtest", help="Backtest a draft against the current checkout")
+    backtest.add_argument("draft_id")
+    backtest.add_argument("--force", action="store_true")
+    backtest.add_argument("--json", action="store_true")
+    backtest.set_defaults(handler=cmd_adr)
+
+    review = adr_sub.add_parser("review", help="Approve or reject an ADR draft")
+    review.add_argument("draft_id")
+    group = review.add_mutually_exclusive_group(required=True)
+    group.add_argument("--approve", action="store_true")
+    group.add_argument("--reject", action="store_true")
+    review.add_argument("--rating", type=int, choices=[1, 2, 3, 4, 5], default=None)
+    review.add_argument("--comment", default="")
+    review.add_argument("--json", action="store_true")
+    review.set_defaults(handler=cmd_adr)
+
     mapping = adr_sub.add_parser("mapping", help="Show source -> prompt -> ADR mapping")
     mapping.add_argument("--snapshot-id", default="")
     mapping.add_argument("--member-id", default="")
@@ -1350,7 +1495,7 @@ def main():
         sub.add_argument("--snapshot-id", default="")
         sub.add_argument("--member-id", default="")
         if name != "list":
-            sub.add_argument("--kind", required=True, choices=["commit", "file", "text"])
+            sub.add_argument("--kind", required=True, choices=["commit", "file", "text", "triage", "backtest"])
         if name == "set":
             sub.add_argument("--file", default="", help="Read the prompt from a file")
             sub.add_argument("--text", default="", help="Prompt text")

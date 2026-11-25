@@ -27,6 +27,8 @@ from ..semantic.config import get_llm_config
 from ..semantic.json_parser import parse_json
 from . import git_source
 from .domain import (
+    DEFAULT_ADR_TEMPLATE,
+    GENERATION_KINDS,
     PROMPT_SOURCE_KINDS,
     default_prompt,
     decision_schema_text,
@@ -34,6 +36,7 @@ from .domain import (
     prompt_digest,
     render_madr,
     render_prompt,
+    validate_template,
 )
 from .store import AdrStore
 
@@ -42,6 +45,9 @@ logger = logging.getLogger(__name__)
 MAX_FILE_CHARS = 120_000
 MAX_TEXT_CHARS = 20_000
 MAX_HISTORY_CANDIDATES = 100
+MAX_TRIAGE_COMMITS = 60
+TRIAGE_BATCH_SIZE = 12
+BACKTEST_VERDICTS = ("consistent", "partial", "contradicted", "unverifiable")
 EXPORT_DIR_CANDIDATES = ("docs/adr", "doc/adr", "docs/decisions", "adr")
 
 
@@ -314,6 +320,439 @@ class AdrService:
             values["text"] = str((payload.get("text") or {}).get("text") or "")
         return values
 
+    # ── output template ──────────────────────────────────────────────
+
+    def template(self, member_id: str) -> dict[str, Any]:
+        current = self.store.current_template(member_id)
+        return {
+            "member_id": member_id,
+            "template": current,
+            "default_template": DEFAULT_ADR_TEMPLATE,
+            "template_digest": current["template_digest"] if current else _digest(DEFAULT_ADR_TEMPLATE),
+            "template_version": current["version"] if current else 0,
+        }
+
+    def save_template(self, member_id: str, template_text: str) -> dict[str, Any]:
+        try:
+            text = validate_template(template_text)
+        except ValueError as error:
+            raise AdrServiceError(str(error)) from error
+        return self.store.create_template(member_id, text, _digest(text))
+
+    def reset_template(self, member_id: str) -> bool:
+        return self.store.delete_templates(member_id)
+
+    def _render_template(self, member_id: str) -> str:
+        current = self.store.current_template(member_id)
+        return current["template_text"] if current else DEFAULT_ADR_TEMPLATE
+
+    # ── commit table + AI triage ─────────────────────────────────────
+
+    def _scan_item(self, commit: dict[str, Any], scan: dict[str, Any] | None, draft: dict[str, Any] | None) -> dict[str, Any]:
+        rule_candidate = bool(commit["significant"])
+        if scan is None:
+            if rule_candidate:
+                candidate, reason = True, ""
+            else:
+                candidate, reason = False, "仅修改文档、测试或 lockfile"
+            return {
+                "sha": commit["sha"],
+                "subject": commit["subject"],
+                "author": commit["author"],
+                "committed_at": commit["committed_at"],
+                "files": commit["files"],
+                "rule_candidate": rule_candidate,
+                "ai_candidate": None,
+                "candidate": candidate,
+                "skip_reason": reason,
+                "change_type": "",
+                "scanned": False,
+                "generation_id": "",
+                "draft_id": draft["id"] if draft else "",
+                "draft_title": draft["title"] if draft else "",
+                "draft_status": draft["status"] if draft else "",
+                "review_status": draft.get("review_status") if draft else "",
+            }
+        ai_candidate = scan.get("ai_candidate")
+        if not scan.get("rule_candidate"):
+            candidate, reason = False, scan.get("rule_reason") or "仅修改文档、测试或 lockfile"
+        elif ai_candidate is None:
+            candidate, reason = True, scan.get("ai_reason") or "AI 分诊未完成，可手动生成"
+        else:
+            candidate, reason = bool(ai_candidate), scan.get("ai_reason", "")
+        return {
+            "sha": commit["sha"],
+            "subject": commit["subject"],
+            "author": commit["author"],
+            "committed_at": commit["committed_at"],
+            "files": commit["files"],
+            "rule_candidate": bool(scan.get("rule_candidate")),
+            "ai_candidate": ai_candidate,
+            "candidate": candidate,
+            "skip_reason": reason,
+            "change_type": scan.get("change_type", ""),
+            "scanned": True,
+            "generation_id": "",
+            "draft_id": draft["id"] if draft else "",
+            "draft_title": draft["title"] if draft else "",
+            "draft_status": draft["status"] if draft else "",
+            "review_status": draft.get("review_status") if draft else "",
+        }
+
+    def list_commits(
+        self,
+        member: Any,
+        *,
+        since: str = "",
+        until: str = "",
+        limit: int = 50,
+        include_merges: bool = False,
+    ) -> dict[str, Any]:
+        member_id = _member_id(member)
+        repo_root = self._repo_root(member)
+        try:
+            commits = git_source.list_commits(
+                repo_root,
+                since=since,
+                until=until,
+                limit=max(1, min(int(limit), MAX_TRIAGE_COMMITS)),
+                include_merges=include_merges,
+            )
+        except git_source.AdrGitError as error:
+            raise AdrServiceError(str(error), status=400) from error
+        scans = {scan["sha"]: scan for scan in self.store.list_scans(member_id)}
+        drafts = {
+            draft["source_ref"]: draft
+            for draft in self.store.list_drafts(member_id, limit=500)
+            if draft["source_kind"] == "commit"
+        }
+        items = [
+            self._scan_item(commit, scans.get(commit["sha"]), drafts.get(commit["sha"]))
+            for commit in commits
+        ]
+        return {
+            "member_id": member_id,
+            "repo": str(repo_root),
+            "items": items,
+            "total": len(items),
+            "scanned": sum(1 for item in items if item["scanned"]),
+        }
+
+    def scan_commits(
+        self,
+        member: Any,
+        *,
+        since: str = "",
+        until: str = "",
+        limit: int = 50,
+        include_merges: bool = False,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Rule-filter obvious noise, then ask the model to triage the rest."""
+        member_id = _member_id(member)
+        repo_root = self._repo_root(member)
+        listing = self.list_commits(
+            member, since=since, until=until, limit=limit, include_merges=include_merges
+        )
+        pending = [
+            item for item in listing["items"] if refresh or not item["scanned"]
+        ]
+        for item in pending:
+            if not item["rule_candidate"]:
+                self.store.upsert_scan(
+                    {
+                        "member_id": member_id,
+                        "sha": item["sha"],
+                        "subject": item["subject"],
+                        "author": item["author"],
+                        "committed_at": item["committed_at"],
+                        "files": item["files"],
+                        "rule_candidate": False,
+                        "rule_reason": "仅修改文档、测试或 lockfile",
+                        "ai_candidate": False,
+                        "ai_reason": "规则过滤：仅修改文档、测试或 lockfile",
+                        "change_type": "docs",
+                        "model": "",
+                        "prompt_digest": "",
+                    }
+                )
+
+        candidates = [item for item in pending if item["rule_candidate"]]
+        prompt = self._resolve_prompt(member_id, "triage")
+        failures = 0
+        for start in range(0, len(candidates), TRIAGE_BATCH_SIZE):
+            chunk = candidates[start : start + TRIAGE_BATCH_SIZE]
+            values = {
+                "service": _member_name(member),
+                "repo": str(repo_root),
+                "commits": json.dumps(
+                    [
+                        {
+                            "sha": item["sha"],
+                            "subject": item["subject"],
+                            "author": item["author"],
+                            "date": item["committed_at"],
+                            "files": item["files"][:20],
+                        }
+                        for item in chunk
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            }
+            rendered = render_prompt(prompt["text"], values)
+            try:
+                raw = self._complete(rendered)
+                parsed = parse_json(raw)
+                decisions = self._parse_triage(parsed, [item["sha"] for item in chunk])
+                if not decisions:
+                    raise AdrServiceError("模型没有返回可解析的分诊结果", status=502)
+                for item in chunk:
+                    decision = decisions.get(item["sha"])
+                    if decision is None:
+                        self.store.upsert_scan(
+                            {
+                                "member_id": member_id,
+                                "sha": item["sha"],
+                                "subject": item["subject"],
+                                "author": item["author"],
+                                "committed_at": item["committed_at"],
+                                "files": item["files"],
+                                "rule_candidate": True,
+                                "ai_candidate": None,
+                                "ai_reason": "模型未返回该提交的分诊结果，可手动生成",
+                                "change_type": "unknown",
+                                "model": self.model_name(),
+                                "prompt_digest": prompt["digest"],
+                            }
+                        )
+                        continue
+                    self.store.upsert_scan(
+                        {
+                            "member_id": member_id,
+                            "sha": item["sha"],
+                            "subject": item["subject"],
+                            "author": item["author"],
+                            "committed_at": item["committed_at"],
+                            "files": item["files"],
+                            "rule_candidate": True,
+                            "ai_candidate": bool(decision.get("candidate")),
+                            "ai_reason": str(decision.get("reason") or ""),
+                            "change_type": str(decision.get("change_type") or "unknown"),
+                            "model": self.model_name(),
+                            "prompt_digest": prompt["digest"],
+                        }
+                    )
+            except (AdrServiceError, Exception) as error:
+                failures += len(chunk)
+                logger.warning("ADR commit triage failed for %s: %s", member_id, error)
+                for item in chunk:
+                    self.store.upsert_scan(
+                        {
+                            "member_id": member_id,
+                            "sha": item["sha"],
+                            "subject": item["subject"],
+                            "author": item["author"],
+                            "committed_at": item["committed_at"],
+                            "files": item["files"],
+                            "rule_candidate": True,
+                            "ai_candidate": None,
+                            "ai_reason": f"AI 分诊失败：{error}",
+                            "change_type": "unknown",
+                            "model": self.model_name(),
+                            "prompt_digest": prompt["digest"],
+                        }
+                    )
+
+        result = self.list_commits(
+            member, since=since, until=until, limit=limit, include_merges=include_merges
+        )
+        result["failures"] = failures
+        return result
+
+    @staticmethod
+    def _parse_triage(parsed: Any, shas: list[str]) -> dict[str, dict[str, Any]]:
+        rows: list[Any] = []
+        if isinstance(parsed, list):
+            rows = parsed
+        elif isinstance(parsed, dict):
+            for key in ("commits", "items", "results"):
+                value = parsed.get(key)
+                if isinstance(value, list):
+                    rows = value
+                    break
+            if not rows and any(sha[:8] in json.dumps(parsed) for sha in shas):
+                rows = [parsed]
+        wanted = {sha for sha in shas}
+        decisions: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sha = str(row.get("sha") or "").strip()
+            if sha in wanted:
+                decisions[sha] = row
+                continue
+            for candidate_sha in wanted:
+                if sha and candidate_sha.startswith(sha[:8]):
+                    decisions[candidate_sha] = row
+                    break
+        return decisions
+
+    def batch_generate(
+        self, member: Any, shas: list[str], *, force: bool = False
+    ) -> dict[str, Any]:
+        commit_shas = [str(sha).strip() for sha in shas if str(sha).strip()][:100]
+        if not commit_shas:
+            raise AdrServiceError("at least one commit is required")
+        batch_id = "batch-" + _digest(f"{_member_id(member)}:{time.time()}")[7:23]
+        generations = [
+            self.create_generation(
+                member, {"kind": "commit", "ref": sha}, force=force, batch_id=batch_id
+            )
+            for sha in commit_shas
+        ]
+        return {"batch_id": batch_id, "total": len(generations), "generations": generations}
+
+    # ── backtest ─────────────────────────────────────────────────────
+
+    def backtest(self, draft_id: str, *, force: bool = False) -> dict[str, Any]:
+        draft = self.store.get_draft(draft_id)
+        if draft is None:
+            raise AdrServiceError("draft not found", status=404)
+        existing = self.store.get_backtest(draft_id)
+        if existing is not None and not force:
+            return existing
+        member = self.member(draft["member_id"])
+        repo_root = self._repo_root(member)
+        generation = self.store.get_generation(draft["generation_id"]) or {}
+        prompt = self._resolve_prompt(draft["member_id"], "backtest")
+        code = self._backtest_evidence(repo_root, generation)
+        rendered = render_prompt(
+            prompt["text"],
+            {
+                "service": _member_name(member),
+                "repo": str(repo_root),
+                "adr": draft["markdown"],
+                "code": code,
+            },
+        )
+        started = time.monotonic()
+        try:
+            raw = self._complete(rendered)
+        except AdrServiceError as error:
+            record = self.store.upsert_backtest(
+                {
+                    "draft_id": draft_id,
+                    "status": "failed",
+                    "model": self.model_name(),
+                    "prompt_text": prompt["text"],
+                    "prompt_rendered": rendered,
+                    "error_message": str(error),
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                }
+            )
+            return record
+        duration = int((time.monotonic() - started) * 1000)
+        parsed = parse_json(raw)
+        if not isinstance(parsed, dict) or "raw" in parsed:
+            return self.store.upsert_backtest(
+                {
+                    "draft_id": draft_id,
+                    "status": "failed",
+                    "model": self.model_name(),
+                    "prompt_text": prompt["text"],
+                    "prompt_rendered": rendered,
+                    "raw_response": raw[:200_000],
+                    "error_message": "模型输出不是合法 JSON",
+                    "duration_ms": duration,
+                }
+            )
+        verdict = str(parsed.get("verdict") or "").strip().lower()
+        if verdict not in BACKTEST_VERDICTS:
+            verdict = "unverifiable"
+        try:
+            confidence = max(0.0, min(1.0, float(parsed.get("confidence"))))
+        except (TypeError, ValueError):
+            confidence = None
+        reasons = parsed.get("reasons") if isinstance(parsed.get("reasons"), list) else []
+        evidence = parsed.get("evidence") if isinstance(parsed.get("evidence"), list) else []
+        return self.store.upsert_backtest(
+            {
+                "draft_id": draft_id,
+                "status": "ready",
+                "verdict": verdict,
+                "confidence": confidence,
+                "reasons": [str(item) for item in reasons],
+                "evidence": [item for item in evidence if isinstance(item, dict)],
+                "recommendation": str(parsed.get("recommendation") or ""),
+                "model": self.model_name(),
+                "prompt_text": prompt["text"],
+                "prompt_rendered": rendered,
+                "raw_response": raw[:200_000],
+                "duration_ms": duration,
+            }
+        )
+
+    def _backtest_evidence(self, repo_root: Path, generation: dict[str, Any]) -> str:
+        parsed = generation.get("parsed") if isinstance(generation.get("parsed"), dict) else {}
+        paths: list[str] = []
+        for item in parsed.get("evidence") or []:
+            path = str(item.get("path") or "").strip() if isinstance(item, dict) else ""
+            if path and path not in paths:
+                paths.append(path)
+        parts: list[str] = []
+        for path in paths[:5]:
+            try:
+                relative, content = self._read_repo_file(repo_root, path)
+            except AdrServiceError:
+                continue
+            parts.append(f"### {relative}\n```\n{content[:8000]}\n```")
+        files = git_source.current_files(repo_root, limit=120)
+        if files:
+            parts.append("仓库文件（部分）：\n" + "\n".join(f"* {item}" for item in files))
+        subjects = git_source.recent_subjects(repo_root, limit=8)
+        if subjects:
+            parts.append("最近提交：\n" + "\n".join(f"* {item}" for item in subjects))
+        return "\n\n".join(parts)[:30_000] or "（仓库没有可用证据）"
+
+    # ── human review ─────────────────────────────────────────────────
+
+    def review(
+        self,
+        draft_id: str,
+        *,
+        action: str,
+        rating: int | None = None,
+        comment: str = "",
+    ) -> dict[str, Any]:
+        draft = self.store.get_draft(draft_id)
+        if draft is None:
+            raise AdrServiceError("draft not found", status=404)
+        if action not in {"approve", "reject"}:
+            raise AdrServiceError("action must be approve or reject")
+        if rating is not None and not 1 <= int(rating) <= 5:
+            raise AdrServiceError("rating must be between 1 and 5")
+        status = "accepted" if action == "approve" else "rejected"
+        markdown = self._set_status(draft["markdown"], status)
+        updated = self.store.update_draft(
+            draft_id,
+            status=status,
+            markdown=markdown,
+            review_status="approved" if action == "approve" else "rejected",
+            rating=int(rating) if rating is not None else draft.get("rating"),
+            review_comment=comment,
+            reviewed_at=_now(),
+        )
+        return {"draft": updated, "backtest": self.store.get_backtest(draft_id)}
+
+    @staticmethod
+    def _set_status(markdown: str, status: str) -> str:
+        if re.search(r"(?m)^status:\s*.*$", markdown):
+            return re.sub(r"(?m)^status:\s*.*$", f"status: {status}", markdown, count=1)
+        if markdown.startswith("# "):
+            return f"---\nstatus: {status}\n---\n\n{markdown}"
+        return markdown
+
     # ── generations ──────────────────────────────────────────────────
 
     def create_generation(
@@ -331,6 +770,15 @@ class AdrService:
                 raise
             return self._skipped_generation(member, source, str(error), batch_id)
         member_key = _member_id(member)
+        if prepared["kind"] == "commit" and not force:
+            scan = self.store.get_scan(member_key, prepared["ref"])
+            if scan is not None and scan.get("ai_candidate") is False:
+                return self._skipped_generation(
+                    member,
+                    source,
+                    f"AI 分诊跳过：{scan.get('ai_reason') or '判定不是架构决策'}",
+                    batch_id,
+                )
         prompt = self._resolve_prompt(member_key, prepared["kind"])
         return self.store.create_generation(
             member_id=member_key,
@@ -475,6 +923,7 @@ class AdrService:
                 source_kind=source_kind,
                 source_ref=generation["source_ref"],
                 service=service_name,
+                template=self._render_template(generation["member_id"]),
             )
             draft = self.store.create_draft(
                 generation_id=generation_id,
@@ -558,7 +1007,7 @@ class AdrService:
             latest_draft.setdefault(draft["source_kind"], draft)
 
         rows = []
-        for kind in PROMPT_SOURCE_KINDS:
+        for kind in GENERATION_KINDS:
             item = prompts.get(kind, {})
             prompt = item.get("prompt")
             generation = latest_generation.get(kind)
@@ -596,14 +1045,30 @@ class AdrService:
         return {"member_id": member_id, "sources": rows}
 
     def list_drafts(self, member_id: str = "", limit: int = 100) -> list[dict[str, Any]]:
-        return self.store.list_drafts(member_id, limit)
+        drafts = self.store.list_drafts(member_id, limit)
+        for draft in drafts:
+            backtest = self.store.get_backtest(draft["id"])
+            draft["backtest"] = (
+                {
+                    "verdict": backtest["verdict"],
+                    "confidence": backtest["confidence"],
+                    "status": backtest["status"],
+                }
+                if backtest
+                else None
+            )
+        return drafts
 
     def get_draft(self, draft_id: str) -> dict[str, Any]:
         draft = self.store.get_draft(draft_id)
         if draft is None:
             raise AdrServiceError("draft not found", status=404)
         generation = self.store.get_generation(draft["generation_id"])
-        return {"draft": draft, "generation": generation}
+        return {
+            "draft": draft,
+            "generation": generation,
+            "backtest": self.store.get_backtest(draft_id),
+        }
 
     # ── export ───────────────────────────────────────────────────────
 
@@ -611,6 +1076,8 @@ class AdrService:
         draft = self.store.get_draft(draft_id)
         if draft is None:
             raise AdrServiceError("draft not found", status=404)
+        if draft.get("review_status") != "approved" or draft.get("status") != "accepted":
+            raise AdrServiceError("ADR 草稿需先通过人工审批（accepted）才能导出", status=409)
         member = self.member(draft["member_id"])
         repo_root = self._repo_root(member)
         directory = next(
