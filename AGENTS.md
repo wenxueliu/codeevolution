@@ -127,6 +127,11 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
   prompt_digest、evidence、editor、reviewer、exported_at），重复导出只替换该块。
 - **调试映射**：每次生成/回测都保存来源内容、实际渲染提示词、模型原始响应、解析结果与
   耗时；`adr debug <generation-id>` 与 `GET /api/adr/generations/{id}` 可直接查看。
+- **编码与 Windows**：导出的 ADR 与 `index.md` 以 UTF-8（带 BOM）写入，Windows 记事本、
+  资源管理器预览等可直接识别而不再乱码；读取侧同时兼容 BOM、UTF-16 与 GB18030，
+  仓库中存量 GBK 文档、GBK 提交信息和非 UTF-8 源文件会按原语言解码，而不是变成 `�`
+  （统一入口 `codeevolution/text_encoding.py`）。已生成的历史草稿不会自动重编码，
+  需要重新生成才能覆盖来源中的替换字符。
 
 所有状态机数据落在 `~/.codeevolution/adr.db`（`adr_prompts` / `adr_generations` /
 `adr_drafts` / `adr_draft_revisions` / `adr_templates` / `adr_commit_scans` /

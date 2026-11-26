@@ -25,14 +25,15 @@ from typing import Any, Callable
 from ..analysis.knowledge.adr import FILENAME_RE, load_adrs, render_index
 from ..semantic.config import get_llm_config
 from ..semantic.json_parser import parse_json
+from ..text_encoding import decode_text_bytes
 from . import git_source
 from .domain import (
     DEFAULT_ADR_TEMPLATE,
     GENERATION_KINDS,
     MAX_TITLE_CHARS,
     PROMPT_SOURCE_KINDS,
-    default_prompt,
     decision_schema_text,
+    default_prompt,
     inject_provenance,
     normalize_decision,
     prompt_digest,
@@ -64,6 +65,9 @@ COMMIT_STAGES = (
     "failed",
 )
 EXPORT_DIR_CANDIDATES = ("docs/adr", "doc/adr", "docs/decisions", "adr")
+# BOM-marked UTF-8 keeps exported ADRs readable in Windows editors that would
+# otherwise guess GBK; the readers in this project strip it again.
+EXPORT_ENCODING = "utf-8-sig"
 
 
 class AdrServiceError(RuntimeError):
@@ -213,9 +217,11 @@ class AdrService:
         if not candidate.is_file():
             raise AdrServiceError(f"file not found in repository: {relative}", status=404)
         try:
-            content = candidate.read_text(encoding="utf-8", errors="replace")
+            content, encoding = decode_text_bytes(candidate.read_bytes())
         except OSError as error:
             raise AdrServiceError(f"cannot read file: {relative}") from error
+        if encoding not in {"utf-8", "utf-8-sig"}:
+            logger.warning("ADR source file decoded as %s: %s", encoding, relative)
         return candidate.relative_to(repo_root.resolve()).as_posix(), content
 
     def build_source(
@@ -1346,9 +1352,14 @@ class AdrService:
         markdown = inject_provenance(
             draft["markdown"], self._export_provenance(draft, generation)
         )
-        target.write_text(markdown.rstrip("\n") + "\n", encoding="utf-8")
+        # UTF-8 BOM so Windows Notepad, Explorer preview and Word detect the
+        # encoding instead of falling back to the ANSI/GBK code page. Readers
+        # in this project (and PyYAML/MADR tooling) tolerate the BOM.
+        target.write_text(markdown.rstrip("\n") + "\n", encoding=EXPORT_ENCODING)
         index_path = directory / "index.md"
-        index_path.write_text(render_index(load_adrs(directory)), encoding="utf-8")
+        index_path.write_text(
+            render_index(load_adrs(directory)), encoding=EXPORT_ENCODING
+        )
         relative = target.relative_to(repo_root).as_posix()
         updated = self.store.mark_exported(draft_id, relative)
         return {

@@ -458,7 +458,7 @@ def inject_provenance(markdown: str, provenance: dict[str, Any]) -> str:
     rather than appended, so exporting the same draft twice is idempotent.
     """
     block = _provenance_lines(provenance)
-    text = (markdown or "").replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    text = (markdown or "").lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     lines = text.split("\n") if text else []
     if lines and lines[0].strip() == "---":
         for index in range(1, len(lines)):

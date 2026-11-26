@@ -31,6 +31,7 @@ from .registry import (
     register_repo,
     repository_members,
 )
+from .text_encoding import decode_text_bytes
 
 
 def setup_logging(verbose: bool = False):
@@ -234,7 +235,7 @@ def cmd_adr(args):
         if command == "edit":
             text = args.text or ""
             if args.file:
-                text = Path(args.file).read_text(encoding="utf-8")
+                text = decode_text_bytes(Path(args.file).read_bytes())[0]
             if not text.strip():
                 _fail("adr edit needs --file or --text with non-empty content", 2)
             result = service.edit_draft(
@@ -341,7 +342,7 @@ def cmd_adr(args):
             if args.template_command == "set":
                 text = args.text or ""
                 if args.file:
-                    text = Path(args.file).read_text(encoding="utf-8")
+                    text = decode_text_bytes(Path(args.file).read_bytes())[0]
                 template = service.save_template(member.id, text)
                 result = {"template": template, **service.template(member.id)}
                 _print_json(result) if args.json else print(f"saved template v{template['version']}")
@@ -413,7 +414,7 @@ def cmd_adr(args):
             if args.prompts_command == "set":
                 text = args.text or ""
                 if args.file:
-                    text = Path(args.file).read_text(encoding="utf-8")
+                    text = decode_text_bytes(Path(args.file).read_bytes())[0]
                 prompt = service.save_prompt(member.id, args.kind, text)
                 result = {"prompt": prompt, "kinds": service.prompts(member.id)["kinds"]}
                 _print_json(result) if args.json else print(

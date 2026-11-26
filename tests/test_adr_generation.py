@@ -667,7 +667,8 @@ def test_export_records_provenance_and_replaces_it_idempotently(tmp_path):
         )
         exported = client.post(f"/api/adr/drafts/{draft['id']}/export").json()
         target = Path(exported["path"])
-        content = target.read_text(encoding="utf-8")
+        assert target.read_bytes().startswith(b"\xef\xbb\xbf")  # Windows-friendly BOM
+        content = target.read_text(encoding="utf-8-sig")
         assert content.startswith("---\n")
         assert "provenance:" in content
         assert 'draft_id: "' + draft["id"] + '"' in content
@@ -679,7 +680,8 @@ def test_export_records_provenance_and_replaces_it_idempotently(tmp_path):
         assert content.count("provenance:") == 1
 
         client.post(f"/api/adr/drafts/{draft['id']}/export")
-        again = target.read_text(encoding="utf-8")
+        assert target.read_bytes().count(b"\xef\xbb\xbf") == 1
+        again = target.read_text(encoding="utf-8-sig")
         assert again.count("provenance:") == 1
         assert again.count("status: accepted") == 1
         assert again.count("exported_at:") == 1

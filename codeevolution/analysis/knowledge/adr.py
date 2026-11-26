@@ -24,6 +24,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ...text_encoding import decode_text_bytes
+
 try:  # optional: keep the dimension usable without any installed dependency
     import yaml as _yaml
 except ImportError:  # pragma: no cover - exercised when PyYAML is absent
@@ -273,8 +275,10 @@ def parse_adr(path: Path, adr_dir: Path) -> Adr:
     number = int(match.group("number")) if match else None
     slug = match.group("slug") if match else path.stem
     try:
-        text = path.read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeError):
+        # Windows checkouts still hold GBK/UTF-16 Markdown; decode leniently
+        # instead of dropping the record or showing replacement characters.
+        text = decode_text_bytes(path.read_bytes())[0]
+    except OSError:
         text = ""
     frontmatter, body = _split_frontmatter(text)
     status = _normalize_status(frontmatter.get("status"))
@@ -650,9 +654,9 @@ class AdrExtractor:
         index_stale = False
         if index_present:
             try:
-                current = _normalize_text(index_path.read_text(encoding="utf-8-sig"))
+                current = _normalize_text(decode_text_bytes(index_path.read_bytes())[0])
                 index_stale = current != render_index(adrs)
-            except (OSError, UnicodeError):
+            except OSError:
                 index_stale = True
 
         records = [_record(adr, self.root) for adr in adrs]

@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..text_encoding import decode_text_lines
+
 MAX_DIFF_CHARS = 60_000
 MAX_COMMIT_SUBJECT = 4_000
 
@@ -42,16 +44,17 @@ class CommitContext:
 
 
 def _run(repo: str | Path, *args: str) -> str:
+    # Decode per line: a commit authored in a cp936 console carries GBK bytes,
+    # while the rest of the repository is UTF-8.  A single strict decode would
+    # turn the whole patch into replacement characters.
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if result.returncode != 0:
-        raise AdrGitError((result.stderr or "").strip() or f"git {' '.join(args)} failed")
-    return result.stdout
+        message = decode_text_lines(result.stderr or b"").strip()
+        raise AdrGitError(message or f"git {' '.join(args)} failed")
+    return decode_text_lines(result.stdout)
 
 
 def significant_files(files: list[str]) -> bool:
