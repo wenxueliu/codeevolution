@@ -349,10 +349,12 @@
                           </td>
                           <td class="adr-row-actions">
                             <button class="secondary sm" type="button" :disabled="adrCommitGenerateDisabled(commit)" :title="adrCommitGenerateDisabled(commit) ? adrCommitStageText(commit) : ''" :data-testid="`adr-commit-generate-${commit.sha}`" @click="generateAdrCommit(commit)">{{ adrCommitGenerateLabel(commit) }}</button>
+                            <button v-if="commit.draft_id" class="secondary sm" type="button" :data-testid="`adr-commit-view-${commit.sha}`" @click="viewAdrCommit(commit)">{{ t('查看') }}</button>
+                            <button v-if="commit.draft_id" class="secondary sm" type="button" :disabled="!adrCommitEditable(commit) || adrEditSaving" :title="adrCommitEditable(commit) ? '' : t('已导出的 ADR 不能编辑；如需修改请重新生成草稿')" :data-testid="`adr-commit-edit-${commit.sha}`" @click="editAdrCommit(commit)">{{ t('编辑') }}</button>
                             <button class="secondary sm" type="button" :disabled="adrCommitBacktestDisabled(commit)" :data-testid="`adr-commit-backtest-${commit.sha}`" @click="backtestAdrCommit(commit)">{{ t('回测') }}</button>
                             <button class="secondary sm" type="button" :disabled="adrCommitReviewDisabled(commit)" :data-testid="`adr-commit-review-${commit.sha}`" @click="reviewAdrCommit(commit)">{{ t('审批') }}</button>
                             <button class="secondary sm" type="button" :disabled="adrCommitExportDisabled(commit)" :title="adrCommitExportTitle(commit)" :data-testid="`adr-commit-export-${commit.sha}`" @click="exportAdrCommit(commit)">{{ t('导出') }}</button>
-                            <button v-if="commit.draft_id" class="secondary sm" type="button" :data-testid="`adr-commit-view-${commit.sha}`" @click="viewAdrCommit(commit)">{{ t('查看') }}</button>
+                            <button v-if="commit.draft_id" class="secondary sm danger" type="button" :disabled="adrDeletingId === commit.draft_id" :data-testid="`adr-commit-delete-${commit.sha}`" @click="deleteAdrCommit(commit)">{{ adrDeletingId === commit.draft_id ? t('删除中...') : t('删除') }}</button>
                           </td>
                         </tr>
                       </tbody>
@@ -424,22 +426,24 @@
                 <p>{{ t('排队 {queued} · 进行中 {running} · 成功 {succeeded} · 跳过 {skipped} · 失败 {failed}', adrBatchCounts) }}</p>
                 <p v-if="adrBatchNote" class="adr-batch-note">{{ adrBatchNote }}</p>
               </div>
+              <p v-if="adrExportState.path" class="adr-success" data-testid="adr-export-result">{{ t('已导出到 {path}', { path: adrExportState.path }) }}</p>
+              <p v-if="adrExportState.error" class="explanation-error">{{ t('导出失败') }}：{{ adrExportState.error }}</p>
             </section>
 
-            <section class="adr-card" data-testid="adr-drafts">
+            <section v-if="adrOtherDrafts.length || adrDraftsError" class="adr-card" data-testid="adr-other-drafts">
               <div class="adr-card-heading">
                 <div>
-                  <h3>{{ t('ADR 草稿') }}</h3>
-                  <p>{{ t('草稿保存在本地数据库，导出后才会写入仓库 docs/adr 并刷新索引。') }}</p>
+                  <h3>{{ t('其他来源草稿') }}</h3>
+                  <p>{{ t('来自文件、一句话与历史生成的草稿；提交来源的草稿直接在提交表格的操作列查看、编辑与导出。') }}</p>
                 </div>
                 <button class="secondary sm" :disabled="adrDraftsLoading" @click="loadAdrDrafts">{{ adrDraftsLoading ? t('加载中...') : t('刷新') }}</button>
               </div>
               <p v-if="adrDraftsError" class="explanation-error">{{ adrDraftsError }}</p>
-              <div v-if="adrDrafts.length" class="table-wrap">
-                <table data-testid="adr-drafts-table">
+              <div v-if="adrOtherDrafts.length" class="table-wrap">
+                <table data-testid="adr-other-drafts-table">
                   <thead><tr><th>{{ t('标题') }}</th><th>{{ t('状态') }}</th><th>{{ t('来源') }}</th><th>{{ t('生成时间') }}</th><th>{{ t('回测') }}</th><th>{{ t('审批') }}</th><th>{{ t('操作') }}</th></tr></thead>
                   <tbody>
-                    <tr v-for="draft in adrDrafts" :key="draft.id" :class="{ selected: adrDetail?.draft?.id === draft.id }">
+                    <tr v-for="draft in adrOtherDrafts" :key="draft.id" :class="{ selected: adrDetail?.draft?.id === draft.id }">
                       <td>
                         <b>{{ draft.title || draft.slug || draft.id }}</b>
                         <small v-if="draft.revision > 1" class="adr-version">{{ t('版本 v{revision}', { revision: draft.revision }) }}</small>
@@ -462,12 +466,9 @@
                   </tbody>
                 </table>
               </div>
-              <p v-if="adrExportState.path" class="adr-success" data-testid="adr-export-result">{{ t('已导出到 {path}', { path: adrExportState.path }) }}</p>
-              <p v-if="adrExportState.error" class="explanation-error">{{ t('导出失败') }}：{{ adrExportState.error }}</p>
-              <UiState v-if="!adrDrafts.length && !adrDraftsLoading && !adrDraftsError" kind="empty" :title="t('还没有 ADR 草稿')" :message="t('在上方选择来源并生成第一条 ADR 草稿。')" />
-              <p v-else-if="adrDraftsLoading && !adrDrafts.length" class="muted">{{ t('正在加载 ADR 草稿') }}</p>
+            </section>
 
-              <section v-if="adrDetail || adrDetailLoading || adrDetailError" class="adr-detail" data-testid="adr-detail">
+            <section v-if="adrDetail || adrDetailLoading || adrDetailError" class="adr-detail" data-testid="adr-detail">
                 <div class="adr-detail-heading">
                   <h4>{{ t('ADR 草稿详情') }}<template v-if="adrDetail?.draft?.title"> · {{ adrDetail.draft.title }}</template></h4>
                   <button class="secondary sm" type="button" @click="closeAdrDetail">{{ t('关闭') }}</button>
@@ -618,7 +619,6 @@
                   </details>
                 </template>
               </section>
-            </section>
 
             <details class="adr-card adr-prompt-card" data-testid="adr-prompt-settings">
               <summary>{{ t('ADR 提示词 · 按服务') }}</summary>
@@ -1443,6 +1443,9 @@ export default {
       const shas = this.adrCandidateShas
       return shas.length > 0 && shas.every(sha => this.adrSelectedCommitShas.includes(sha))
     },
+    adrOtherDrafts() {
+      return (this.adrDrafts || []).filter(draft => (draft.source_kind || '') !== 'commit')
+    },
     adrTemplateIsCustom() { return Boolean(this.adrTemplate?.template) },
     adrTemplateVersionLabel() {
       if (!this.adrTemplateIsCustom) return this.t('系统默认')
@@ -1653,6 +1656,9 @@ export default {
     },
     adrDraftExportable(draft) {
       return draft?.review_status === 'approved'
+    },
+    adrCommitEditable(commit) {
+      return Boolean(commit?.draft_id) && !commit?.exported_path
     },
     adrCommitSelectable(commit) {
       return Boolean(commit?.candidate || this.adrForce)
@@ -1882,6 +1888,14 @@ export default {
       if (!commit?.draft_id) return
       return this.openAdrDraft({ id: commit.draft_id })
     },
+    editAdrCommit(commit) {
+      if (!this.adrCommitEditable(commit)) return
+      return this.openAdrDraft({ id: commit.draft_id }, { edit: true })
+    },
+    deleteAdrCommit(commit) {
+      if (!commit?.draft_id) return
+      return this.deleteAdrDraft({ id: commit.draft_id, title: commit.draft_title })
+    },
     async submitAdrBatchGeneration() {
       if (!this.snapshotId || this.adrBatchSubmitting || this.adrBatchActive) return
       const commits = this.adrSelectedCommitShas.filter(sha => {
@@ -2002,7 +2016,7 @@ export default {
       this.adrDraftsError = ''
       try {
         const data = await this.$api.get('/api/adr/drafts', { snapshot_id: this.snapshotId })
-        this.adrDrafts = data?.drafts || []
+        this.adrDrafts = [...(data?.drafts || [])]
       } catch (err) {
         this.adrDraftsError = this.adrErrorMessage(err, '读取 ADR 草稿失败')
       } finally {
@@ -2386,7 +2400,7 @@ export default {
         await this.$api.delete(`/api/adr/drafts/${encodeURIComponent(draft.id)}`)
         if (this.adrExportState.id === draft.id) this.adrExportState = { id: '', path: '', error: '' }
         if (this.adrDetail?.draft?.id === draft.id) this.closeAdrDetail()
-        await this.loadAdrDrafts()
+        await Promise.all([this.loadAdrDrafts(), this.loadAdrCommits()])
       } catch (err) {
         this.adrDraftsError = this.adrErrorMessage(err, '删除 ADR 草稿失败')
       } finally {
@@ -3326,6 +3340,7 @@ td code { color: #666; word-break: break-all; }
 .adr-prompt-body { margin-top: 12px; }
 .adr-prompt-body textarea { width: 100%; box-sizing: border-box; }
 .adr-detail { margin-top: 14px; padding: 12px; border: 1px solid #e2e5eb; border-radius: 7px; background: #fff; }
+.adr-workbench > .adr-detail { margin-top: 0; }
 .adr-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .adr-detail-heading h4 { margin: 0; font-size: 13px; color: #333; }
 .adr-detail-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0; color: #888; font-size: 11px; }
@@ -3500,18 +3515,18 @@ tr.selected { background: #fff0f2; }
   .adr-actions button { flex: 1; min-height: 40px; }
   .adr-row-actions { flex-wrap: wrap; }
   .adr-row-actions button { min-height: 32px; }
-  .table-wrap > table[data-testid="adr-drafts-table"] { min-width: 0; table-layout: fixed; }
-  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(3),
-  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(4),
-  table[data-testid="adr-drafts-table"] > tbody > tr > td:nth-child(3),
-  table[data-testid="adr-drafts-table"] > tbody > tr > td:nth-child(4) { display: none; }
-  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(1) { width: 32%; }
-  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(2) { width: 14%; }
-  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(5) { width: 18%; }
-  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(6) { width: 14%; }
-  table[data-testid="adr-drafts-table"] > thead > tr > th:nth-child(7) { width: 22%; }
-  table[data-testid="adr-drafts-table"] th,
-  table[data-testid="adr-drafts-table"] td { padding: 8px 6px; }
+  .table-wrap > table[data-testid="adr-other-drafts-table"] { min-width: 0; table-layout: fixed; }
+  table[data-testid="adr-other-drafts-table"] > thead > tr > th:nth-child(3),
+  table[data-testid="adr-other-drafts-table"] > thead > tr > th:nth-child(4),
+  table[data-testid="adr-other-drafts-table"] > tbody > tr > td:nth-child(3),
+  table[data-testid="adr-other-drafts-table"] > tbody > tr > td:nth-child(4) { display: none; }
+  table[data-testid="adr-other-drafts-table"] > thead > tr > th:nth-child(1) { width: 32%; }
+  table[data-testid="adr-other-drafts-table"] > thead > tr > th:nth-child(2) { width: 14%; }
+  table[data-testid="adr-other-drafts-table"] > thead > tr > th:nth-child(5) { width: 18%; }
+  table[data-testid="adr-other-drafts-table"] > thead > tr > th:nth-child(6) { width: 14%; }
+  table[data-testid="adr-other-drafts-table"] > thead > tr > th:nth-child(7) { width: 22%; }
+  table[data-testid="adr-other-drafts-table"] th,
+  table[data-testid="adr-other-drafts-table"] td { padding: 8px 6px; }
   .adr-markdown, .adr-debug pre { max-height: 300px; }
   .sequence-zoom-dialog, .endpoint-prompt-dialog { height: 100dvh; }
   .sequence-zoom-header { padding: 12px 14px; }

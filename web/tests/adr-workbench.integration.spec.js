@@ -356,6 +356,42 @@ describe('ADR workbench integration', () => {
     expect(wrapper.find('[data-testid="adr-commit-backtest-sha-generated"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('[data-testid="adr-commit-review-sha-generated"]').attributes('disabled')).toBeDefined()
     expect(wrapper.find('[data-testid="adr-commit-export-sha-generated"]').attributes('disabled')).toBeDefined()
+
+    // 查看/编辑/删除 only appear on rows that already own a draft.
+    expect(wrapper.find('[data-testid="adr-commit-view-sha-generated"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adr-commit-edit-sha-generated"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="adr-commit-delete-sha-generated"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adr-commit-edit-sha-feat"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('edits and deletes a commit draft from the row actions', async () => {
+    const { wrapper, api } = await openWorkbench()
+
+    await wrapper.find('[data-testid="adr-commit-edit-sha-generated"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="adr-detail"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adr-editor"]').exists()).toBe(true)
+
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await wrapper.find('[data-testid="adr-commit-delete-sha-generated"]').trigger('click')
+    await flushPromises()
+    expect(api.delete).toHaveBeenCalledWith('/api/adr/drafts/d1')
+    expect(wrapper.find('[data-testid="adr-detail"]').exists()).toBe(false)
+    confirm.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('lists only non-commit drafts in the other-source card', async () => {
+    const { wrapper } = await openWorkbench()
+
+    // The fixture draft is text-sourced, so the card is visible.
+    expect(wrapper.find('[data-testid="adr-other-drafts"]').exists()).toBe(true)
+    expect(wrapper.vm.adrOtherDrafts.map(draft => draft.id)).toEqual(['d1'])
+
+    wrapper.vm.adrDrafts = [draftFixture({ id: 'd-commit', source_kind: 'commit' })]
+    await flushPromises()
+    expect(wrapper.find('[data-testid="adr-other-drafts"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
