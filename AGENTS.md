@@ -104,12 +104,15 @@ codeevolution web                    # http://0.0.0.0:8765
 
 ADR 的核心是**用模型生成**，不是读取已有文档：
 
-- **提交表格**：`adr commits` 列出 git log，先用规则过滤文档/测试/lockfile 噪声，再由
-  「提交分诊」提示词让模型判断 bug fix、lint、test-only 等；结果按 `(member, sha)` 缓存。
+- **提交表格**：`adr commits` **分页覆盖整个 git 历史**（`--offset/--limit`，默认每页 50、
+  上限 100），先用规则过滤文档/测试/lockfile 噪声（这些提交直接标为已跳过），再由
+  「提交分诊」提示词按**当前页**判断 bug fix、lint、test-only 等；结果按 `(member, sha)` 缓存。
   每行展示生命周期状态：待生成（pending）→ 排队中（queued）→ 生成中（generating）→
   待校验（generated）→ 待审批（backtested）→ 已通过/已驳回（approved/rejected）→
-  已导出（exported），另有已跳过（skipped）与失败（failed）；表格顶部展示已处理进度，
-  并支持按状态过滤（`--stage` / `?stage=`）。支持单个生成、勾选批量生成（`adr gen --commits`）。
+  已导出（exported），另有已跳过（skipped）与失败（failed）；状态计数与已处理进度始终按
+  **整段历史**统计（不受翻页/过滤影响），并支持按状态过滤（`--stage` / `?stage=`）与
+  日期范围（`--since/--until`）。历史超过 20000 个提交时要求先缩小日期范围，避免给出
+  只覆盖部分历史的进度。支持单个生成、勾选批量生成（`adr gen --commits`）。
 - **生成**：`adr gen` 支持 `--commit`、`--file`、`--text`、`--history`、`--commits`；
   提示词按「服务 × 来源类型」版本化（commit/file/text/triage/backtest 五类）。
 - **输出模板**：默认 MADR 4.0，可按服务覆盖；占位符包括 `{{frontmatter}}`、`{{title}}`、

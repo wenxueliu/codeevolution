@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -49,7 +50,13 @@ MAX_FILE_CHARS = 120_000
 MAX_TEXT_CHARS = 20_000
 MAX_DRAFT_CHARS = 200_000
 MAX_HISTORY_CANDIDATES = 100
-MAX_TRIAGE_COMMITS = 60
+MAX_COMMIT_PAGE = 100
+# The commit table shows the whole history, so its status/progress needs every
+# commit's changed files.  That index is one ``git log`` per (repo, HEAD, range);
+# beyond this size the request asks the user to narrow the date range instead of
+# silently reporting a progress number that only covers part of the history.
+MAX_INDEXED_COMMITS = 20_000
+COMMIT_INDEX_TTL_SECONDS = 30
 TRIAGE_BATCH_SIZE = 12
 BACKTEST_VERDICTS = ("consistent", "partial", "contradicted", "unverifiable")
 COMMIT_STAGES = (
@@ -114,6 +121,10 @@ class AdrService:
         self.store = store
         self.member_loader = member_loader
         self._completer = completer
+        # Full-history commit index shared by the table, the status chips and the
+        # progress bar; invalidated by HEAD moving or the TTL expiring.
+        self._commit_index: dict[tuple[str, str, str, str, bool], tuple[float, list[dict[str, Any]]]] = {}
+        self._commit_index_lock = threading.Lock()
 
     # ── model ────────────────────────────────────────────────────────
 
@@ -438,6 +449,7 @@ class AdrService:
             "skip_reason": reason,
             "change_type": change_type,
             "scanned": scanned,
+            "triaged": bool(scan is not None and scan.get("ai_candidate") is not None),
             "stage": stage,
             "generation_id": generation["id"] if generation else "",
             "generation_status": generation.get("status", "") if generation else "",
@@ -460,30 +472,96 @@ class AdrService:
             ),
         }
 
+    def _history_commits(
+        self,
+        repo_root: Path,
+        *,
+        since: str,
+        until: str,
+        include_merges: bool,
+        total: int,
+    ) -> list[dict[str, Any]]:
+        """Every commit in range with its changed files, cached per HEAD.
+
+        The table, the status chips and the progress bar all need the full
+        history; reading it once and caching it turns page navigation into an
+        in-memory slice instead of one ``git show`` per row.
+        """
+        key = (str(repo_root), git_source.head_commit(repo_root), since, until, bool(include_merges))
+        now = time.monotonic()
+        with self._commit_index_lock:
+            cached = self._commit_index.get(key)
+            if cached is not None and now - cached[0] < COMMIT_INDEX_TTL_SECONDS:
+                return cached[1]
+        try:
+            commits = git_source.list_commits(
+                repo_root,
+                since=since,
+                until=until,
+                limit=max(1, total),
+                offset=0,
+                include_merges=include_merges,
+            )
+        except git_source.AdrGitError as error:
+            raise AdrServiceError(str(error), status=400) from error
+        with self._commit_index_lock:
+            self._commit_index[key] = (now, commits)
+            if len(self._commit_index) > 4:
+                stale_keys = sorted(
+                    self._commit_index, key=lambda item: self._commit_index[item][0]
+                )[:-4]
+                for stale in stale_keys:
+                    self._commit_index.pop(stale, None)
+        return commits
+
     def list_commits(
         self,
         member: Any,
         *,
         since: str = "",
         until: str = "",
+        offset: int = 0,
         limit: int = 50,
         include_merges: bool = False,
         stage: str = "",
     ) -> dict[str, Any]:
+        """One page of the full history plus global status counts and progress.
+
+        ``total`` is the number of commits matching ``stage`` (the page count
+        basis); ``total_all`` and ``progress`` always describe the whole range,
+        so the progress bar does not change when the user pages or filters.
+        ``processed`` counts every commit that left ``pending`` (drafted,
+        triaged-skip or later) but not queued/generating ones.
+        """
         member_id = _member_id(member)
         if stage and stage not in COMMIT_STAGES:
             raise AdrServiceError(f"unknown commit stage: {stage}")
         repo_root = self._repo_root(member)
         try:
-            commits = git_source.list_commits(
-                repo_root,
-                since=since,
-                until=until,
-                limit=max(1, min(int(limit), MAX_TRIAGE_COMMITS)),
-                include_merges=include_merges,
+            total_all = git_source.count_commits(
+                repo_root, since=since, until=until, include_merges=include_merges
             )
         except git_source.AdrGitError as error:
             raise AdrServiceError(str(error), status=400) from error
+        if total_all > MAX_INDEXED_COMMITS:
+            raise AdrServiceError(
+                f"仓库历史共 {total_all} 个提交，超过 {MAX_INDEXED_COMMITS} 个上限；"
+                "请用起始/结束日期缩小范围后再查看提交表",
+                status=400,
+            )
+        offset = max(0, int(offset))
+        limit = max(1, min(int(limit), MAX_COMMIT_PAGE))
+        commits = (
+            self._history_commits(
+                repo_root,
+                since=since,
+                until=until,
+                include_merges=include_merges,
+                total=total_all,
+            )
+            if total_all
+            else []
+        )
         scans = {scan["sha"]: scan for scan in self.store.list_scans(member_id)}
         drafts = {
             draft["source_ref"]: draft
@@ -507,25 +585,31 @@ class AdrService:
         counts = {stage_name: 0 for stage_name in COMMIT_STAGES}
         for item in items:
             counts[item["stage"]] = counts.get(item["stage"], 0) + 1
-        total = len(items)
-        terminal = sum(
+        processed = sum(
             counts.get(name, 0)
-            for name in ("approved", "rejected", "exported", "skipped", "failed")
+            for name in ("generated", "backtested", "approved", "rejected", "exported", "skipped", "failed")
         )
-        filtered = [item for item in items if not stage or item["stage"] == stage]
+        active = counts.get("queued", 0) + counts.get("generating", 0)
+        visible = [item for item in items if not stage or item["stage"] == stage]
+        page = visible[offset : offset + limit]
         return {
             "member_id": member_id,
             "repo": str(repo_root),
-            "items": filtered,
-            "total": total,
+            "items": page,
+            "total": len(visible),
+            "total_all": len(items),
+            "offset": offset,
+            "limit": limit,
+            "returned": len(page),
+            "has_more": offset + len(page) < len(visible),
             "scanned": sum(1 for item in items if item["scanned"]),
             "counts": counts,
             "stage": stage,
             "progress": {
-                "total": total,
-                "processed": terminal,
-                "active": counts.get("queued", 0) + counts.get("generating", 0),
-                "percent": int(round(terminal * 100 / total)) if total else 0,
+                "total": len(items),
+                "processed": processed,
+                "active": active,
+                "percent": int(round(processed * 100 / len(items))) if items else 0,
             },
         }
 
@@ -535,18 +619,26 @@ class AdrService:
         *,
         since: str = "",
         until: str = "",
+        offset: int = 0,
         limit: int = 50,
         include_merges: bool = False,
         refresh: bool = False,
+        stage: str = "",
     ) -> dict[str, Any]:
-        """Rule-filter obvious noise, then ask the model to triage the rest."""
+        """Rule-filter obvious noise, then ask the model to triage the page."""
         member_id = _member_id(member)
         repo_root = self._repo_root(member)
         listing = self.list_commits(
-            member, since=since, until=until, limit=limit, include_merges=include_merges
+            member,
+            since=since,
+            until=until,
+            offset=offset,
+            limit=limit,
+            include_merges=include_merges,
+            stage=stage,
         )
         pending = [
-            item for item in listing["items"] if refresh or not item["scanned"]
+            item for item in listing["items"] if refresh or not item["triaged"]
         ]
         for item in pending:
             if not item["rule_candidate"]:
@@ -656,7 +748,13 @@ class AdrService:
                     )
 
         result = self.list_commits(
-            member, since=since, until=until, limit=limit, include_merges=include_merges
+            member,
+            since=since,
+            until=until,
+            offset=offset,
+            limit=limit,
+            include_merges=include_merges,
+            stage=stage,
         )
         result["failures"] = failures
         return result

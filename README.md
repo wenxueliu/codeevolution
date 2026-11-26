@@ -52,8 +52,10 @@ Windows 用户请参考 [Windows (PowerShell) 安装与启动](INSTALL.md#window
 | Phase 2 | 配置消费 / 外部依赖 / 权限模型 / 热力图 | CodeGraph SQLite + 规则引擎 |
 | Phase 3 | 业务描述 / 业务规则 / 错误目录 / 状态机 | CodeGraph SQLite + litellm (LLM) |
 
-**ADR 生成**：`adr commits` 列出 git log 并由 AI 分诊（跳过 bug fix / lint / test-only
-等），可单个或勾选批量生成；`adr gen --commit/--file/--text/--history/--commits` 让模型
+**ADR 生成**：`adr commits` 分页展示**整个 git 历史**，每个提交都带生命周期状态
+（待生成 / 生成中 / 已生成 / 已导出 / 已跳过等），规则过滤与 AI 分诊共同判定候选，
+进度按整段历史统计；可单个或勾选批量生成，`--offset` 翻页；`adr gen
+--commit/--file/--text/--history/--commits` 让模型
 生成 MADR 4.0 草稿（输出模板可按服务自定义），写入 `adr.db`。`adr backtest` 把草稿与
 当前代码证据回测，输出置信度、结论与理由；`adr review` 人工审批并打分后，`adr export`
 才能写入仓库 `docs/adr` 并重建索引。`adr debug` 查看「来源 → 提示词 → 模型输出 → 回测」

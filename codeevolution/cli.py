@@ -298,6 +298,7 @@ def cmd_adr(args):
                     member,
                     since=args.since,
                     until=args.until,
+                    offset=args.offset,
                     limit=args.limit,
                     include_merges=args.include_merges,
                     refresh=args.refresh,
@@ -307,6 +308,7 @@ def cmd_adr(args):
                     member,
                     since=args.since,
                     until=args.until,
+                    offset=args.offset,
                     limit=args.limit,
                     include_merges=args.include_merges,
                     stage=getattr(args, "stage", "") or "",
@@ -318,6 +320,8 @@ def cmd_adr(args):
                 print(
                     f"progress: {progress.get('processed', 0)}/{progress.get('total', 0)}"
                     f" ({progress.get('percent', 0)}%), active={progress.get('active', 0)}"
+                    f"; showing {len(result['items'])}/{result.get('total', 0)}"
+                    f" at offset {result.get('offset', 0)} of {result.get('total_all', 0)} commits"
                 )
                 for item in result["items"]:
                     reason = item["skip_reason"] or item.get("change_type") or ""
@@ -1485,7 +1489,8 @@ def main():
     commits.add_argument("--member-id", default="")
     commits.add_argument("--since", default="")
     commits.add_argument("--until", default="")
-    commits.add_argument("--limit", type=int, default=50)
+    commits.add_argument("--offset", type=int, default=0, help="Skip this many commits (paging)")
+    commits.add_argument("--limit", type=int, default=50, help="Commits per page (max 100)")
     commits.add_argument("--include-merges", action="store_true")
     commits.add_argument(
         "--stage",

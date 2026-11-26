@@ -89,7 +89,8 @@ function mountKnowledge() {
   }
 
   const commitListing = () => ({
-    member_id: 'member-1', repo: '/repo', total: 4, scanned: 2, stage: '',
+    member_id: 'member-1', repo: '/repo', total: 4, total_all: 4, offset: 0, limit: 50,
+    returned: 4, has_more: false, scanned: 2, stage: '',
     counts: { ...COMMIT_COUNTS }, progress: { ...COMMIT_PROGRESS }, items: commitItems(),
   })
 
@@ -112,10 +113,20 @@ function mountKnowledge() {
       }
       if (path === '/api/adr/commits') {
         const listing = commitListing()
-        if (query.stage) {
-          return { ...listing, stage: query.stage, items: listing.items.filter(item => item.stage === query.stage) }
+        const stage = query.stage || ''
+        const items = stage ? listing.items.filter(item => item.stage === stage) : listing.items
+        const offset = Number(query.offset || 0)
+        const limit = Number(query.limit || 50)
+        return {
+          ...listing,
+          stage,
+          total: items.length,
+          total_all: listing.items.length,
+          offset,
+          limit,
+          returned: items.slice(offset, offset + limit).length,
+          items: items.slice(offset, offset + limit),
         }
-        return listing
       }
       if (path === '/api/adr/template') return template
       if (path === '/api/adr/drafts') return { drafts }
@@ -251,9 +262,12 @@ describe('ADR workbench integration', () => {
   it('renders lifecycle progress and filters commits by stage server-side', async () => {
     const { wrapper, api } = await openWorkbench()
 
-    // Per-commit stage is rendered; the table no longer shows a global
-    // processed/total bar (progress belongs to the selected generation batch).
-    expect(wrapper.find('[data-testid="adr-commit-progress"]').exists()).toBe(false)
+    // Whole-history progress is visible and independent from the current page.
+    const progress = wrapper.find('[data-testid="adr-commit-progress"]')
+    expect(progress.exists()).toBe(true)
+    expect(progress.text()).toContain('ADR 提取进展')
+    expect(progress.text()).toContain('已处理 1/4（25%）')
+    expect(wrapper.vm.adrCommitsTotalAll).toBe(4)
     expect(wrapper.vm.adrCommits.every(item => typeof item.stage === 'string')).toBe(true)
     expect(wrapper.vm.adrCommitStageText({ stage: 'generating', generation_progress: 40 })).toBe('生成中 40%')
     expect(wrapper.find('[data-testid="adr-commit-stage-sha-generated"]').text()).toContain('待校验')
@@ -275,6 +289,37 @@ describe('ADR workbench integration', () => {
     await flushPromises()
     expect(wrapper.vm.adrStageFilter).toBe('')
     expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('pages through every commit while progress stays global', async () => {
+    const { wrapper, api } = await openWorkbench()
+
+    wrapper.vm.adrCommitPageSize = 2
+    await wrapper.vm.resetAdrCommitPaging()
+    await flushPromises()
+
+    expect(wrapper.vm.adrCommitPage).toBe(1)
+    expect(wrapper.vm.adrCommitPageCount).toBe(2)
+    expect(wrapper.find('[data-testid="adr-commit-pager"]').text()).toContain('第 1 / 2 页')
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="adr-commit-next"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.vm.adrCommitPage).toBe(2)
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-pending"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adr-commit-progress"]').text()).toContain('已处理 1/4（25%）')
+    const calls = api.get.mock.calls.filter(([path]) => path === '/api/adr/commits')
+    expect(calls.at(-1)[1]).toMatchObject({ snapshot_id: 'snapshot-1', offset: 2, limit: 2 })
+
+    // Changing the page size rewinds to the first page with the new size.
+    await wrapper.find('[data-testid="adr-commit-page-size"]').setValue('100')
+    await flushPromises()
+    expect(wrapper.vm.adrCommitPageSize).toBe(100)
+    expect(wrapper.vm.adrCommitPage).toBe(1)
+    expect(wrapper.vm.adrCommitPageCount).toBe(1)
     wrapper.unmount()
   })
 

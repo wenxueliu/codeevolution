@@ -278,12 +278,24 @@
               <div class="adr-form">
                 <template v-if="adrSourceKind === 'commit'">
                   <div class="adr-commit-toolbar">
-                    <button class="secondary sm" type="button" :disabled="adrScanRunning || adrCommitsLoading" data-testid="adr-commit-scan" @click="scanAdrCommits">{{ adrScanRunning ? t('AI 分诊中...') : t('AI 过滤') }}</button>
+                    <button class="secondary sm" type="button" :disabled="adrScanRunning || adrCommitsLoading" data-testid="adr-commit-scan" @click="scanAdrCommits">{{ adrScanRunning ? t('AI 分诊中...') : t('AI 分诊本页') }}</button>
                     <button class="secondary sm" type="button" :disabled="adrCommitsLoading || adrScanRunning" data-testid="adr-commit-refresh" @click="loadAdrCommits">{{ adrCommitsLoading ? t('加载中...') : t('刷新') }}</button>
                     <label class="adr-check"><input v-model="adrCommitFilterCandidates" type="checkbox" data-testid="adr-commit-filter" /> <span>{{ t('仅显示候选') }}</span></label>
                     <label class="adr-check"><input v-model="adrForce" type="checkbox" data-testid="adr-commit-force" /> <span>{{ t('强制生成已跳过提交') }}</span></label>
-                    <span class="adr-commit-summary">{{ t('候选 {candidates} / 共 {total}', { candidates: adrCommitCandidateCount, total: adrCommitsTotal }) }}<template v-if="adrCommitsScanned"> · {{ t('已分诊 {scanned}', { scanned: adrCommitsScanned }) }}</template></span>
+                    <span class="adr-commit-summary">{{ t('本页候选 {candidates} / 共 {total} 个提交', { candidates: adrCommitCandidateCount, total: adrCommitsTotalAll }) }}<template v-if="adrCommitsScanned"> · {{ t('已分诊 {scanned}', { scanned: adrCommitsScanned }) }}</template></span>
                     <button class="primary sm" type="button" :disabled="!adrSelectedCommitShas.length || adrBatchSubmitting || adrBatchActive || adrActiveGeneration || adrSubmitting" data-testid="adr-batch-generate" @click="submitAdrBatchGeneration">{{ adrBatchSubmitting ? t('提交中...') : t('生成选中（{count}）', { count: adrSelectedCommitShas.length }) }}</button>
+                  </div>
+                  <div class="adr-commit-progress" data-testid="adr-commit-progress">
+                    <div class="llm-progress-heading">
+                      <span>{{ t('ADR 提取进展') }}</span>
+                      <strong>{{ t('已处理 {processed}/{total}（{percent}%）', { processed: adrCommitsProgress.processed, total: adrCommitsProgress.total, percent: adrCommitsProgress.percent }) }}</strong>
+                    </div>
+                    <div class="llm-progress-track"><span :style="{ width: `${adrCommitsProgress.percent}%` }"></span></div>
+                    <p class="prompt-hint">{{ t('待生成 {pending} · 生成中 {active} · 已处理 {processed}', { pending: adrCommitsPendingCount, active: adrCommitsProgress.active, processed: adrCommitsProgress.processed }) }}</p>
+                  </div>
+                  <div class="adr-commit-filters">
+                    <label class="adr-field"><span>{{ t('起始日期（since）') }}</span><input v-model.trim="adrSince" type="date" data-testid="adr-commit-since" @change="resetAdrCommitPaging" /></label>
+                    <label class="adr-field"><span>{{ t('结束日期（until）') }}</span><input v-model.trim="adrUntil" type="date" data-testid="adr-commit-until" @change="resetAdrCommitPaging" /></label>
                   </div>
                   <p class="prompt-hint">{{ t('提交表格由规则过滤与 AI 分诊共同判定；勾选候选提交后批量生成，已跳过的提交需勾选“强制生成已跳过提交”。') }}</p>
                   <div class="adr-stage-filters" role="group" :aria-label="t('按状态过滤提交')" data-testid="adr-stage-filters">
@@ -346,8 +358,22 @@
                       </tbody>
                     </table>
                   </div>
-                  <UiState v-else-if="!adrCommitsLoading && !adrCommitsError" kind="empty" :title="t('没有可展示的提交')" :message="t('调整过滤条件或点击“刷新”重新读取提交列表。')" />
+                  <UiState v-else-if="!adrCommitsLoading && !adrCommitsError && !adrCommits.length" kind="empty" :title="t('没有可展示的提交')" :message="t('调整过滤条件或点击“刷新”重新读取提交列表。')" />
+                  <p v-else-if="!adrCommitsLoading && !adrCommitsError" class="muted" data-testid="adr-commits-filtered-out">{{ t('本页没有候选提交，可关闭“仅显示候选”或翻到下一页。') }}</p>
                   <p v-if="adrCommitsLoading && !adrCommits.length" class="muted">{{ t('正在加载提交列表') }}</p>
+                  <div v-if="adrCommitsTotal || adrCommitsTotalAll" class="adr-commit-pager" data-testid="adr-commit-pager">
+                    <button class="secondary sm" type="button" :disabled="adrCommitPage <= 1 || adrCommitsLoading" data-testid="adr-commit-prev" @click="goAdrCommitPage(adrCommitPage - 1)">{{ t('上一页') }}</button>
+                    <span class="adr-commit-pager-info">{{ t('第 {page} / {pages} 页', { page: adrCommitPage, pages: adrCommitPageCount }) }}</span>
+                    <button class="secondary sm" type="button" :disabled="adrCommitPage >= adrCommitPageCount || adrCommitsLoading" data-testid="adr-commit-next" @click="goAdrCommitPage(adrCommitPage + 1)">{{ t('下一页') }}</button>
+                    <label class="adr-check">{{ t('每页') }}
+                      <select :value="adrCommitPageSize" data-testid="adr-commit-page-size" @change="setAdrCommitPageSize($event.target.value)">
+                        <option :value="20">20</option>
+                        <option :value="50">50</option>
+                        <option :value="100">100</option>
+                      </select>
+                    </label>
+                    <span class="muted">{{ t('共 {total} 条', { total: adrCommitsTotal }) }}</span>
+                  </div>
                 </template>
                 <template v-else-if="adrSourceKind === 'file'">
                   <label class="adr-field"><span>{{ t('仓库内文件路径') }}</span><input v-model.trim="adrFilePath" type="text" :placeholder="t('例如 src/app/main.py')" data-testid="adr-file-path" /></label>
@@ -1127,7 +1153,8 @@ export default {
       adrSuccessNote: '', adrSuccessDraftId: '',
       adrBatchId: '', adrBatch: null, adrBatchPollTimer: null, adrBatchNote: '', adrBatchSubmitting: false,
       adrCommits: [], adrCommitsLoading: false, adrCommitsError: '', adrCommitsScanned: 0, adrCommitsLoadedFor: '',
-      adrCommitsTotal: 0, adrCommitCounts: {}, adrCommitProgress: null, adrStageFilter: '', adrCommitsSeq: 0,
+      adrCommitsTotal: 0, adrCommitsTotalAll: 0, adrCommitOffset: 0, adrCommitPageSize: 50,
+      adrCommitCounts: {}, adrCommitProgress: null, adrStageFilter: '', adrCommitsSeq: 0,
       adrScanRunning: false, adrCommitFilterCandidates: true, adrSelectedCommitShas: [], adrGeneratingSha: '',
       adrDrafts: [], adrDraftsLoading: false, adrDraftsError: '',
       adrExportingId: '', adrDeletingId: '', adrExportState: { id: '', path: '', error: '' },
@@ -1365,12 +1392,20 @@ export default {
       return this.t('可用占位符：{{service}}、{{repo}}、{{source_ref}}、{{commit_message}}、{{commit_files}}、{{diff}}、{{content}}、{{text}}、{{schema}}、{{existing_adrs}}；未使用的占位符生成时为空。')
     },
     adrCommitCandidateCount() { return this.adrCandidateShas.length },
+    adrCommitPage() { return Math.floor(this.adrCommitOffset / this.adrCommitPageSize) + 1 },
+    adrCommitPageCount() {
+      return Math.max(1, Math.ceil(Number(this.adrCommitsTotal || 0) / this.adrCommitPageSize))
+    },
+    adrCommitsPendingCount() {
+      return Number(this.adrCommitCounts?.pending || 0)
+    },
     adrCommitsProgress() {
       const progress = this.adrCommitProgress || {}
       const counts = this.adrCommitCounts || {}
-      const total = Number(progress.total ?? this.adrCommitsTotal ?? 0)
+      const total = Number(progress.total ?? this.adrCommitsTotalAll ?? 0)
       const processed = Number(progress.processed ?? (
-        (counts.approved || 0) + (counts.rejected || 0) + (counts.exported || 0) + (counts.skipped || 0) + (counts.failed || 0)
+        (counts.generated || 0) + (counts.backtested || 0) + (counts.approved || 0) +
+        (counts.rejected || 0) + (counts.exported || 0) + (counts.skipped || 0) + (counts.failed || 0)
       ))
       const active = Number(progress.active ?? ((counts.queued || 0) + (counts.generating || 0)))
       const percent = progress.percent != null
@@ -1481,7 +1516,8 @@ export default {
         this.adrSuccessNote = ''; this.adrSuccessDraftId = ''
         this.adrBatchId = ''; this.adrBatch = null; this.adrBatchNote = ''; this.adrBatchSubmitting = false
         this.adrCommits = []; this.adrCommitsError = ''; this.adrCommitsScanned = 0; this.adrCommitsLoadedFor = ''
-        this.adrCommitsTotal = 0; this.adrCommitCounts = {}; this.adrCommitProgress = null; this.adrStageFilter = ''; this.adrCommitsSeq += 1
+        this.adrCommitsTotal = 0; this.adrCommitsTotalAll = 0; this.adrCommitOffset = 0
+        this.adrCommitCounts = {}; this.adrCommitProgress = null; this.adrStageFilter = ''; this.adrCommitsSeq += 1
         this.adrScanRunning = false; this.adrSelectedCommitShas = []; this.adrGeneratingSha = ''
         this.adrDrafts = []; this.adrDraftsError = ''; this.adrDetail = null; this.adrDetailError = ''
         this.adrBacktestingId = ''; this.adrBacktestError = ''
@@ -1714,6 +1750,8 @@ export default {
       this.adrCommits = data?.items || []
       this.adrCommitsScanned = Number(data?.scanned || 0)
       this.adrCommitsTotal = Number(data?.total ?? this.adrCommits.length)
+      this.adrCommitsTotalAll = Number(data?.total_all ?? this.adrCommitsTotal)
+      if (data?.offset != null) this.adrCommitOffset = Number(data.offset)
       this.adrCommitCounts = data?.counts || {}
       this.adrCommitProgress = data?.progress || null
       this.adrCommitsLoadedFor = this.snapshotId
@@ -1722,10 +1760,28 @@ export default {
       )
       this.adrSelectedCommitShas = this.adrSelectedCommitShas.filter(sha => selectable.has(sha))
     },
+    goAdrCommitPage(page) {
+      const next = Math.max(1, Math.min(Number(page) || 1, this.adrCommitPageCount))
+      if (next === this.adrCommitPage) return undefined
+      this.adrCommitOffset = (next - 1) * this.adrCommitPageSize
+      this.adrSelectedCommitShas = []
+      return this.loadAdrCommits()
+    },
+    resetAdrCommitPaging() {
+      this.adrCommitOffset = 0
+      this.adrSelectedCommitShas = []
+      return this.loadAdrCommits()
+    },
+    setAdrCommitPageSize(value) {
+      const size = Number(value) || 50
+      this.adrCommitPageSize = Math.max(1, Math.min(size, 100))
+      return this.resetAdrCommitPaging()
+    },
     async filterAdrCommitsByStage(stage) {
       const next = stage === this.adrStageFilter ? '' : stage
       if (next === this.adrStageFilter) return
       this.adrStageFilter = next
+      this.adrCommitOffset = 0
       await this.loadAdrCommits()
     },
     async loadAdrCommits() {
@@ -1737,7 +1793,10 @@ export default {
       try {
         const data = await this.$api.get('/api/adr/commits', {
           snapshot_id: this.snapshotId,
-          limit: 50,
+          offset: this.adrCommitOffset,
+          limit: this.adrCommitPageSize,
+          since: this.adrSince || undefined,
+          until: this.adrUntil || undefined,
           stage: this.adrStageFilter || undefined,
         })
         if (seq === this.adrCommitsSeq) this.applyAdrCommits(data)
@@ -1755,13 +1814,17 @@ export default {
         const data = await this.$api.request('/api/adr/commits/scan', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ snapshot_id: this.snapshotId, limit: 50, refresh: false }),
+          body: JSON.stringify({
+            snapshot_id: this.snapshotId,
+            offset: this.adrCommitOffset,
+            limit: this.adrCommitPageSize,
+            since: this.adrSince || '',
+            until: this.adrUntil || '',
+            stage: this.adrStageFilter || '',
+            refresh: false,
+          }),
         })
-        const items = data?.items || []
-        this.applyAdrCommits({
-          ...data,
-          items: this.adrStageFilter ? items.filter(item => item.stage === this.adrStageFilter) : items,
-        })
+        this.applyAdrCommits(data)
       } catch (err) {
         this.adrCommitsError = this.adrErrorMessage(err, 'AI 分诊提交失败')
       } finally {
@@ -3282,6 +3345,11 @@ td code { color: #666; word-break: break-all; }
 .adr-revisions li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid #eee; border-radius: 5px; font-size: 11px; }
 .adr-commit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .adr-commit-progress { margin: 8px 0 10px; }
+.adr-commit-filters { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 2px; }
+.adr-commit-filters .adr-field { max-width: 170px; }
+.adr-commit-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.adr-commit-pager-info { color: #555; font-size: 11px; font-variant-numeric: tabular-nums; }
+.adr-commit-pager select { border: 1px solid #cfd3da; border-radius: 5px; padding: 4px 6px; background: white; font: 11px/1.4 sans-serif; }
 .adr-stage-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
 .adr-stage-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d7dbe3; border-radius: 12px; padding: 3px 9px; background: #fff; color: #555; font-size: 11px; cursor: pointer; }
 .adr-stage-chip:hover { border-color: #b9c2d0; }

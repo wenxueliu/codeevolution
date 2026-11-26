@@ -231,14 +231,17 @@ ADR 不只是被读取的事实，核心是**用模型生成**：从 git 提交�
 - **调试映射**：一次 generation 完整记录 `source_payload`（提交 diff / 文件内容 / 文本）、
   来源摘要、实际提示词全文与摘要、模型名、原始响应、解析后的决策对象、错误或跳过原因、
   耗时。`adr debug <generation-id>` 与 `GET /api/adr/generations/{id}` 暴露同一份映射。
-- **提交表格与 AI 分诊**：`adr commits` 列出 git log，规则层先过滤文档/测试/lockfile
-  噪声，再由「提交分诊」提示词（批量 12 条/次）判断 bug fix、lint、test-only 等是否值得
-  记录；判定缓存到 `adr_commit_scans`（按 `member + sha`），表格支持单选/勾选批量生成
+- **提交表格与 AI 分诊**：`adr commits` 分页展示**整个 git 历史**（`--offset/--limit`，
+  默认每页 50、上限 100），规则层先过滤文档/测试/lockfile 噪声并由「提交分诊」提示词按
+  当前页判断 bug fix、lint、test-only 等是否值得记录；判定缓存到 `adr_commit_scans`
+  （按 `member + sha`），表格支持单选/勾选批量生成
   （`adr gen --commits`、`POST /api/adr/generations/batch`）。`force` 可绕过分诊与噪声过滤。
   每个 commit 投影生命周期状态：`pending`（待生成）、`queued`、`generating`（生成中）、
   `generated`（待校验）、`backtested`（待审批）、`approved`/`rejected`、`exported`、
-  `skipped`、`failed`；`GET /api/adr/commits` 同时返回各状态计数、已处理进度
-  （processed/total/percent）与 `stage` 过滤参数。
+  `skipped`、`failed`；`GET /api/adr/commits` 同时返回各状态计数、按整段历史统计的已处理
+  进度（processed/total/percent）、`offset/total_all` 分页字段与 `stage` 过滤参数。
+  历史整段索引在一次 `git log --name-only` 中读取并按 HEAD 缓存 30s；超过 20000 个提交时
+  返回 400 提示用 `since/until` 缩小范围，而不是给出只覆盖部分历史的进度。
 - **输出模板**：默认内置 MADR 4.0（`{{frontmatter}} {{title}} {{context}} {{drivers}}
   {{options}} {{outcome}} {{consequences}} {{confirmation}} {{options_detail}}
   {{evidence}} {{service}} {{date}} {{status}}`），按服务版本化覆盖；`{{title}}` 必填。

@@ -72,7 +72,27 @@ def _setup(tmp_path, decision=None):
     (repo / "README.md").write_text("hello world\n", encoding="utf-8")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "docs: update readme")
+    return _wire(tmp_path, repo, decision)
 
+
+def _history_repo(repo):
+    """Five commits: three architecture candidates plus two rule-filtered ones."""
+    _git(repo, "init")
+    for message, path, content in (
+        ("feat: add payment gateway", "app/payments.py", "def pay():\n    pass\n"),
+        ("docs: update readme", "README.md", "hello\n"),
+        ("feat: add refund flow", "app/refunds.py", "def refund():\n    pass\n"),
+        ("chore: bump lockfile", "package-lock.json", "{}\n"),
+        ("feat: add settlement", "app/settlement.py", "def settle():\n    pass\n"),
+    ):
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        _git(repo, "add", path)
+        _git(repo, "commit", "-m", message)
+
+
+def _wire(tmp_path, repo, decision=None):
     prompts: list[str] = []
 
     def completer(prompt: str) -> str:
@@ -378,6 +398,77 @@ def test_commit_table_triages_noise_and_caches_results(tmp_path):
         assert len(prompts) == calls  # cached triage is not re-sent to the model
 
 
+def test_commit_table_pages_through_full_history(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _history_repo(repo)
+    _repo, _store, _service, prompts, client = _wire(tmp_path, repo)
+
+    def page(**params):
+        return client.get(
+            "/api/adr/commits", params={"member_id": "member-1", **params}
+        ).json()
+
+    with client:
+        first = page(offset=0, limit=2)
+        assert first["total_all"] == 5 and first["total"] == 5
+        assert first["offset"] == 0 and first["limit"] == 2 and first["returned"] == 2
+        assert [item["subject"] for item in first["items"]] == [
+            "feat: add settlement",
+            "chore: bump lockfile",
+        ]
+        assert first["counts"]["skipped"] == 2
+        assert first["counts"]["pending"] == 3
+        assert first["progress"] == {
+            "total": 5,
+            "processed": 2,
+            "active": 0,
+            "percent": 40,
+        }
+        assert first["has_more"] is True
+
+        second = page(offset=2, limit=2)
+        assert [item["subject"] for item in second["items"]] == [
+            "feat: add refund flow",
+            "docs: update readme",
+        ]
+        assert second["has_more"] is True
+        assert {item["sha"] for item in second["items"]}.isdisjoint(
+            {item["sha"] for item in first["items"]}
+        )
+
+        last = page(offset=4, limit=2)
+        assert [item["subject"] for item in last["items"]] == ["feat: add payment gateway"]
+        assert last["has_more"] is False
+
+        # A stage filter narrows the page count but never the global progress.
+        skipped = page(offset=0, limit=1, stage="skipped")
+        assert skipped["total"] == 2 and skipped["total_all"] == 5
+        assert skipped["counts"]["skipped"] == 2
+        assert skipped["progress"]["total"] == 5
+        assert skipped["items"][0]["skip_reason"] == "仅修改文档、测试或 lockfile"
+
+        # AI triage only touches the requested page.
+        scanned = client.post(
+            "/api/adr/commits/scan",
+            json={"member_id": "member-1", "offset": 2, "limit": 2, "stage": ""},
+        ).json()
+        assert {item["subject"] for item in scanned["items"]} == {
+            "feat: add refund flow",
+            "docs: update readme",
+        }
+        assert len(prompts) == 1  # only the rule candidate went to the model
+        assert scanned["scanned"] == 2
+
+        flags = {
+            item["subject"]: item["triaged"] for item in page(offset=0, limit=5)["items"]
+        }
+        assert flags["feat: add refund flow"] is True
+        assert flags["docs: update readme"] is True  # rule verdict persisted by scan
+        assert flags["feat: add settlement"] is False
+        assert flags["feat: add payment gateway"] is False
+
+
 def test_commit_stage_progress_follows_generation_and_review(tmp_path):
     _repo, _store, _service, _prompts, client = _setup(tmp_path)
 
@@ -395,6 +486,12 @@ def test_commit_stage_progress_follows_generation_and_review(tmp_path):
         item = stage_of(feature_sha)
         assert item["stage"] == "generated"
         assert item["generation_status"] == "succeeded"
+        # A commit with a draft already left the pending queue, so extraction
+        # progress counts it as processed even before review/export.
+        progress = client.get(
+            "/api/adr/commits", params={"member_id": "member-1"}
+        ).json()["progress"]
+        assert progress == {"total": 2, "processed": 2, "active": 0, "percent": 100}
 
         client.post(f"/api/adr/drafts/{detail['draft']['id']}/backtest")
         assert stage_of(feature_sha)["stage"] == "backtested"

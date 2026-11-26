@@ -173,9 +173,11 @@ class AdrCommitScanRequest(BaseModel):
     member_id: str = Field(default="", max_length=200)
     since: str = Field(default="", max_length=100)
     until: str = Field(default="", max_length=100)
+    offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=100)
     include_merges: bool = False
     refresh: bool = False
+    stage: str = Field(default="", max_length=40)
 
 
 class AdrBatchGenerationRequest(BaseModel):
@@ -1956,6 +1958,7 @@ def list_adr_commits(
     member_id: str = Query("", max_length=200),
     since: str = Query("", max_length=100),
     until: str = Query("", max_length=100),
+    offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     include_merges: bool = Query(False),
     stage: str = Query("", max_length=40),
@@ -1966,6 +1969,7 @@ def list_adr_commits(
             member,
             since=since,
             until=until,
+            offset=offset,
             limit=limit,
             include_merges=include_merges,
             stage=stage,
@@ -1982,9 +1986,11 @@ def scan_adr_commits(request: AdrCommitScanRequest):
             member,
             since=request.since,
             until=request.until,
+            offset=request.offset,
             limit=request.limit,
             include_merges=request.include_merges,
             refresh=request.refresh,
+            stage=request.stage,
         )
     except AdrServiceError as error:
         raise HTTPException(error.status, str(error)) from error

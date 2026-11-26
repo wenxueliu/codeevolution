@@ -11,6 +11,9 @@ from ..text_encoding import decode_text_lines
 
 MAX_DIFF_CHARS = 60_000
 MAX_COMMIT_SUBJECT = 4_000
+# One git log record per commit: \x1e starts a record, \x1f separates fields,
+# so subjects and file lists never need a separate git process per commit.
+_LOG_FORMAT = "%x1e%H%x1f%an%x1f%aI%x1f%s"
 
 _NOISE_PATTERNS = (
     re.compile(r"^docs?/", re.IGNORECASE),
@@ -107,44 +110,94 @@ def read_commit(
     )
 
 
-def list_commits(
+def head_commit(repo: str | Path) -> str:
+    """The commit the history view is anchored on; also the index cache key."""
+    try:
+        return _run(repo, "rev-parse", "HEAD").strip()
+    except AdrGitError:
+        return ""
+
+
+def count_commits(
     repo: str | Path,
     *,
     since: str = "",
     until: str = "",
-    limit: int = 20,
     include_merges: bool = False,
-) -> list[dict]:
-    """Newest-first commit candidates with their changed files."""
-    limit = max(1, min(int(limit), 100))
-    args = ["log", "-n", str(limit), "--format=%H"]
+) -> int:
+    """Number of commits a listing would page through, without reading patches."""
+    args = ["rev-list", "--count"]
     if not include_merges:
         args.append("--no-merges")
     if since:
         args.append(f"--since={since}")
     if until:
         args.append(f"--until={until}")
-    args.append(until or "HEAD")
-    shas = [line.strip() for line in _run(repo, *args).splitlines() if line.strip()]
+    output = _run(repo, *args, "HEAD").strip()
+    try:
+        return int(output or 0)
+    except ValueError:
+        return 0
+
+
+def _parse_log_records(output: str) -> list[dict]:
     commits: list[dict] = []
-    for sha in shas:
-        meta = _run(repo, "show", "-s", "--format=%an%n%aI%n%s", sha).rstrip("\n").split("\n")
-        files = [
-            line.strip()
-            for line in _run(repo, "show", "--no-color", "--format=", "--name-only", sha).splitlines()
-            if line.strip()
-        ]
+    for chunk in output.split("\x1e"):
+        lines = chunk.strip("\n").split("\n")
+        if not lines or not lines[0].strip():
+            continue
+        header = lines[0].split("\x1f")
+        sha = header[0].strip()
+        if not sha:
+            continue
+        files = [line.strip() for line in lines[1:] if line.strip()]
         commits.append(
             {
                 "sha": sha,
-                "author": meta[0] if meta else "",
-                "committed_at": meta[1] if len(meta) > 1 else "",
-                "subject": meta[2] if len(meta) > 2 else "",
+                "author": header[1] if len(header) > 1 else "",
+                "committed_at": header[2] if len(header) > 2 else "",
+                "subject": header[3] if len(header) > 3 else "",
                 "files": files,
                 "significant": significant_files(files),
             }
         )
     return commits
+
+
+def list_commits(
+    repo: str | Path,
+    *,
+    since: str = "",
+    until: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    include_merges: bool = False,
+) -> list[dict]:
+    """Newest-first commit candidates with their changed files.
+
+    One ``git log`` call answers a whole page (or the whole history when the
+    caller asks for ``count_commits()`` entries), so the web table can page
+    through every commit without one process per row.
+    """
+    limit = max(1, min(int(limit), 100_000))
+    offset = max(0, int(offset))
+    args = [
+        "log",
+        "-n",
+        str(limit),
+        f"--skip={offset}",
+        f"--format={_LOG_FORMAT}",
+        "--name-only",
+        "--no-color",
+    ]
+    if not include_merges:
+        args.append("--no-merges")
+    if since:
+        args.append(f"--since={since}")
+    if until:
+        args.append(f"--until={until}")
+    args.append("HEAD")
+    return _parse_log_records(_run(repo, *args))
 
 
 def current_files(repo: str | Path, limit: int = 300) -> list[str]:
@@ -168,7 +221,9 @@ def recent_subjects(repo: str | Path, limit: int = 10) -> list[str]:
 __all__ = [
     "AdrGitError",
     "CommitContext",
+    "count_commits",
     "current_files",
+    "head_commit",
     "list_commits",
     "read_commit",
     "recent_subjects",
