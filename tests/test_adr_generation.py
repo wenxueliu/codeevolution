@@ -513,6 +513,37 @@ def test_commit_stage_progress_follows_generation_and_review(tmp_path):
         assert listing["progress"]["active"] == 0
 
 
+def test_skipped_generation_exposes_its_reason_on_the_commit_row(tmp_path):
+    reason = "单纯的功能扩展，未涉及架构层面的改变"
+    _repo, _store, _service, _prompts, client = _setup(
+        tmp_path, decision={"is_decision": False, "reason": reason}
+    )
+
+    with client:
+        scanned = client.post("/api/adr/commits/scan", json={"member_id": "member-1"}).json()
+        sha = next(
+            item["sha"]
+            for item in scanned["items"]
+            if item["subject"] == "feat: add payment gateway"
+        )
+        detail = _generate(client, {"kind": "commit", "ref": sha})
+        assert detail["generation"]["status"] == "skipped"
+        assert detail["generation"]["stage"] == "not_a_decision"
+
+        item = next(
+            item
+            for item in client.get(
+                "/api/adr/commits", params={"member_id": "member-1"}
+            ).json()["items"]
+            if item["sha"] == sha
+        )
+        assert item["candidate"] is True
+        assert item["scanned"] is True
+        assert item["stage"] == "skipped"
+        assert item["generation_status"] == "skipped"
+        assert item["generation_skip_reason"] == reason
+
+
 def test_batch_generation_from_selected_commits(tmp_path):
     _repo, _store, _service, _prompts, client = _setup(tmp_path)
 

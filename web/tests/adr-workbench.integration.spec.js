@@ -362,6 +362,34 @@ describe('ADR workbench integration', () => {
     expect(wrapper.find('[data-testid="adr-commit-edit-sha-generated"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('[data-testid="adr-commit-delete-sha-generated"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="adr-commit-edit-sha-feat"]').exists()).toBe(false)
+
+    // Untriaged rule candidates are labelled as such instead of "AI verdict".
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-feat"]').text()).toContain('候选')
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-pending"]').text()).toContain('规则候选')
+    expect(wrapper.find('[data-testid="adr-commit-row-sha-pending"]').text()).toContain('待 AI 分诊')
+    wrapper.unmount()
+  })
+
+  it('shows the generation skip reason on a skipped commit row', async () => {
+    const { wrapper } = await openWorkbench()
+    const reason = '单纯的功能扩展，未涉及架构层面的改变'
+
+    wrapper.vm.adrCommits = wrapper.vm.adrCommits.map(item => (
+      item.sha === 'sha-generated'
+        ? {
+            ...item, stage: 'skipped', generation_status: 'skipped',
+            generation_stage: 'not_a_decision', generation_skip_reason: reason,
+            draft_id: '', draft_title: '', review_status: '',
+          }
+        : item
+    ))
+    await flushPromises()
+
+    const row = wrapper.find('[data-testid="adr-commit-row-sha-generated"]')
+    expect(row.exists()).toBe(true)
+    expect(row.text()).toContain(reason)
+    expect(row.text()).not.toContain('待 AI 分诊')
+    expect(wrapper.find('[data-testid="adr-commit-stage-sha-generated"]').text()).toContain('跳过')
     wrapper.unmount()
   })
 

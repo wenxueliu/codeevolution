@@ -455,6 +455,7 @@ class AdrService:
             "generation_status": generation.get("status", "") if generation else "",
             "generation_stage": generation.get("stage", "") if generation else "",
             "generation_progress": generation.get("progress", 0) if generation else 0,
+            "generation_skip_reason": generation.get("skip_reason", "") if generation else "",
             "draft_id": draft["id"] if draft else "",
             "draft_title": draft["title"] if draft else "",
             "draft_status": draft["status"] if draft else "",

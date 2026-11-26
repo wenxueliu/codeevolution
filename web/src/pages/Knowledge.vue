@@ -315,7 +315,7 @@
                     <table data-testid="adr-commit-table">
                       <thead><tr>
                         <th class="adr-select-cell"><input type="checkbox" :checked="adrAllCandidatesSelected" :disabled="!adrCandidateShas.length" data-testid="adr-select-all-candidates" @change="toggleAllAdrCandidates" /></th>
-                        <th>{{ t('提交') }}</th><th>{{ t('说明') }}</th><th>{{ t('作者') }}</th><th>{{ t('日期') }}</th><th>{{ t('文件数') }}</th><th>{{ t('状态') }}</th><th>{{ t('AI 判定') }}</th><th>{{ t('跳过原因') }}</th><th>{{ t('已生成草稿') }}</th><th>{{ t('操作') }}</th>
+                        <th>{{ t('提交') }}</th><th>{{ t('说明') }}</th><th>{{ t('作者') }}</th><th>{{ t('日期') }}</th><th>{{ t('文件数') }}</th><th>{{ t('状态') }}</th><th>{{ t('候选判定') }}</th><th>{{ t('跳过原因') }}</th><th>{{ t('已生成草稿') }}</th><th>{{ t('操作') }}</th>
                       </tr></thead>
                       <tbody>
                         <tr v-for="commit in adrVisibleCommits" :key="commit.sha" :data-testid="`adr-commit-row-${commit.sha}`" :class="{ skipped: !commit.candidate }">
@@ -327,13 +327,14 @@
                           <td>{{ commit.author || '-' }}</td>
                           <td>{{ formatSnapshotTime(commit.committed_at) }}</td>
                           <td :title="(commit.files || []).join('\n')">{{ (commit.files || []).length }}</td>
-                          <td :data-testid="`adr-commit-stage-${commit.sha}`"><span class="term-status adr-stage-badge" :class="`adr-stage-${adrCommitStageKey(commit.stage)}`">{{ adrCommitStageText(commit) }}</span></td>
+                          <td :data-testid="`adr-commit-stage-${commit.sha}`"><span class="term-status adr-stage-badge" :class="`adr-stage-${adrCommitStageKey(commit.stage)}`" :title="adrCommitStageTitle(commit)">{{ adrCommitStageText(commit) }}</span></td>
                           <td>
-                            <span class="term-status" :class="commit.candidate ? 'accepted' : 'rejected'">{{ commit.candidate ? t('候选') : t('跳过') }}</span>
+                            <span class="term-status" :class="commit.candidate ? 'accepted' : 'rejected'" :title="adrCommitCandidateTitle(commit)">{{ adrCommitCandidateText(commit) }}</span>
                             <small v-if="commit.change_type" class="adr-change-type">{{ adrChangeTypeText(commit.change_type) }}</small>
                           </td>
                           <td>
-                            <template v-if="!commit.scanned">
+                            <span v-if="commit.generation_skip_reason && !commit.draft_id" class="muted">{{ commit.generation_skip_reason }}</span>
+                            <template v-else-if="!commit.scanned">
                               <span class="muted">{{ t('待 AI 分诊') }}</span>
                               <span v-if="commit.skip_reason" class="muted"> · {{ commit.skip_reason }}</span>
                             </template>
@@ -1677,6 +1678,18 @@ export default {
         return this.t('{stage} {percent}%', { stage: label, percent: progress })
       }
       return label
+    },
+    adrCommitStageTitle(commit) {
+      if (this.adrCommitStageKey(commit?.stage) !== 'skipped') return ''
+      return commit?.generation_skip_reason || commit?.skip_reason || ''
+    },
+    adrCommitCandidateText(commit) {
+      if (!commit?.candidate) return this.t('跳过')
+      return commit.scanned ? this.t('候选') : this.t('规则候选')
+    },
+    adrCommitCandidateTitle(commit) {
+      if (!commit?.candidate || commit.scanned) return ''
+      return this.t('仅规则过滤通过，尚未 AI 分诊')
     },
     adrCommitCanGenerate(commit) {
       const stage = this.adrCommitStageKey(commit?.stage)
