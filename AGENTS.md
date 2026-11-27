@@ -141,6 +141,13 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
 - **精修与版本**：`adr edit <draft-id> --file refined.md [--title] [--editor] [--note]`
   （`PUT /api/adr/drafts/{id}`）把改写后的 MADR 存为新版本：`revision + 1`、审批重置为
   pending、旧回测失效；已导出草稿不可再编辑或重新审批（409）。
+- **草稿删除与状态回退**：表格/草稿列表的「删除」调用 `DELETE /api/adr/drafts/{id}`，
+  只删除本地 `adr_drafts` 行并让该提交回到「待生成」，可重新生成；**不删除**仓库里已导出的
+  `docs/adr` 文件、不删除生成调试记录（`adr debug` 仍可查），当前也不级联清理该草稿的
+  回测/修订行。已导出草稿仍可删除，但仓库文件保留，重新生成并导出会分配新编号文件。
+  删除与「回退」语义不同、不要混用：编辑草稿存为新 revision 并重置审批、审批可在导出前改判、
+  「恢复跳过」撤销人工驳回；已导出后不可编辑或再审批，也**没有**「撤销导出」，需手工处理
+  仓库文件并重建 `index.md`。
 - **交付物溯源**：导出时在 frontmatter 注入 `provenance:`（draft/generation、model、
   prompt_digest、evidence、editor、reviewer、exported_at），重复导出只替换该块。
 - **调试映射**：每次生成/回测都保存来源内容、实际渲染提示词、模型原始响应、解析结果与
