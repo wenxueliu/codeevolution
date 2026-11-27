@@ -254,7 +254,8 @@
         </template>
 
         <template v-else-if="activeSection === 'adr'">
-          <section class="adr-workbench" data-testid="adr-workbench">
+          <section class="adr-workbench" :class="{ 'has-detail': detailOpen }" data-testid="adr-workbench">
+            <div class="adr-main">
             <section class="adr-card" data-testid="adr-generate">
               <div class="adr-card-heading">
                 <div>
@@ -529,6 +530,7 @@
               </div>
             </section>
 
+            </div>
             <section v-if="adrDetail || adrDetailLoading || adrDetailError" class="adr-detail" data-testid="adr-detail">
                 <div class="adr-detail-heading">
                   <h4>{{ t('ADR 草稿详情') }}<template v-if="adrDetail?.draft?.title"> · {{ adrDetail.draft.title }}</template></h4>
@@ -1386,6 +1388,7 @@ export default {
       ]
     },
     adrActiveGeneration() { return ['queued', 'running'].includes(this.adrGeneration?.status) },
+    detailOpen() { return Boolean(this.adrDetail || this.adrDetailLoading || this.adrDetailError) },
     adrBatchActive() {
       return (this.adrBatch?.generations || []).some(item => ['queued', 'running'].includes(item.status))
     },
@@ -2383,6 +2386,13 @@ export default {
         this.adrDetailError = this.adrErrorMessage(err, '读取 ADR 草稿详情失败')
       } finally {
         this.adrDetailLoading = false
+        // On narrow screens the detail stacks below the workbench; bring it
+        // into view. On wide screens it is the sticky right rail and already
+        // visible, so scrolling would just be noise.
+        this.$nextTick(() => {
+          if (window.innerWidth > 1280) return
+          document.querySelector('[data-testid="adr-detail"]')?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+        })
       }
     },
     openAdrDraftForReview(draft) {
@@ -3469,7 +3479,16 @@ td code { color: #666; word-break: break-all; }
 .empty-semantic, .empty-state { text-align: center; padding: 60px 20px; color: #888; }
 .empty-semantic p { margin-bottom: 14px; }
 /* ── ADR workbench ── */
-.adr-workbench { display: grid; gap: 14px; margin-bottom: 20px; }
+.adr-workbench { display: grid; gap: 14px; margin-bottom: 20px; align-items: start; }
+.adr-workbench.has-detail { grid-template-columns: minmax(0, 1fr) minmax(360px, 440px); }
+.adr-main { display: grid; gap: 14px; min-width: 0; }
+.adr-workbench.has-detail > .adr-detail {
+  position: sticky; top: 12px; max-height: calc(100vh - 32px); overflow: auto; margin-top: 0;
+}
+@media (max-width: 1280px) {
+  .adr-workbench.has-detail { grid-template-columns: minmax(0, 1fr); }
+  .adr-workbench.has-detail > .adr-detail { position: static; max-height: none; }
+}
 .adr-card { padding: 14px; border: 1px solid #e2e5eb; border-radius: 8px; background: #fafafd; }
 .adr-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .adr-card-heading h3 { margin: 0 0 4px; font-size: 14px; color: #333; }
