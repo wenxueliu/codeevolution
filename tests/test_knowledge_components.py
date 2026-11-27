@@ -296,3 +296,38 @@ def test_interface_contract_serialization_keeps_every_entry():
     assert len(payload["entries"]) == 250
     assert payload["truncated"] is False
     assert payload["inferred_count"] == 250
+
+
+class HttpSurfaceStub:
+    def functions(self):
+        return [
+            {"name": "root", "kind": "function", "language": "python",
+             "file_path": "pkg/api.py", "start_line": 1, "node_id": "root",
+             "qualified_name": "root", "signature": "root()"},
+            {"name": "list_orders", "kind": "function", "language": "python",
+             "file_path": "pkg/api.py", "start_line": 6, "node_id": "http1",
+             "qualified_name": "list_orders", "signature": "list_orders()"},
+        ]
+
+    def caller_edges(self):
+        return []
+
+    def http_handler_node_ids(self):
+        return ["http1"]
+
+
+def test_interface_contract_does_not_repeat_http_handlers():
+    entries = InterfaceContractExtractor(HttpSurfaceStub()).extract()
+
+    assert [item["name"] for item in entries] == ["root"]
+
+
+class DeclaredHttpHandlerStub(DeclaredExportStub):
+    def http_handler_node_ids(self):
+        return ["f1"]
+
+
+def test_declared_export_that_is_an_http_handler_is_left_to_the_api_contract():
+    entries = InterfaceContractExtractor(DeclaredHttpHandlerStub()).extract()
+
+    assert [item["name"] for item in entries] == ["Client"]

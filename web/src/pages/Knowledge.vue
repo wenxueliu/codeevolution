@@ -919,10 +919,10 @@
 
         <template v-else-if="activeSection === 'interface_contract'">
           <div class="interface-heading">
-            <p class="muted">{{ t('公开接口 = 显式导出（包入口 __init__）+ 无内部调用方的可达根；SDK 业务逻辑提取以此为准。') }}</p>
+            <p class="muted">{{ t('公开接口 = 显式导出（包入口 __init__）+ 无内部调用方的可达根；已由 API 契约覆盖的 HTTP 端点不重复列出。') }}</p>
             <button class="secondary sm" data-testid="interface-contract-export" :disabled="exporting || !snapshotId" @click="exportInterfaceContract">{{ exporting ? t('导出中...') : t('导出公开接口契约') }}</button>
           </div>
-          <UiState v-if="!activeData.entries?.length" kind="empty" :title="t('该 Snapshot 未识别到公开接口')" :message="t('公开接口指显式导出的符号，以及没有被本服务其他接口调用的公共函数与方法。')" />
+          <UiState v-if="!activeData.entries?.length" kind="empty" :title="t('该 Snapshot 未识别到公开接口')" :message="t('公开接口指显式导出的符号，以及没有被本服务其他接口调用的公共函数与方法（不含 HTTP 端点）。')" />
           <template v-else>
             <div class="metrics">
               <div class="metric">{{ activeData.entry_count ?? 0 }} <small>{{ t('个公开入口') }}</small></div>

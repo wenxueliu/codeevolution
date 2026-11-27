@@ -20,6 +20,11 @@ Rule 2 is the "not called by another interface of the same service" rule: an
 SDK's real external entry points are the ones the service itself does not
 already consume.
 
+3. **HTTP is excluded.**  Route/decorated handlers and ``http.server``
+   dispatch methods belong to the API contract; they are removed from both the
+   declared and the inferred surface so the two contracts never repeat the same
+   symbol.
+
 See ``docs/public-interface-contract.md`` for the capability, its business
 description and the full rule set.
 """
@@ -133,12 +138,15 @@ class InterfaceContractExtractor:
         self._callers: dict[str, list[dict[str, Any]]] = {}
         self._instantiators: dict[str, list[dict[str, Any]]] = {}
         self._symbols: dict[str, list[dict[str, Any]]] = {}
+        self._http_handlers: set[str] = set()
 
     def extract(self) -> list[dict[str, Any]]:
         if callable(self.source) and not hasattr(self.source, "functions"):
             return self.source()
         self._callers = self._caller_index()
         self._instantiators = self._instantiator_index()
+        getter = getattr(self.source, "http_handler_node_ids", None)
+        self._http_handlers = set(getter() or []) if callable(getter) else set()
         declared = self._declared_entries()
         if declared:
             return declared
@@ -221,6 +229,9 @@ class InterfaceContractExtractor:
                 node = self._resolve_symbol(entry_path, module, source_name)
                 if node is None:
                     continue
+                if self._is_http_handler(node.get("id") or node.get("node_id")):
+                    # Already documented by the API contract.
+                    continue
                 seen.add(key)
                 entry = self._entry(node, "declared", entry_path)
                 if exported != entry["name"]:
@@ -253,6 +264,8 @@ class InterfaceContractExtractor:
             if self._is_nested(row):
                 continue
             node_id = self._get(row, "node_id") or ""
+            if self._is_http_handler(node_id):
+                continue
             if self._internal_callers(node_id):
                 continue
             if self._get(row, "kind") == "method":
@@ -261,6 +274,9 @@ class InterfaceContractExtractor:
                     continue
             entries.append(self._entry(row, "root", None))
         return entries
+
+    def _is_http_handler(self, node_id: str | None) -> bool:
+        return bool(node_id) and node_id in self._http_handlers
 
     def _is_nested(self, row: Any) -> bool:
         qualified = self._get(row, "qualified_name") or ""

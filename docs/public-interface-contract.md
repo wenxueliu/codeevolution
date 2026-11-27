@@ -23,6 +23,10 @@ SDK / Library 类仓库没有 HTTP 路由、MQ 通道或定时任务，`api_cont
 | 业务规则 | 聚合解释中的 `business_rules` | 快照中同名 `business_rules`（可选） |
 | 导出 | `codeevolution api-contract` | `codeevolution interface-contract` |
 
+两者**互斥**：HTTP 路由处理函数、HTTP 装饰器处理函数、`http.server` 的
+`do_<VERB>` 分发方法已经由 API 契约覆盖，不再出现在公开接口中；公开接口只描述
+非 HTTP 的对外可访问面（函数、类、常量）。因此同一符号不会在两份契约里重复出现。
+
 ## 2. 业务描述
 
 ### 问题
@@ -122,6 +126,18 @@ from .evaluator import decide_evaluator_action
 `method = "SDK"` 的可达性根，SDK 的出站调用由此进入跨服务拓扑。公开面收紧后，
 拓扑不再从内部工具函数错误出发。
 
+### R9 与 API 契约互斥
+
+以下节点属于 HTTP 面，统一从公开接口中剔除（即使它被包 `__init__` 重新导出）：
+
+- 路由节点（`kind = 'route'`）命中的处理函数；
+- 装饰器命中 `HTTP_DECORATORS`（`@app.get`、`@router.post`、`@GetMapping` 等）的函数/方法；
+- `http.server` 的 `do_GET` / `do_POST` 等分发方法。
+
+实现：`SQLiteCodeGraphRepository.http_handler_node_ids()` 汇总三类命中，提取器在
+declared 与 inferred 两条路径上都按 `node_id` 排除。跨仓拓扑本来只在**没有 HTTP 入口**
+时才把公开接口作为可达根，因此也不会与 HTTP 入口重复。
+
 ### 已知边界
 
 - CodeGraph 的 Python 调用解析不覆盖所有动态分发/反射；R3 的类实例化规则是主要补偿。
@@ -138,6 +154,7 @@ from .evaluator import decide_evaluator_action
 candidates = 所有 function/method 节点
       │
       ├─ R4 过滤：命名 / 可见性 / 路径 / 测试 / 语言导出标志
+      ├─ 是 HTTP 处理函数？ ── 是 → 丢弃（归 API 契约）
       │
       ├─ 包入口 __init__.py 有相对导入？
       │     ├─ 是 → 解析导入名 → 解析定义节点 → public_surface = declared
@@ -200,6 +217,6 @@ GET /api/interface-contract/export?repository_snapshot_id=<id>&format=markdown
   - 250 条结果全量序列化，`truncated=false`。
 - 真实仓库回归（手工）：
   - `harness_framework`：489 → 41（全部 declared，等于包 `__init__` 再导出）；
-  - `codehistory`：1046 → 253（推断根；无显式导出）。
+  - `codehistory`：1046 → 140（推断根；无显式导出；已剔除 139 个 HTTP 处理函数）。
 - 前端：公开接口页显示「总数 / 显式导出 / 推断根 / 文件数」，表格含「来源」「内部调用方」，
   中英文词条齐全；导出按钮走 `/api/interface-contract/export`。

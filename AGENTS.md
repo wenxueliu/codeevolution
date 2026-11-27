@@ -104,7 +104,7 @@ codeevolution web                    # http://0.0.0.0:8765
 | 16 | 全通道流程追踪 | | x | x | x | x | `flow --view-id <id> --service <id>` |
 | 17 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
 | 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
-| 19 | 公开接口契约 (SDK/Library) | x | x | x | x | | `knowledge --snapshot-id <id> -s interface` / `interface-contract` |
+| 19 | 公开接口契约 (SDK/Library，非 HTTP 面) | x | x | x | x | | `knowledge --snapshot-id <id> -s interface` / `interface-contract` |
 
 ADR 的核心是**用模型生成**，不是读取已有文档：
 

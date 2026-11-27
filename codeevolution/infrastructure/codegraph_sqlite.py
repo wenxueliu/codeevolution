@@ -889,6 +889,38 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
                ORDER BY file_path, start_line"""
         )
 
+    def http_handler_node_ids(self) -> list[str]:
+        """Node ids of functions/methods that serve the HTTP surface.
+
+        The public-interface contract is the *non-HTTP* surface; route
+        handlers, decorated handlers and stdlib ``http.server`` dispatch
+        methods already belong to the API contract and must not be listed
+        twice.
+        """
+        ids: set[str] = set()
+        for row in self.decorated_handlers():
+            decorators = row.get("decorators")
+            try:
+                values = json.loads(decorators) if isinstance(decorators, str) else decorators
+            except (json.JSONDecodeError, TypeError):
+                values = None
+            if not isinstance(values, list):
+                continue
+            for decorator in values:
+                name = str(decorator or "").lstrip("@").split("(", 1)[0].split(".")[-1].lower()
+                if name in HTTP_DECORATORS:
+                    ids.add(row["id"])
+                    break
+        for route in self.route_nodes():
+            handler = self.handler_for_route(route["file_path"], route["start_line"])
+            if handler:
+                ids.add(handler["id"])
+        for endpoint in self.http_handler_endpoints():
+            handler = self.function_node(endpoint.get("handler_name") or "")
+            if handler:
+                ids.add(handler["id"])
+        return sorted(ids)
+
     def package_entry_imports(self) -> list[dict[str, Any]]:
         """Relative imports declared by package entry modules.
 
