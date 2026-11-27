@@ -25,7 +25,7 @@ already consume.
    declared and the inferred surface so the two contracts never repeat the same
    symbol.
 
-See ``docs/public-interface-contract.md`` for the capability, its business
+See ``design/public-interface-contract.md`` for the capability, its business
 description and the full rule set.
 """
 

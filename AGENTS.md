@@ -241,7 +241,7 @@ curl -s http://127.0.0.1:8765/api/repos | head -c 200
 - **模块结构**：见 `codeevolution/` 源码（各文件职责以 docstring 为准），用 CodeGraph / 文件树检索。
 - **CodeGraph SQLite Schema**：`.codegraph/codegraph.db` 三表 `nodes` / `edges` / `files`；关键查询模式见 `codeevolution/codegraph_reader.py` 的 `CodeGraphReader`。
 - **架构设计**：`docs/design.md`。
-- **公开接口契约**：`docs/public-interface-contract.md`（SDK/Library 公开面判定、业务描述与规则）。
+- **公开接口契约**：`design/public-interface-contract.md`（SDK/Library 公开面判定、业务描述与规则）。
 
 ## Git 提交规则
 
