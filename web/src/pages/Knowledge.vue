@@ -368,6 +368,17 @@
                   <p v-if="adrCommitsLoading && !adrCommits.length" class="muted">{{ t('正在加载提交列表') }}</p>
                   <div v-if="adrCommitsTotal || adrCommitsTotalAll" class="adr-commit-pager" data-testid="adr-commit-pager">
                     <button class="secondary sm" type="button" :disabled="adrCommitPage <= 1 || adrCommitsLoading" data-testid="adr-commit-prev" @click="goAdrCommitPage(adrCommitPage - 1)">{{ t('上一页') }}</button>
+                    <button
+                      v-for="page in adrCommitPageNumbers"
+                      :key="page"
+                      type="button"
+                      class="secondary sm adr-page-number"
+                      :class="{ active: page === adrCommitPage }"
+                      :aria-current="page === adrCommitPage ? 'page' : undefined"
+                      :aria-label="t('第 {page} 页', { page })"
+                      :data-testid="`adr-commit-page-${page}`"
+                      @click="goAdrCommitPage(page)"
+                    >{{ page }}</button>
                     <span class="adr-commit-pager-info">{{ t('第 {page} / {pages} 页', { page: adrCommitPage, pages: adrCommitPageCount }) }}</span>
                     <button class="secondary sm" type="button" :disabled="adrCommitPage >= adrCommitPageCount || adrCommitsLoading" data-testid="adr-commit-next" @click="goAdrCommitPage(adrCommitPage + 1)">{{ t('下一页') }}</button>
                     <label class="adr-check">{{ t('每页') }}
@@ -1398,6 +1409,17 @@ export default {
     adrCommitPage() { return Math.floor(this.adrCommitOffset / this.adrCommitPageSize) + 1 },
     adrCommitPageCount() {
       return Math.max(1, Math.ceil(Number(this.adrCommitsTotal || 0) / this.adrCommitPageSize))
+    },
+    adrCommitPageNumbers() {
+      // Five page shortcuts around the current page, clamped to the first and
+      // last page, so jumping several pages never needs repeated clicks.
+      const total = this.adrCommitPageCount
+      const current = this.adrCommitPage
+      const size = Math.min(5, total)
+      let start = Math.max(1, current - Math.floor(size / 2))
+      const end = Math.min(total, start + size - 1)
+      start = Math.max(1, end - size + 1)
+      return Array.from({ length: end - start + 1 }, (_, index) => start + index)
     },
     adrCommitsPendingCount() {
       return Number(this.adrCommitCounts?.pending || 0)
@@ -3382,6 +3404,8 @@ td code { color: #666; word-break: break-all; }
 .adr-commit-filters .adr-field { max-width: 170px; }
 .adr-commit-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; }
 .adr-commit-pager-info { color: #555; font-size: 11px; font-variant-numeric: tabular-nums; }
+.adr-page-number { min-width: 30px; justify-content: center; font-variant-numeric: tabular-nums; }
+.adr-page-number.active { border-color: #4a6cf7; color: #2b3a67; font-weight: 600; background: #eef2ff; }
 .adr-commit-pager select { border: 1px solid #cfd3da; border-radius: 5px; padding: 4px 6px; background: white; font: 11px/1.4 sans-serif; }
 .adr-stage-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
 .adr-stage-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d7dbe3; border-radius: 12px; padding: 3px 9px; background: #fff; color: #555; font-size: 11px; cursor: pointer; }
