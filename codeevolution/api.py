@@ -184,6 +184,14 @@ class AdrCommitScanRequest(BaseModel):
     order: str = Field(default="desc", pattern="^(asc|desc)$")
 
 
+class AdrCommitOverrideRequest(BaseModel):
+    snapshot_id: str = Field(default="", max_length=200)
+    member_id: str = Field(default="", max_length=200)
+    action: str = Field(default="candidate", pattern="^(candidate|skip)$")
+    reason: str = Field(default="", max_length=300)
+    actor: str = Field(default="", max_length=200)
+
+
 class AdrBatchGenerationRequest(BaseModel):
     snapshot_id: str = Field(default="", max_length=200)
     member_id: str = Field(default="", max_length=200)
@@ -2004,6 +2012,21 @@ def scan_adr_commits(request: AdrCommitScanRequest):
             candidate=request.candidate,
             reason=request.reason,
             order=request.order,
+        )
+    except AdrServiceError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@app.post("/api/adr/commits/{sha}/override")
+def override_adr_commit(sha: str, request: AdrCommitOverrideRequest):
+    member = _adr_member(request.snapshot_id, request.member_id)
+    try:
+        return get_adr_service().override_commit(
+            member,
+            sha,
+            action=request.action,
+            reason=request.reason,
+            actor=request.actor,
         )
     except AdrServiceError as error:
         raise HTTPException(error.status, str(error)) from error

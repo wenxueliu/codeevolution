@@ -1075,3 +1075,84 @@ def test_model_error_payload_fails_instead_of_skipping(tmp_path):
             json={"member_id": "member-1", "source": {"kind": "commit", "ref": sha}},
         )
         assert retry.status_code == 202
+
+
+def test_rejected_rule_skip_becomes_candidate_and_generates(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        docs = next(
+            item for item in listing["items"] if item["subject"].startswith("docs:")
+        )
+        assert docs["stage"] == "skipped"
+        assert docs["candidate"] is False
+
+        rejected = client.post(
+            f"/api/adr/commits/{docs['sha']}/override",
+            json={"member_id": "member-1", "reason": "文档里包含契约说明"},
+        ).json()["item"]
+        assert rejected["candidate"] is True
+        assert rejected["overridden"] is True
+        assert rejected["stage"] == "pending"
+        assert "人工驳回跳过" in rejected["skip_reason"]
+
+        after = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        assert docs["sha"] in after["pending_shas"]
+        # The override also forces generation past the docs/tests/lockfile rule.
+        detail = _generate(client, {"kind": "commit", "ref": docs["sha"]})["generation"]
+        assert detail["status"] == "succeeded"
+
+        restored = client.post(
+            f"/api/adr/commits/{docs['sha']}/override",
+            json={"member_id": "member-1", "action": "skip"},
+        ).json()["item"]
+        assert restored["overridden"] is False
+        assert restored["stage"] == "generated"
+
+
+def test_rejected_model_skip_returns_to_pending(tmp_path):
+    _repo, _store, _service, _prompts, client = _setup(
+        tmp_path, decision={"is_decision": False, "reason": "只是内部重构"}
+    )
+
+    with client:
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        sha = next(
+            item["sha"]
+            for item in listing["items"]
+            if item["subject"] == "feat: add payment gateway"
+        )
+        detail = _generate(client, {"kind": "commit", "ref": sha})["generation"]
+        assert detail["status"] == "skipped"
+
+        row = next(
+            item
+            for item in client.get(
+                "/api/adr/commits", params={"member_id": "member-1"}
+            ).json()["items"]
+            if item["sha"] == sha
+        )
+        assert row["stage"] == "skipped"
+
+        rejected = client.post(
+            f"/api/adr/commits/{sha}/override", json={"member_id": "member-1"}
+        ).json()["item"]
+        assert rejected["overridden"] is True
+        assert rejected["stage"] == "pending"
+        after = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        assert sha in after["pending_shas"]
+
+
+def test_merge_commit_cannot_be_rejected(tmp_path):
+    repo, _total = _merge_repo(tmp_path)
+    _repo, _store, _service, _prompts, client = _wire(tmp_path, repo)
+
+    with client:
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        merge = next(item for item in listing["items"] if item["is_merge"])
+        response = client.post(
+            f"/api/adr/commits/{merge['sha']}/override",
+            json={"member_id": "member-1"},
+        )
+        assert response.status_code == 400

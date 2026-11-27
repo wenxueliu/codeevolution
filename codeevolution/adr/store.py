@@ -122,6 +122,22 @@ CREATE TABLE IF NOT EXISTS adr_commit_scans (
 CREATE INDEX IF NOT EXISTS idx_adr_commit_scans_member
     ON adr_commit_scans(member_id, scanned_at);
 
+-- A human can overrule an automatic skip (merge/noise/model decision) and put
+-- the commit back in the candidate queue, or restore the skip afterwards.
+CREATE TABLE IF NOT EXISTS adr_commit_overrides (
+    id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT 'candidate',
+    reason TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(member_id, sha)
+);
+CREATE INDEX IF NOT EXISTS idx_adr_commit_overrides_member
+    ON adr_commit_overrides(member_id);
+
 CREATE TABLE IF NOT EXISTS adr_backtests (
     id TEXT PRIMARY KEY,
     draft_id TEXT NOT NULL UNIQUE,
@@ -810,6 +826,61 @@ class AdrStore:
         if data.get("ai_candidate") is not None:
             data["ai_candidate"] = bool(data["ai_candidate"])
         return data
+
+    # ── human overrides of automatic skips ──────────────────────────
+
+    @_synchronized
+    def get_commit_override(self, member_id: str, sha: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT * FROM adr_commit_overrides WHERE member_id=? AND sha=?",
+            (member_id, sha),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    @_synchronized
+    def list_commit_overrides(self, member_id: str) -> dict[str, dict[str, Any]]:
+        rows = self._connection.execute(
+            "SELECT * FROM adr_commit_overrides WHERE member_id=?", (member_id,)
+        ).fetchall()
+        return {row["sha"]: dict(row) for row in rows}
+
+    @_synchronized
+    def upsert_commit_override(
+        self,
+        *,
+        member_id: str,
+        sha: str,
+        action: str = "candidate",
+        reason: str = "",
+        actor: str = "",
+    ) -> dict[str, Any]:
+        now = _now()
+        existing = self.get_commit_override(member_id, sha)
+        with self._connection:
+            if existing is None:
+                self._connection.execute(
+                    """INSERT INTO adr_commit_overrides
+                       (id, member_id, sha, action, reason, actor, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), member_id, sha, action, reason, actor, now, now),
+                )
+            else:
+                self._connection.execute(
+                    """UPDATE adr_commit_overrides
+                       SET action=?, reason=?, actor=?, updated_at=?
+                       WHERE member_id=? AND sha=?""",
+                    (action, reason, actor, now, member_id, sha),
+                )
+        return self.get_commit_override(member_id, sha)  # type: ignore[return-value]
+
+    @_synchronized
+    def delete_commit_override(self, member_id: str, sha: str) -> bool:
+        with self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM adr_commit_overrides WHERE member_id=? AND sha=?",
+                (member_id, sha),
+            )
+        return cursor.rowcount > 0
 
     # ── backtests ────────────────────────────────────────────────────
 

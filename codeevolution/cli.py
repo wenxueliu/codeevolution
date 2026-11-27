@@ -339,6 +339,26 @@ def cmd_adr(args):
                     )
             return
 
+        if command == "override":
+            member = _adr_member(runtime, args.snapshot_id, args.member_id)
+            result = service.override_commit(
+                member,
+                args.commit,
+                action="skip" if args.restore else "candidate",
+                reason=args.reason or "",
+                actor=args.actor or "",
+            )
+            if args.json:
+                _print_json(result)
+            else:
+                item = result["item"]
+                state = "已驳回跳过" if not args.restore else "已恢复跳过"
+                print(
+                    f"{state}: {item['sha'][:10]}  {item['stage']:<10}"
+                    f" {item['subject'][:56]}  {item['skip_reason']}"
+                )
+            return
+
         if command == "template":
             member = _adr_member(runtime, args.snapshot_id, args.member_id)
             if args.template_command == "show":
@@ -1531,6 +1551,20 @@ def main():
     commits.add_argument("--refresh", action="store_true", help="Re-run triage for cached commits")
     commits.add_argument("--json", action="store_true")
     commits.set_defaults(handler=cmd_adr)
+
+    override = adr_sub.add_parser(
+        "override", help="Reject an automatic skip so a commit can be generated"
+    )
+    override.add_argument("commit", help="Commit sha to override")
+    override.add_argument("--snapshot-id", default="")
+    override.add_argument("--member-id", default="")
+    override.add_argument(
+        "--restore", action="store_true", help="Remove the override and restore the skip"
+    )
+    override.add_argument("--reason", default="", help="Why the skip was rejected")
+    override.add_argument("--actor", default="")
+    override.add_argument("--json", action="store_true")
+    override.set_defaults(handler=cmd_adr)
 
     template = adr_sub.add_parser("template", help="Inspect or override the MADR output template")
     template_sub = template.add_subparsers(dest="template_command", help="Template sub-commands")

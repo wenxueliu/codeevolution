@@ -403,7 +403,12 @@ class AdrService:
     # ── commit table + AI triage ─────────────────────────────────────
 
     @staticmethod
-    def _commit_stage(candidate: bool, draft: dict[str, Any] | None, generation: dict[str, Any] | None) -> str:
+    def _commit_stage(
+        candidate: bool,
+        draft: dict[str, Any] | None,
+        generation: dict[str, Any] | None,
+        overridden: bool = False,
+    ) -> str:
         if draft:
             if draft.get("exported_path"):
                 return "exported"
@@ -425,7 +430,9 @@ class AdrService:
             if status == "failed":
                 return "failed"
             if status == "skipped":
-                return "skipped"
+                # A rejected skip turns a model-skipped commit back into work
+                # waiting for a fresh generation.
+                return "pending" if overridden else "skipped"
         return "pending" if candidate else "skipped"
 
     def _scan_item(
@@ -434,6 +441,7 @@ class AdrService:
         scan: dict[str, Any] | None,
         draft: dict[str, Any] | None,
         generation: dict[str, Any] | None,
+        override: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         is_merge = bool(commit.get("is_merge"))
         rule_candidate = bool(commit["significant"]) and not is_merge
@@ -467,10 +475,25 @@ class AdrService:
             change_type = scan.get("change_type", "")
             scanned = True
 
-        stage = self._commit_stage(candidate, draft, generation)
-        candidate_kind = "skipped" if not candidate else ("rule" if not scanned else "candidate")
+        overridden = bool(override and override.get("action") == "candidate")
+        if overridden:
+            # A human rejected the automatic skip: the commit is a candidate
+            # again and generation is forced past the rule/triage guards.
+            candidate = True
+            reason = "人工驳回跳过"
+            if override.get("reason"):
+                reason = f"{reason}：{override['reason']}"
+            scanned = True
+
+        stage = self._commit_stage(candidate, draft, generation, overridden)
+        if overridden:
+            candidate_kind = "candidate"
+        else:
+            candidate_kind = "skipped" if not candidate else ("rule" if not scanned else "candidate")
         if is_merge:
             skip_category = "merge"
+        elif overridden:
+            skip_category = ""
         elif not rule_candidate_value:
             skip_category = "noise"
         elif generation is not None and generation.get("status") == "skipped":
@@ -493,6 +516,10 @@ class AdrService:
             "ai_candidate": ai_candidate,
             "candidate": candidate,
             "candidate_kind": candidate_kind,
+            "overridden": overridden,
+            "override_reason": (override or {}).get("reason", ""),
+            "override_actor": (override or {}).get("actor", ""),
+            "override_at": (override or {}).get("updated_at", "") if override else "",
             "skip_reason": reason,
             "skip_category": skip_category,
             "change_type": change_type,
@@ -635,12 +662,14 @@ class AdrService:
             generation["source_ref"]: generation
             for generation in self.store.latest_commit_generations(member_id)
         }
+        overrides = self.store.list_commit_overrides(member_id)
         items = [
             self._scan_item(
                 commit,
                 scans.get(commit["sha"]),
                 drafts.get(commit["sha"]),
                 latest_generation.get(commit["sha"]),
+                overrides.get(commit["sha"]),
             )
             for commit in commits
         ]
@@ -860,6 +889,67 @@ class AdrService:
         )
         result["failures"] = failures
         return result
+
+    def override_commit(
+        self,
+        member: Any,
+        sha: str,
+        *,
+        action: str = "candidate",
+        reason: str = "",
+        actor: str = "",
+    ) -> dict[str, Any]:
+        """Reject (or restore) an automatic skip for one commit.
+
+        ``action=candidate`` puts the commit back in the candidate queue and
+        forces generation past the noise/AI-skip guards; ``action=skip`` removes
+        that override. Merge commits are refused: they carry no decision diff.
+        """
+        member_id = _member_id(member)
+        if action not in ("candidate", "skip"):
+            raise AdrServiceError(f"unknown override action: {action}")
+        repo_root = self._repo_root(member)
+        try:
+            commit = git_source.read_commit(repo_root, sha)
+        except git_source.AdrGitError as error:
+            raise AdrServiceError(str(error), status=400) from error
+        if commit.is_merge:
+            raise AdrServiceError("合并提交不能驳回：没有可生成的决定差异", status=400)
+        if action == "skip":
+            self.store.delete_commit_override(member_id, commit.sha)
+        else:
+            self.store.upsert_commit_override(
+                member_id=member_id,
+                sha=commit.sha,
+                action="candidate",
+                reason=reason,
+                actor=actor,
+            )
+        drafts = {
+            draft["source_ref"]: draft
+            for draft in self._decorate_drafts(self.store.commit_drafts(member_id))
+        }
+        generations = {
+            generation["source_ref"]: generation
+            for generation in self.store.latest_commit_generations(member_id)
+        }
+        subject = (commit.message or "").splitlines()[0] if commit.message else ""
+        item = self._scan_item(
+            {
+                "sha": commit.sha,
+                "subject": subject,
+                "author": commit.author,
+                "committed_at": commit.committed_at,
+                "files": commit.files,
+                "is_merge": commit.is_merge,
+                "significant": git_source.significant_files(commit.files),
+            },
+            self.store.get_scan(member_id, commit.sha),
+            drafts.get(commit.sha),
+            generations.get(commit.sha),
+            self.store.get_commit_override(member_id, commit.sha),
+        )
+        return {"member_id": member_id, "item": item}
 
     @staticmethod
     def _parse_triage(parsed: Any, shas: list[str]) -> dict[str, dict[str, Any]]:
@@ -1164,13 +1254,26 @@ class AdrService:
         force: bool = False,
         batch_id: str = "",
     ) -> dict[str, Any]:
+        member_key = _member_id(member)
+        if not force and str(source.get("kind") or "").strip() == "commit":
+            # A human "reject skip" override acts as force for this one commit:
+            # the rule filter and the AI-skip verdict must not block it again.
+            try:
+                sha = git_source.resolve_commit(
+                    self._repo_root(member), str(source.get("ref") or "HEAD").strip()
+                )
+            except git_source.AdrGitError:
+                sha = ""
+            if sha:
+                override = self.store.get_commit_override(member_key, sha)
+                if override is not None and override.get("action") == "candidate":
+                    force = True
         try:
             prepared = self.build_source(member, source, force=force)
         except AdrServiceError as error:
             if error.status != 409:
                 raise
             return self._skipped_generation(member, source, str(error), batch_id)
-        member_key = _member_id(member)
         if prepared["kind"] == "commit" and not force:
             scan = self.store.get_scan(member_key, prepared["ref"])
             if scan is not None and scan.get("ai_candidate") is False:

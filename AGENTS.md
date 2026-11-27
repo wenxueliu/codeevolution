@@ -117,7 +117,10 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
   候选判定（`--candidate` / `?candidate=`）、跳过原因（`--reason` / `?reason=`）过滤，
   日期正/倒序（`--order asc|desc`，表头「日期」可点击切换）与日期范围（`--since/--until`）。
   历史超过 20000 个提交时要求先缩小日期范围，避免给出
-  只覆盖部分历史的进度。草稿/生成列表单页上限由 `CODEEVOLUTION_ADR_LIST_LIMIT`
+  只覆盖部分历史的进度。已跳过（合并提交除外）支持**人工驳回**：驳回后恢复为候选（pending）、
+  生成时强制越过规则过滤与 AI 跳过判定，可重新生成，也可「恢复跳过」撤销（`adr override <sha>`
+  与 `POST /api/adr/commits/{sha}/override`，记录 reason/actor 与时间）。
+  草稿/生成列表单页上限由 `CODEEVOLUTION_ADR_LIST_LIMIT`
   控制（默认 5000，兼容旧名 `CODEHISTORY_ADR_LIST_LIMIT`），并支持 `offset` 翻页。
   支持单个生成、勾选批量生成（`adr gen --commits`）。
 - **生成**：`adr gen` 支持 `--commit`、`--file`、`--text`、`--history`、`--commits`；
@@ -148,7 +151,7 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
 
 所有状态机数据落在 `~/.codeevolution/adr.db`（`adr_prompts` / `adr_generations` /
 `adr_drafts` / `adr_draft_revisions` / `adr_templates` / `adr_commit_scans` /
-`adr_backtests`）。分析发布时仍会读取
+`adr_commit_overrides` / `adr_backtests`）。分析发布时仍会读取
 仓库已有 ADR 进入 Snapshot facts（`-s adr`）并执行 R1/R2 结构校验；旧 Snapshot 返回
 `available: false` 而不是报错。
 

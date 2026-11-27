@@ -358,11 +358,12 @@
                           <td :data-testid="`adr-commit-stage-${commit.sha}`"><span class="term-status adr-stage-badge" :class="`adr-stage-${adrCommitStageKey(commit.stage)}`" :title="adrCommitStageTitle(commit)">{{ adrCommitStageText(commit) }}</span></td>
                           <td>
                             <span class="term-status" :class="commit.candidate ? 'accepted' : 'rejected'" :title="adrCommitCandidateTitle(commit)">{{ adrCommitCandidateText(commit) }}</span>
-                            <small v-if="commit.change_type" class="adr-change-type">{{ adrChangeTypeText(commit.change_type) }}</small>
+                            <small v-if="commit.overridden" class="adr-change-type" :title="commit.override_reason || t('人工驳回跳过')">{{ t('人工驳回') }}</small>
+                            <small v-else-if="commit.change_type" class="adr-change-type">{{ adrChangeTypeText(commit.change_type) }}</small>
                           </td>
                           <td>
                             <span v-if="commit.is_merge" class="muted">{{ t('合并提交，不生成 ADR') }}</span>
-                            <span v-else-if="commit.generation_skip_reason && !commit.draft_id" class="muted">{{ commit.generation_skip_reason }}</span>
+                            <span v-else-if="commit.generation_skip_reason && !commit.draft_id && !commit.overridden" class="muted">{{ commit.generation_skip_reason }}</span>
                             <template v-else-if="!commit.scanned">
                               <span class="muted">{{ t('待 AI 分诊') }}</span>
                               <span v-if="commit.skip_reason" class="muted"> · {{ commit.skip_reason }}</span>
@@ -379,6 +380,24 @@
                           </td>
                           <td class="adr-row-actions">
                             <button class="secondary sm" type="button" :disabled="adrCommitGenerateDisabled(commit)" :title="adrCommitGenerateDisabled(commit) ? adrCommitStageText(commit) : ''" :data-testid="`adr-commit-generate-${commit.sha}`" @click="generateAdrCommit(commit)">{{ adrCommitGenerateLabel(commit) }}</button>
+                            <button
+                              v-if="adrCommitRejectable(commit)"
+                              class="secondary sm"
+                              type="button"
+                              :disabled="adrOverridingSha === commit.sha || adrBatchActive"
+                              :title="t('驳回自动跳过判定，把该提交恢复为候选后重新生成')"
+                              :data-testid="`adr-commit-reject-${commit.sha}`"
+                              @click="overrideAdrCommit(commit)"
+                            >{{ adrOverridingSha === commit.sha ? t('处理中...') : t('驳回') }}</button>
+                            <button
+                              v-else-if="commit.overridden"
+                              class="secondary sm"
+                              type="button"
+                              :disabled="adrOverridingSha === commit.sha || adrBatchActive"
+                              :title="t('恢复自动跳过判定')"
+                              :data-testid="`adr-commit-restore-${commit.sha}`"
+                              @click="overrideAdrCommit(commit, true)"
+                            >{{ adrOverridingSha === commit.sha ? t('处理中...') : t('恢复跳过') }}</button>
                             <button v-if="commit.draft_id" class="secondary sm" type="button" :data-testid="`adr-commit-view-${commit.sha}`" @click="viewAdrCommit(commit)">{{ t('查看') }}</button>
                             <button v-if="commit.draft_id" class="secondary sm" type="button" :disabled="!adrCommitEditable(commit) || adrEditSaving" :title="adrCommitEditable(commit) ? '' : t('已导出的 ADR 不能编辑；如需修改请重新生成草稿')" :data-testid="`adr-commit-edit-${commit.sha}`" @click="editAdrCommit(commit)">{{ t('编辑') }}</button>
                             <button class="secondary sm" type="button" :disabled="adrCommitBacktestDisabled(commit)" :data-testid="`adr-commit-backtest-${commit.sha}`" @click="backtestAdrCommit(commit)">{{ t('回测') }}</button>
@@ -1199,6 +1218,7 @@ export default {
       adrScanRunning: false, adrCommitFilterCandidates: true, adrCommitIncludeMerges: true, adrSelectedCommitShas: [], adrGeneratingSha: '',
       adrCandidateFilter: '', adrReasonFilter: '', adrCommitOrder: 'desc',
       adrPendingShas: [], adrPendingTotal: 0, adrPendingTruncated: false, adrCommitSelectionNote: '',
+      adrOverridingSha: '',
       adrDrafts: [], adrDraftsLoading: false, adrDraftsError: '',
       adrExportingId: '', adrDeletingId: '', adrExportState: { id: '', path: '', error: '' },
       adrDetail: null, adrDetailLoading: false, adrDetailError: '', adrBacktestingId: '', adrBacktestError: '',
@@ -1950,6 +1970,33 @@ export default {
       } else {
         const candidates = new Set(candidateShas)
         this.adrSelectedCommitShas = this.adrSelectedCommitShas.filter(sha => !candidates.has(sha))
+      }
+    },
+    adrCommitRejectable(commit) {
+      if (!commit || commit.is_merge || commit.overridden) return false
+      const stage = this.adrCommitStageKey(commit.stage)
+      return stage === 'skipped' && !commit.draft_id
+    },
+    async overrideAdrCommit(commit, restore = false) {
+      if (!commit?.sha || this.adrOverridingSha || this.adrBatchActive) return
+      this.adrOverridingSha = commit.sha
+      this.adrError = ''
+      this.adrCommitSelectionNote = ''
+      try {
+        await this.$api.request(`/api/adr/commits/${commit.sha}/override`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            snapshot_id: this.snapshotId,
+            action: restore ? 'skip' : 'candidate',
+            reason: restore ? '' : this.t('人工驳回跳过'),
+          }),
+        })
+        await this.loadAdrCommits()
+      } catch (err) {
+        this.adrError = this.adrErrorMessage(err, restore ? '恢复跳过失败' : '驳回跳过失败')
+      } finally {
+        this.adrOverridingSha = ''
       }
     },
     async generateAdrCommit(commit) {
