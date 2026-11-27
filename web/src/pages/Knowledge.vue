@@ -297,7 +297,7 @@
                     <label class="adr-field"><span>{{ t('起始日期（since）') }}</span><input v-model.trim="adrSince" type="date" data-testid="adr-commit-since" @change="resetAdrCommitPaging" /></label>
                     <label class="adr-field"><span>{{ t('结束日期（until）') }}</span><input v-model.trim="adrUntil" type="date" data-testid="adr-commit-until" @change="resetAdrCommitPaging" /></label>
                   </div>
-                  <p class="prompt-hint">{{ t('提交表格由规则过滤与 AI 分诊共同判定；勾选候选提交后批量生成，已跳过的提交需勾选“强制生成已跳过提交”。') }}</p>
+                  <p class="prompt-hint">{{ t('提交表格覆盖完整 git 历史；合并提交保留在表中并标记为已跳过，其余提交由规则过滤与 AI 分诊判定。勾选候选提交后批量生成，已跳过的提交需勾选“强制生成已跳过提交”。') }}</p>
                   <div class="adr-stage-filters" role="group" :aria-label="t('按状态过滤提交')" data-testid="adr-stage-filters">
                     <button
                       v-for="option in adrStageOptions"
@@ -326,14 +326,15 @@
                           <td class="adr-commit-subject">{{ commit.subject || '-' }}</td>
                           <td>{{ commit.author || '-' }}</td>
                           <td>{{ formatSnapshotTime(commit.committed_at) }}</td>
-                          <td :title="(commit.files || []).join('\n')">{{ (commit.files || []).length }}</td>
+                          <td :title="commit.is_merge ? t('合并提交不展开文件列表') : (commit.files || []).join('\n')">{{ commit.is_merge ? '—' : (commit.files || []).length }}</td>
                           <td :data-testid="`adr-commit-stage-${commit.sha}`"><span class="term-status adr-stage-badge" :class="`adr-stage-${adrCommitStageKey(commit.stage)}`" :title="adrCommitStageTitle(commit)">{{ adrCommitStageText(commit) }}</span></td>
                           <td>
                             <span class="term-status" :class="commit.candidate ? 'accepted' : 'rejected'" :title="adrCommitCandidateTitle(commit)">{{ adrCommitCandidateText(commit) }}</span>
                             <small v-if="commit.change_type" class="adr-change-type">{{ adrChangeTypeText(commit.change_type) }}</small>
                           </td>
                           <td>
-                            <span v-if="commit.generation_skip_reason && !commit.draft_id" class="muted">{{ commit.generation_skip_reason }}</span>
+                            <span v-if="commit.is_merge" class="muted">{{ t('合并提交，不生成 ADR') }}</span>
+                            <span v-else-if="commit.generation_skip_reason && !commit.draft_id" class="muted">{{ commit.generation_skip_reason }}</span>
                             <template v-else-if="!commit.scanned">
                               <span class="muted">{{ t('待 AI 分诊') }}</span>
                               <span v-if="commit.skip_reason" class="muted"> · {{ commit.skip_reason }}</span>
@@ -1623,7 +1624,7 @@ export default {
     adrChangeTypeText(changeType) {
       const labels = {
         bugfix: '缺陷修复', docs: '文档', test: '测试', lint: '规范检查', dependency: '依赖升级',
-        chore: '杂项', refactor: '重构', feature: '功能', architecture: '架构', unknown: '未知',
+        chore: '杂项', refactor: '重构', feature: '功能', architecture: '架构', merge: '合并', unknown: '未知',
       }
       return labels[changeType] ? this.t(labels[changeType]) : (changeType || '-')
     },
@@ -1662,6 +1663,7 @@ export default {
       return Boolean(commit?.draft_id) && !commit?.exported_path
     },
     adrCommitSelectable(commit) {
+      if (commit?.is_merge) return false
       return Boolean(commit?.candidate || this.adrForce)
     },
     adrCommitStageKey(stage) {

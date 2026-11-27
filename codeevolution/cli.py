@@ -300,7 +300,7 @@ def cmd_adr(args):
                     until=args.until,
                     offset=args.offset,
                     limit=args.limit,
-                    include_merges=args.include_merges,
+                    include_merges=not args.no_merges,
                     refresh=args.refresh,
                 )
             else:
@@ -310,7 +310,7 @@ def cmd_adr(args):
                     until=args.until,
                     offset=args.offset,
                     limit=args.limit,
-                    include_merges=args.include_merges,
+                    include_merges=not args.no_merges,
                     stage=getattr(args, "stage", "") or "",
                 )
             if args.json:
@@ -1491,7 +1491,10 @@ def main():
     commits.add_argument("--until", default="")
     commits.add_argument("--offset", type=int, default=0, help="Skip this many commits (paging)")
     commits.add_argument("--limit", type=int, default=50, help="Commits per page (max 100)")
-    commits.add_argument("--include-merges", action="store_true")
+    # Merges are listed and marked skipped by default; --no-merges hides them
+    # entirely, --include-merges is kept so existing scripts do not break.
+    commits.add_argument("--no-merges", action="store_true", help="Hide merge commits from the table")
+    commits.add_argument("--include-merges", action="store_true", help=argparse.SUPPRESS)
     commits.add_argument(
         "--stage",
         default="",

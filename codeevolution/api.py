@@ -175,7 +175,7 @@ class AdrCommitScanRequest(BaseModel):
     until: str = Field(default="", max_length=100)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=100)
-    include_merges: bool = False
+    include_merges: bool = True
     refresh: bool = False
     stage: str = Field(default="", max_length=40)
 
@@ -1960,7 +1960,7 @@ def list_adr_commits(
     until: str = Query("", max_length=100),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    include_merges: bool = Query(False),
+    include_merges: bool = Query(True),
     stage: str = Query("", max_length=40),
 ):
     member = _adr_member(snapshot_id, member_id)

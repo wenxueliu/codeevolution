@@ -211,6 +211,69 @@ def test_commit_generation_feeds_diff_and_skips_noise(tmp_path):
         assert forced_detail["generation"]["status"] == "succeeded"
 
 
+def _merge_repo(tmp_path):
+    """Two feature commits plus one ``--no-ff`` merge commit."""
+    repo = tmp_path / "merge-repo"
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "payments.py").write_text("def pay():\n    pass\n", encoding="utf-8")
+    _git(repo, "init")
+    _git(repo, "add", "app/payments.py")
+    _git(repo, "commit", "-m", "feat: add payment gateway")
+    base = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "app" / "refunds.py").write_text("def refund():\n    pass\n", encoding="utf-8")
+    _git(repo, "add", "app/refunds.py")
+    _git(repo, "commit", "-m", "feat: add refund flow")
+    _git(repo, "checkout", base)
+    _git(repo, "merge", "--no-ff", "feature", "-m", "Merge branch 'feature'")
+    total = int(subprocess.run(
+        ["git", "-C", str(repo), "rev-list", "--count", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip())
+    return repo, total
+
+
+def test_commit_table_lists_merges_as_skipped_without_triage(tmp_path):
+    repo, total = _merge_repo(tmp_path)
+    _repo, _store, _service, prompts, client = _wire(tmp_path, repo)
+    assert total == 3  # 2 feature commits + 1 merge
+
+    with client:
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        assert listing["total_all"] == total
+        assert sum(listing["counts"].values()) == total
+        merges = [item for item in listing["items"] if item["is_merge"]]
+        assert len(merges) == 1
+        merge = merges[0]
+        assert merge["stage"] == "skipped"
+        assert merge["candidate"] is False
+        assert merge["rule_candidate"] is False
+        assert merge["scanned"] is False
+        assert merge["skip_reason"] == "合并提交，不生成 ADR"
+        # The merge is counted as processed, so the progress bar still reaches
+        # the full history instead of stalling on a row nobody can generate.
+        assert listing["progress"]["total"] == total
+        assert listing["progress"]["processed"] == 1
+
+        scanned = client.post(
+            "/api/adr/commits/scan", json={"member_id": "member-1"}
+        ).json()
+        assert scanned["failures"] == 0
+        assert all(merge["sha"] not in prompt for prompt in prompts)
+        after = next(item for item in scanned["items"] if item["sha"] == merge["sha"])
+        assert after["stage"] == "skipped"
+
+        hidden = client.get(
+            "/api/adr/commits",
+            params={"member_id": "member-1", "include_merges": "false"},
+        ).json()
+        assert hidden["total_all"] == total - 1
+        assert not any(item["is_merge"] for item in hidden["items"])
+
+
 def test_prompts_are_versioned_per_service_and_source_kind(tmp_path):
     _repo, _store, _service, prompts, client = _setup(tmp_path)
 

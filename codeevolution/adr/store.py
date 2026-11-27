@@ -402,6 +402,37 @@ class AdrStore:
         return [decoded for row in rows if (decoded := self._decode_generation(row))]
 
     @_synchronized
+    def latest_commit_generations(self, member_id: str) -> list[dict[str, Any]]:
+        """One newest generation per commit sha, without a page cap.
+
+        The commit table maps every row to its latest generation.  Reusing the
+        paged ``list_generations`` capped the mapping at the newest N rows, so
+        commits generated earlier silently fell back to "pending" — and the
+        progress counts under-reported them.  This returns exactly one row per
+        source, so the mapping is complete at any history size.
+        """
+        rows = self._connection.execute(
+            """
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY source_ref ORDER BY created_at DESC, rowid DESC
+                ) AS _row_number
+                FROM adr_generations
+                WHERE member_id=? AND source_kind='commit'
+            ) WHERE _row_number=1
+            """,
+            (member_id,),
+        ).fetchall()
+        generations: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._decode_generation(row)
+            if item is None:
+                continue
+            item.pop("_row_number", None)
+            generations.append(item)
+        return generations
+
+    @_synchronized
     def count_generations(self, batch_id: str) -> dict[str, int]:
         rows = self._connection.execute(
             "SELECT status, COUNT(*) AS count FROM adr_generations WHERE batch_id=? GROUP BY status",
@@ -505,6 +536,26 @@ class AdrStore:
                 (max(1, min(int(limit), 500)),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    @_synchronized
+    def commit_drafts(self, member_id: str) -> list[dict[str, Any]]:
+        """One newest commit-sourced draft per source sha, without a page cap."""
+        rows = self._connection.execute(
+            """
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY source_ref ORDER BY created_at DESC, rowid DESC
+                ) AS _row_number
+                FROM adr_drafts
+                WHERE member_id=? AND source_kind='commit'
+            ) WHERE _row_number=1
+            """,
+            (member_id,),
+        ).fetchall()
+        return [
+            {key: value for key, value in dict(row).items() if key != "_row_number"}
+            for row in rows
+        ]
 
     @_synchronized
     def update_draft_status(self, draft_id: str, status: str) -> dict[str, Any] | None:
@@ -746,6 +797,25 @@ class AdrStore:
         data["reasons"] = _loads(data.pop("reasons_json", "[]"), [])
         data["evidence"] = _loads(data.pop("evidence_json", "[]"), [])
         return data
+
+    @_synchronized
+    def backtests_for(self, draft_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Backtests keyed by draft id, in chunks so large tables stay one query each."""
+        results: dict[str, dict[str, Any]] = {}
+        unique = list(dict.fromkeys(draft_id for draft_id in draft_ids if draft_id))
+        for start in range(0, len(unique), 500):
+            chunk = unique[start : start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._connection.execute(
+                f"SELECT * FROM adr_backtests WHERE draft_id IN ({placeholders})",
+                tuple(chunk),
+            ).fetchall()
+            for row in rows:
+                data = dict(row)
+                data["reasons"] = _loads(data.pop("reasons_json", "[]"), [])
+                data["evidence"] = _loads(data.pop("evidence_json", "[]"), [])
+                results[data["draft_id"]] = data
+        return results
 
     # ── draft review ─────────────────────────────────────────────────
 

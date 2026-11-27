@@ -58,6 +58,10 @@ MAX_COMMIT_PAGE = 100
 MAX_INDEXED_COMMITS = 20_000
 COMMIT_INDEX_TTL_SECONDS = 30
 TRIAGE_BATCH_SIZE = 12
+# Merge commits stay visible in the table (so the total matches git) but are
+# never ADR candidates: a merge carries no decision of its own, its diff would
+# be empty, and the underlying work is already covered by the merged commits.
+MERGE_SKIP_REASON = "合并提交，不生成 ADR"
 BACKTEST_VERDICTS = ("consistent", "partial", "contradicted", "unverifiable")
 COMMIT_STAGES = (
     "pending",
@@ -413,8 +417,18 @@ class AdrService:
         draft: dict[str, Any] | None,
         generation: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        rule_candidate = bool(commit["significant"])
-        if scan is None:
+        is_merge = bool(commit.get("is_merge"))
+        rule_candidate = bool(commit["significant"]) and not is_merge
+        if is_merge:
+            # A merge commit belongs to the table (the total must match
+            # ``git rev-list --count``) but never becomes an ADR candidate, so
+            # it is reported as skipped without spending a triage call.
+            candidate, reason = False, MERGE_SKIP_REASON
+            ai_candidate = None
+            change_type = "merge"
+            scanned = False
+            rule_candidate_value = False
+        elif scan is None:
             if rule_candidate:
                 candidate, reason = True, ""
             else:
@@ -443,6 +457,7 @@ class AdrService:
             "author": commit["author"],
             "committed_at": commit["committed_at"],
             "files": commit["files"],
+            "is_merge": is_merge,
             "rule_candidate": rule_candidate_value,
             "ai_candidate": ai_candidate,
             "candidate": candidate,
@@ -523,7 +538,7 @@ class AdrService:
         until: str = "",
         offset: int = 0,
         limit: int = 50,
-        include_merges: bool = False,
+        include_merges: bool = True,
         stage: str = "",
     ) -> dict[str, Any]:
         """One page of the full history plus global status counts and progress.
@@ -533,6 +548,9 @@ class AdrService:
         so the progress bar does not change when the user pages or filters.
         ``processed`` counts every commit that left ``pending`` (drafted,
         triaged-skip or later) but not queued/generating ones.
+
+        Merge commits are listed by default and marked ``skipped`` with
+        ``MERGE_SKIP_REASON``; pass ``include_merges=False`` to hide them.
         """
         member_id = _member_id(member)
         if stage and stage not in COMMIT_STAGES:
@@ -564,16 +582,17 @@ class AdrService:
             else []
         )
         scans = {scan["sha"]: scan for scan in self.store.list_scans(member_id)}
+        # One row per commit source, not the newest N rows: a repo whose whole
+        # history was generated has more generations than any page cap, and a
+        # truncated list would silently turn old drafts back into "pending".
         drafts = {
             draft["source_ref"]: draft
-            for draft in self.list_drafts(member_id, limit=500)
-            if draft["source_kind"] == "commit"
+            for draft in self._decorate_drafts(self.store.commit_drafts(member_id))
         }
-        latest_generation: dict[str, dict[str, Any]] = {}
-        for generation in self.store.list_generations(member_id=member_id, limit=500):
-            if generation["source_kind"] != "commit":
-                continue
-            latest_generation.setdefault(generation["source_ref"], generation)
+        latest_generation = {
+            generation["source_ref"]: generation
+            for generation in self.store.latest_commit_generations(member_id)
+        }
         items = [
             self._scan_item(
                 commit,
@@ -622,11 +641,16 @@ class AdrService:
         until: str = "",
         offset: int = 0,
         limit: int = 50,
-        include_merges: bool = False,
+        include_merges: bool = True,
         refresh: bool = False,
         stage: str = "",
     ) -> dict[str, Any]:
-        """Rule-filter obvious noise, then ask the model to triage the page."""
+        """Rule-filter obvious noise, then ask the model to triage the page.
+
+        Merge commits are skipped deterministically and never sent to the model:
+        they stay in the table as ``skipped`` with a fixed reason, so paging and
+        totals stay exact without spending triage calls.
+        """
         member_id = _member_id(member)
         repo_root = self._repo_root(member)
         listing = self.list_commits(
@@ -639,7 +663,9 @@ class AdrService:
             stage=stage,
         )
         pending = [
-            item for item in listing["items"] if refresh or not item["triaged"]
+            item
+            for item in listing["items"]
+            if not item["is_merge"] and (refresh or not item["triaged"])
         ]
         for item in pending:
             if not item["rule_candidate"]:
@@ -1358,10 +1384,11 @@ class AdrService:
             )
         return {"member_id": member_id, "sources": rows}
 
-    def list_drafts(self, member_id: str = "", limit: int = 100) -> list[dict[str, Any]]:
-        drafts = self.store.list_drafts(member_id, limit)
+    def _decorate_drafts(self, drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Attach the backtest summary in one batched query, not per draft."""
+        backtests = self.store.backtests_for([draft["id"] for draft in drafts])
         for draft in drafts:
-            backtest = self.store.get_backtest(draft["id"])
+            backtest = backtests.get(draft["id"])
             draft["backtest"] = (
                 {
                     "verdict": backtest["verdict"],
@@ -1372,6 +1399,9 @@ class AdrService:
                 else None
             )
         return drafts
+
+    def list_drafts(self, member_id: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        return self._decorate_drafts(self.store.list_drafts(member_id, limit))
 
     def get_draft(self, draft_id: str) -> dict[str, Any]:
         draft = self.store.get_draft(draft_id)

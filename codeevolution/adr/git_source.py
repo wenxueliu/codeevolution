@@ -13,7 +13,9 @@ MAX_DIFF_CHARS = 60_000
 MAX_COMMIT_SUBJECT = 4_000
 # One git log record per commit: \x1e starts a record, \x1f separates fields,
 # so subjects and file lists never need a separate git process per commit.
-_LOG_FORMAT = "%x1e%H%x1f%an%x1f%aI%x1f%s"
+# ``%P`` carries the parents: merge commits stay in the table (they are marked
+# as skipped, not hidden), so the caller needs to recognise them.
+_LOG_FORMAT = "%x1e%H%x1f%an%x1f%aI%x1f%P%x1f%s"
 
 _NOISE_PATTERNS = (
     re.compile(r"^docs?/", re.IGNORECASE),
@@ -123,9 +125,13 @@ def count_commits(
     *,
     since: str = "",
     until: str = "",
-    include_merges: bool = False,
+    include_merges: bool = True,
 ) -> int:
-    """Number of commits a listing would page through, without reading patches."""
+    """Number of commits a listing would page through, without reading patches.
+
+    Merges are counted by default so the total matches ``git rev-list --count``;
+    the table lists them as skipped instead of hiding them.
+    """
     args = ["rev-list", "--count"]
     if not include_merges:
         args.append("--no-merges")
@@ -150,13 +156,16 @@ def _parse_log_records(output: str) -> list[dict]:
         sha = header[0].strip()
         if not sha:
             continue
+        parents = header[3].split() if len(header) > 3 and header[3].strip() else []
         files = [line.strip() for line in lines[1:] if line.strip()]
         commits.append(
             {
                 "sha": sha,
                 "author": header[1] if len(header) > 1 else "",
                 "committed_at": header[2] if len(header) > 2 else "",
-                "subject": header[3] if len(header) > 3 else "",
+                "subject": header[4] if len(header) > 4 else "",
+                "parents": len(parents),
+                "is_merge": len(parents) > 1,
                 "files": files,
                 "significant": significant_files(files),
             }
@@ -171,13 +180,14 @@ def list_commits(
     until: str = "",
     limit: int = 20,
     offset: int = 0,
-    include_merges: bool = False,
+    include_merges: bool = True,
 ) -> list[dict]:
     """Newest-first commit candidates with their changed files.
 
     One ``git log`` call answers a whole page (or the whole history when the
     caller asks for ``count_commits()`` entries), so the web table can page
-    through every commit without one process per row.
+    through every commit without one process per row.  Merge commits carry
+    ``is_merge=True`` and an empty file list; callers mark them as skipped.
     """
     limit = max(1, min(int(limit), 100_000))
     offset = max(0, int(offset))
