@@ -1896,6 +1896,21 @@ def get_knowledge_report(
         raise HTTPException(424, str(error)) from error
 
 
+@app.get("/api/rule-map")
+def get_rule_map(snapshot_id: str = Query(..., min_length=1)):
+    """Deterministic interface -> group -> service rule map for one snapshot."""
+    from .application.rule_map_service import RuleMapService
+
+    try:
+        return RuleMapService(
+            get_snapshot_query_service(), get_explanation_snapshot_store()
+        ).build(snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
+
+
 @app.post("/api/knowledge", status_code=202)
 def start_llm_knowledge_extraction(request: KnowledgeExtractionRequest):
     """Start or reuse the durable Phase 3 extraction job for a snapshot."""

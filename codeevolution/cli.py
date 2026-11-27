@@ -1030,6 +1030,91 @@ def cmd_interface_contract(args):
             runtime.close()
 
 
+def _render_rule_map_markdown(result: dict, level: str = "group") -> str:
+    summary = result.get("summary") or {}
+    lines = [
+        f"# 业务规则地图 · {result.get('repository_snapshot_id', '')}",
+        "",
+        f"- 接口：{summary.get('interface_count', 0)}，"
+        f"有规则：{summary.get('interfaces_with_rules', 0)}，"
+        f"覆盖率：{round(float(summary.get('coverage') or 0) * 100, 1)}%",
+        f"- 分组：{summary.get('group_count', 0)}，"
+        f"规则：{summary.get('rule_count', 0)}，"
+        f"共享：{summary.get('shared_rule_count', 0)}",
+        "",
+    ]
+    if level == "interface":
+        for interface in result.get("interfaces") or []:
+            if not interface.get("rule_count"):
+                continue
+            lines.append(
+                f"## {interface['method']} {interface['path']} · "
+                f"{interface['rule_count']} 条规则 · {interface.get('handler', '')}"
+            )
+            lines.append("")
+            for rule in interface.get("rules") or []:
+                lines.append(f"- [{rule.get('rule_type', 'business')}] {rule.get('text', '')}")
+            lines.append("")
+    else:
+        for group in result.get("groups") or []:
+            lines.append(
+                f"## {group['group_key']} · {group['interface_count']} 个接口 / "
+                f"{group['rule_count']} 条规则 / 覆盖率 "
+                f"{round(float(group.get('coverage') or 0) * 100, 1)}%"
+            )
+            lines.append("")
+            for rule in group.get("rules") or []:
+                role = "共享" if rule.get("role") == "shared" else "本地"
+                sources = "、".join((rule.get("source_interfaces") or [])[:3]) or "-"
+                lines.append(f"- [{role}][{rule.get('rule_type', 'business')}] {rule.get('text', '')} — {sources}")
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def cmd_rule_map(args):
+    """Aggregate existing interface business rules into resource groups."""
+    runtime = None
+    store = None
+    try:
+        if args.server:
+            _status, result, _headers = _request_json(
+                args.server,
+                "GET",
+                "/api/rule-map?" + urlencode({
+                    "snapshot_id": args.snapshot_id,
+                    "level": args.level,
+                }),
+            )
+        else:
+            from .application.rule_map_service import RuleMapService
+            from .infrastructure.explanation_snapshot_store import ExplanationSnapshotStore
+
+            runtime = SnapshotRuntime(analysis_data_dir())
+            path = analysis_data_dir() / "api-explanations.db"
+            if path.exists():
+                store = ExplanationSnapshotStore(path)
+            result = RuleMapService(runtime.snapshot_queries, store).build(
+                args.snapshot_id, level=args.level
+            )
+        content = (
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+            if args.format == "json"
+            else _render_rule_map_markdown(result, args.level)
+        )
+        if args.output:
+            _write_text_output(Path(args.output), content)
+            print(f"Wrote rule map to {args.output}")
+        else:
+            print(content, end="")
+    except (KeyError, RuntimeError, ValueError, OSError) as error:
+        _fail(str(error), 3)
+    finally:
+        if store is not None:
+            store.close()
+        if runtime is not None:
+            runtime.close()
+
+
 def _terms_local_context():
     from .application.term_service import TermRecognitionService
     from .infrastructure.term_store import TermStore
@@ -1827,6 +1912,28 @@ def main():
     )
     p.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
     p.set_defaults(handler=cmd_interface_contract)
+
+    # Business-rule map (interface rules -> resource groups)
+    p = subparsers.add_parser(
+        "rule-map",
+        help="Aggregate existing interface business rules into resource groups",
+    )
+    p.add_argument("--snapshot-id", required=True, help="Published repository snapshot ID")
+    p.add_argument(
+        "--level",
+        choices=("interface", "group"),
+        default="group",
+        help="Projection level (default: group)",
+    )
+    p.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="Output format (default: markdown)",
+    )
+    p.add_argument("--output", "-o", default="", help="Write to a file instead of stdout")
+    p.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
+    p.set_defaults(handler=cmd_rule_map)
 
     # evidence-backed terminology
     p = subparsers.add_parser("terms", help="Extract and review terminology from a snapshot")

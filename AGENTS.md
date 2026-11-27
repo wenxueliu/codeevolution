@@ -64,6 +64,9 @@ codeevolution flow --view-id <view-id> --service <member-id> --entry-id <entry-i
 # 公开接口契约（SDK/Library）：显式导出 + 无内部调用方的可达根
 codeevolution interface-contract --snapshot-id <id> [-o interface-contract] [--format json]
 
+# 业务规则地图：接口规则 → 资源分组 → 服务级规则（基于已生成的 API 解释）
+codeevolution rule-map --snapshot-id <id> [--level group|interface] [--format markdown|json]
+
 # Web 控制台
 codeevolution web                    # http://0.0.0.0:8765
 ```
@@ -96,7 +99,7 @@ codeevolution web                    # http://0.0.0.0:8765
 | 8 | 权限模型 | | x | | | x | `knowledge --snapshot-id <id> -s auth` |
 | 9 | 热力图 | | x | x | | | `knowledge --snapshot-id <id> -s heatmap` |
 | 10 | 业务描述 | x | | x | | | `knowledge --snapshot-id <id> -s business --llm` |
-| 11 | 业务规则 | x | | | x | | `knowledge --snapshot-id <id> -s rules --llm` |
+| 11 | 业务规则 | x | | | x | | `knowledge --snapshot-id <id> -s rules --llm` / `rule-map` |
 | 12 | 错误目录 | | | | x | x | `knowledge --snapshot-id <id> -s errors --llm` |
 | 13 | 状态机 | x | | | x | | `knowledge --snapshot-id <id> -s states --llm` |
 | 14 | 统一服务拓扑 | | x | x | | x | `topology --view-id <id>` |
@@ -242,6 +245,7 @@ curl -s http://127.0.0.1:8765/api/repos | head -c 200
 - **CodeGraph SQLite Schema**：`.codegraph/codegraph.db` 三表 `nodes` / `edges` / `files`；关键查询模式见 `codeevolution/codegraph_reader.py` 的 `CodeGraphReader`。
 - **架构设计**：`docs/design.md`。
 - **公开接口契约**：`design/public-interface-contract.md`（SDK/Library 公开面判定、业务描述与规则）。
+- **业务规则分层**：`design/business-rule-hierarchy.md`（接口→分组→服务→跨服务的聚合模型与实施阶段）。
 
 ## Git 提交规则
 

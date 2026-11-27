@@ -401,3 +401,31 @@ def test_interface_contract_export_returns_one_document_per_entry():
     assert "## Public Surface" in document["content"]
     assert "declared export" in document["content"]
     assert "客户端" in document["content"]
+
+
+def test_rule_map_route_projects_interface_rules(monkeypatch):
+    class Queries:
+        def api_contract(self, snapshot_id):
+            return {"endpoints": [{
+                "method": "GET", "path": "/order/list", "handler": "OrderController.list",
+                "file": "OrderController.java", "line": 10,
+            }]}
+
+    class Store:
+        def list_snapshots_for_repository_snapshot(self, snapshot_id, key):
+            return [SimpleNamespace(id="explanation", entry_node_key="node")]
+
+        def get_node(self, snapshot_id, node_key):
+            return SimpleNamespace(
+                aggregate_explanation={"business_rules": [{"rule": "订单金额必须大于 0"}]},
+                local_explanation={},
+            )
+
+    monkeypatch.setattr(api, "get_snapshot_query_service", lambda: Queries())
+    monkeypatch.setattr(api, "get_explanation_snapshot_store", lambda: Store())
+
+    payload = api.get_rule_map("snap-1")
+
+    assert payload["summary"]["rule_count"] == 1
+    assert payload["groups"][0]["group_key"] == "order"
+    assert payload["groups"][0]["rules"][0]["text"] == "订单金额必须大于 0"

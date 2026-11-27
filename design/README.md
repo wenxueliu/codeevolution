@@ -8,6 +8,7 @@
 | 文档 | 对应能力 | 状态 |
 |------|----------|------|
 | [public-interface-contract.md](public-interface-contract.md) | #19 公开接口契约（SDK/Library 非 HTTP 公开面） | 已实现（v2） |
+| [business-rule-hierarchy.md](business-rule-hierarchy.md) | 业务规则分层聚合（接口→分组→服务→跨服务） | Phase 1 已实现 |
 
 ## 约定
 

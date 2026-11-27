@@ -946,6 +946,10 @@
           </template>
         </template>
 
+        <template v-else-if="activeSection === 'rule_map'">
+          <RuleMap :snapshot-id="snapshotId" :repo-name="repoName" />
+        </template>
+
         <template v-else-if="activeSection === 'external_dependencies'">
           <div class="metrics">
             <div class="metric">{{ activeData.categories ?? 0 }} <small>{{ t('个分类') }}</small></div>
@@ -1127,6 +1131,7 @@
 import UiState from '../components/UiState.vue'
 import CallChainTree from '../components/CallChainTree.vue'
 import LayerRules from '../components/LayerRules.vue'
+import RuleMap from '../components/RuleMap.vue'
 import TopologyGraph from '../components/TopologyGraph.vue'
 import { locale, t } from '../i18n.js'
 
@@ -1140,6 +1145,7 @@ const SECTIONS = [
   ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
   ['adr', 'ADR 决策记录', '阶段1', '架构决策记录（MADR 4.0）与 R1/R2 结构校验'],
   ['interface_contract', '公开接口', '阶段1', '显式导出，或没有被本服务其他接口调用的可达根——外部可访问面'],
+  ['rule_map', '业务规则地图', '阶段3', '接口业务规则按资源分组汇总为服务级规则；证据可追溯。'],
   ['page_api_map', '页面接口映射', '阶段1', '路由页面与触发的 HTTP API 端点'],
   ['terms', '术语识别', '阶段1', '从 API 契约、实体定义和前端页面生成按可信度排序的业务术语'],
   ['module_topology', '模块拓扑', '阶段1', '业务域与实体划分、依赖关系与耦合度'],
@@ -1191,7 +1197,7 @@ const ADR_COMMIT_STAGE_LABELS = Object.freeze({
 })
 
 export default {
-  components: { UiState, CallChainTree, LayerRules, TopologyGraph },
+  components: { UiState, CallChainTree, LayerRules, RuleMap, TopologyGraph },
   props: { repoName: String },
   data() {
     // With createWebHashHistory the route query is part of the hash
