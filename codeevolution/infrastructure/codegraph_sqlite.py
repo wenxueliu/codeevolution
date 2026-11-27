@@ -16,10 +16,12 @@ Schema reference (CodeGraph 0.9.x):
 
 import json
 import sqlite3
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
 from ..domain.knowledge import CallTarget, EntryPointDef, FunctionDef
+from ..domain.sequence import CONTAINER_KINDS, render_api_sequence_diagrams
 from ..platform import ensure_supported_storage_path, sqlite_readonly_uri
 
 HTTP_DECORATORS = {
@@ -69,6 +71,20 @@ TEST_PATTERNS = (
     "test_",
     "_test.",
 )
+
+# Kept below SQLite's default variable limit for batched IN (...) queries.
+_QUERY_CHUNK = 500
+
+
+def _chunks(values: Iterable[Any], size: int = _QUERY_CHUNK) -> Iterator[list[Any]]:
+    chunk: list[Any] = []
+    for value in values:
+        chunk.append(value)
+        if len(chunk) >= size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
 
 
 class _SQLiteCodeGraphQueries:
@@ -675,30 +691,93 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
         return [by_id[node] for node in node_ids if node in by_id]
 
     def api_call_chain_mermaid(self, node_id: str, limit: int = 30) -> str:
-        """Generate Mermaid sequence diagram DSL for the API call chain."""
-        edges = self.get_call_chain(node_id, max_depth=8)[:limit]
-        if not edges:
-            return "sequenceDiagram\n    participant N0\n    Note over N0: No downstream calls"
+        """Generate a class-aware Mermaid sequence diagram for the API chain.
 
-        alias_map: dict[str, str] = {}
-        lines = ["sequenceDiagram"]
+        Lifelines are the owning classes (or the source file for module-level
+        functions) and messages carry the called method names.
+        """
+        nodes = self.api_call_chain(node_id, limit)
+        return render_api_sequence_diagrams(self, {node_id: (node_id, nodes)}).get(
+            node_id, ""
+        )
 
-        # Register unique participants
-        for edge in edges:
-            for name in (edge["from"], edge["to"]):
-                if name not in alias_map:
-                    alias_map[name] = f"N{len(alias_map)}"
-                    safe = name.replace('"', "'").replace("\n", " ")
-                    lines.append(f"    participant {alias_map[name]} as {safe}")
+    def call_chain_owners(self, node_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Map callable nodes to their nearest containing class/type.
 
-        # Draw call messages
-        for edge in edges:
-            from_alias = alias_map[edge["from"]]
-            to_alias = alias_map[edge["to"]]
-            lines.append(f"    {from_alias}->>+{to_alias}: calls")
-            lines.append(f"    {to_alias}-->>-{from_alias}: returns")
+        Walks CodeGraph ``contains`` edges upwards so a nested function resolves
+        to the class that ultimately owns it.  Module-level callables have no
+        entry in the result and render as source-file lifelines.
+        """
+        wanted = [str(item) for item in dict.fromkeys(node_ids) if item]
+        if not wanted:
+            return {}
+        kinds = ", ".join(f"'{kind}'" for kind in sorted(CONTAINER_KINDS))
+        owners: dict[str, dict[str, Any]] = {}
+        for chunk in _chunks(wanted):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.query(
+                f"""WITH RECURSIVE up(origin, current, depth) AS (
+                        SELECT n.id, n.id, 0 FROM nodes n WHERE n.id IN ({placeholders})
+                        UNION ALL
+                        SELECT up.origin, e.source, up.depth + 1
+                        FROM up JOIN edges e ON e.kind = 'contains' AND e.target = up.current
+                        WHERE up.depth < 8
+                    )
+                    SELECT up.origin, up.depth, s.id AS owner_id, s.name AS owner_name,
+                           s.qualified_name AS owner_qualified_name, s.kind AS owner_kind,
+                           s.file_path AS owner_file_path
+                    FROM up JOIN nodes s ON s.id = up.current
+                    WHERE s.kind IN ({kinds})
+                    ORDER BY up.origin, up.depth""",
+                chunk,
+            )
+            for row in rows:
+                origin = str(row["origin"])
+                if origin in owners:
+                    continue
+                owners[origin] = {
+                    "id": row["owner_id"],
+                    "name": row["owner_name"],
+                    "qualified_name": row["owner_qualified_name"],
+                    "kind": row["owner_kind"],
+                    "file_path": row["owner_file_path"],
+                }
+        return owners
 
-        return "\n".join(lines)
+    def call_edges_between(self, node_ids: Iterable[str]) -> list[dict[str, Any]]:
+        """Call edges whose source and target both belong to ``node_ids``."""
+        wanted = [str(item) for item in dict.fromkeys(node_ids) if item]
+        if not wanted:
+            return []
+        wanted_set = set(wanted)
+        edges: dict[tuple[str, str], dict[str, Any]] = {}
+        for chunk in _chunks(wanted):
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.query(
+                f"""SELECT source, target, line FROM edges
+                    WHERE kind = 'calls' AND source IN ({placeholders})""",
+                chunk,
+            )
+            for row in rows:
+                source = str(row["source"])
+                target = str(row["target"])
+                if target not in wanted_set:
+                    continue
+                line = row["line"]
+                previous = edges.get((source, target))
+                if previous is not None:
+                    old_line = previous.get("line")
+                    old_key = old_line if isinstance(old_line, int) and old_line > 0 else 1 << 30
+                    new_key = line if isinstance(line, int) and line > 0 else 1 << 30
+                    if old_key <= new_key:
+                        continue
+                edges[(source, target)] = {
+                    "source": source,
+                    "target": target,
+                    "line": line,
+                }
+        return list(edges.values())
+
 
     def type_schema(self, type_name: str) -> dict[str, Any] | None:
         rows = self.query(

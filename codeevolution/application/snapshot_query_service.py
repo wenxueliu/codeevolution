@@ -20,6 +20,10 @@ class SnapshotQueryService:
 
     def __init__(self, resolver: SnapshotBundleResolver):
         self.resolver = resolver
+        # Read-boundary projections re-render legacy sequence diagrams.  The
+        # renderer is deterministic for a frozen snapshot, so keep its output
+        # in memory instead of rebuilding it on every knowledge read.
+        self._sequence_cache: dict[tuple[str, str, str], str] = {}
 
     def open(self, snapshot_id: str, *, member_id: str | None = None) -> RepositorySnapshotHandle:
         return self.resolver.open(snapshot_id, member_id=member_id)
@@ -450,7 +454,7 @@ class SnapshotQueryService:
         endpoints = api.get("endpoints") if isinstance(api, dict) else None
         expected_count = api.get("endpoint_count", 0) if isinstance(api, dict) else 0
         if isinstance(endpoints, list) and len(endpoints) >= expected_count:
-            return api
+            return self._with_api_sequence(handle, api)
 
         contract = ApiContractExtractor(handle.graph).extract()
         serialized = [_serialize_api_endpoint(item) for item in contract.endpoints]
@@ -479,6 +483,65 @@ class SnapshotQueryService:
                 for name, items in contract.resource_groups.items()
             },
         }
+
+    def _with_api_sequence(self, handle: RepositorySnapshotHandle, api: dict) -> dict:
+        """Project class-aware sequence diagrams for older snapshots.
+
+        The diagram is a pure function of the frozen call chain, class
+        containment and call edges, so an extractor change can be served
+        without republishing the immutable facts.  Endpoints whose diagram
+        already carries the current marker are left untouched.
+        """
+        from ..domain.sequence import is_current_sequence, render_api_sequence_diagrams
+
+        endpoints = api.get("endpoints") if isinstance(api, dict) else None
+        if not isinstance(endpoints, list) or not endpoints:
+            return api
+        graph = getattr(handle, "graph", None)
+        if graph is None or not hasattr(graph, "call_chain_owners"):
+            return api
+
+        chains: dict[int, tuple[str, list[dict]]] = {}
+        rendered: dict[int, str] = {}
+        cache = getattr(self, "_sequence_cache", None)
+        if cache is None:
+            cache = self._sequence_cache = {}
+        snapshot_id = str(getattr(getattr(handle, "snapshot", None), "id", ""))
+        for index, endpoint in enumerate(endpoints):
+            if not isinstance(endpoint, dict):
+                continue
+            if is_current_sequence(endpoint.get("call_chain_mermaid")):
+                continue
+            chain = [
+                node
+                for node in endpoint.get("call_chain") or []
+                if isinstance(node, dict) and node.get("id")
+            ]
+            if not chain:
+                continue
+            entry = str(endpoint.get("node_id") or chain[0]["id"])
+            cache_key = (snapshot_id, _api_endpoint_key(endpoint), entry)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                rendered[index] = cached
+            else:
+                chains[index] = (entry, chain)
+        if chains:
+            try:
+                missing = render_api_sequence_diagrams(graph, chains)
+            except Exception:
+                missing = {}
+            for index, text in missing.items():
+                entry = chains[index][0]
+                cache_key = (snapshot_id, _api_endpoint_key(endpoints[index]), entry)
+                cache[cache_key] = text
+            rendered.update(missing)
+        if not rendered:
+            return api
+        updated = list(endpoints)
+        for index, text in rendered.items():
+            updated[index] = {**endpoints[index], "call_chain_mermaid": text}
+        return {**api, "endpoints": updated}
 
     def call_tree_children(self, snapshot_id: str, node_id: str) -> dict:
         with self.open(snapshot_id) as handle:

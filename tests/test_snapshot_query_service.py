@@ -12,8 +12,8 @@ from codeevolution.application.snapshot_query_service import (
     SnapshotQueryService,
     _project_api_node_ids,
 )
-from codeevolution.domain.knowledge import ApiContract, ApiEndpoint
 from codeevolution.domain.analysis_snapshot import AttemptStatus
+from codeevolution.domain.knowledge import ApiContract, ApiEndpoint
 from codeevolution.infrastructure.analysis_snapshot_sqlite import AnalysisSnapshotSQLiteStore
 from codeevolution.infrastructure.artifact_store_fs import FileSystemArtifactStore
 from codeevolution.infrastructure.audit_store import AuditStore
@@ -185,3 +185,66 @@ def test_knowledge_cli_requires_a_snapshot_selector(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["codeevolution", "knowledge", "--snapshot-id", "frozen-1", "--section", "api"])
     cli.main()
     assert json.loads(capsys.readouterr().out) == {"api_contract": {"endpoints": []}}
+
+
+def _class_sequence_graph(path: Path) -> None:
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+        CREATE TABLE nodes (id TEXT, kind TEXT, name TEXT, qualified_name TEXT,
+          file_path TEXT, language TEXT, start_line INTEGER, end_line INTEGER, signature TEXT,
+          visibility TEXT, is_exported INTEGER, is_async INTEGER, is_static INTEGER, decorators TEXT);
+        CREATE TABLE edges (id TEXT, source TEXT, target TEXT, kind TEXT, metadata TEXT,
+          line INTEGER, col INTEGER, provenance TEXT);
+        CREATE TABLE files (path TEXT, content_hash TEXT, language TEXT, size INTEGER);
+        INSERT INTO nodes VALUES ('ctrl','class','OrderController','app::OrderController',
+          'app/controller.py','python',1,20,'', '',1,0,0,'[]');
+        INSERT INTO nodes VALUES ('handler','method','create','app::OrderController::create',
+          'app/controller.py','python',3,9,'', '',1,0,0,'[]');
+        INSERT INTO nodes VALUES ('svc','class','OrderService','app::OrderService',
+          'app/service.py','python',1,20,'', '',1,0,0,'[]');
+        INSERT INTO nodes VALUES ('place','method','place','app::OrderService::place',
+          'app/service.py','python',3,9,'', '',1,0,0,'[]');
+        INSERT INTO edges VALUES ('c1','ctrl','handler','contains','{}',3,1,'');
+        INSERT INTO edges VALUES ('c2','svc','place','contains','{}',3,1,'');
+        INSERT INTO edges VALUES ('e1','handler','place','calls','{}',5,1,'');
+        INSERT INTO files VALUES ('app/controller.py','hash','python',42);
+        """)
+
+
+def test_snapshot_api_contract_projects_class_aware_sequence_diagrams(tmp_path):
+    from codeevolution.infrastructure.codegraph_sqlite import SQLiteCodeGraphRepository
+
+    db_path = tmp_path / "g" / "codegraph.db"
+    _class_sequence_graph(db_path)
+    with SQLiteCodeGraphRepository(str(db_path)) as repository:
+        chain = repository.api_call_chain("handler")
+        api = {
+            "endpoint_count": 1,
+            "endpoints": [{
+                "method": "GET",
+                "path": "/orders",
+                "handler": "OrderController.create",
+                "node_id": "handler",
+                "file": "app/controller.py",
+                "line": 3,
+                "call_chain": chain,
+                "call_chain_mermaid": (
+                    "sequenceDiagram\n"
+                    "    participant N0 as create\n"
+                    "    N0->>+N0: calls"
+                ),
+            }],
+        }
+        service = SnapshotQueryService.__new__(SnapshotQueryService)
+        handle = SimpleNamespace(graph=repository)
+
+        projected = service._with_api_sequence(handle, api)
+        mermaid = projected["endpoints"][0]["call_chain_mermaid"]
+        assert "% sequence-v2" in mermaid
+        assert 'participant N0 as OrderController' in mermaid
+        assert 'participant N1 as OrderService' in mermaid
+        assert "N0->>+N1: place()" in mermaid
+
+        # A current diagram is served untouched (no graph work on every read).
+        assert service._with_api_sequence(handle, projected) is projected

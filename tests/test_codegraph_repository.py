@@ -255,3 +255,73 @@ def test_http_handler_endpoints_reconstruct_from_seeded_repo(tmp_path):
         "format": "application/json",
     }
     assert by_path["/api/workflows"]["request_body"] is None
+
+
+def _seed_sequence_graph(tmp_path: Path) -> str:
+    database = tmp_path / "codegraph.db"
+    _empty_codegraph(database)
+    connection = sqlite3.connect(database)
+    connection.executemany(
+        """INSERT INTO nodes(
+               id, kind, name, qualified_name, file_path, language, start_line, end_line,
+               is_exported, is_async, is_static
+           ) VALUES (?, ?, ?, ?, ?, 'python', ?, ?, 0, 0, 0)""",
+        [
+            ("ctrl", "class", "OrderController", "app.controller::OrderController",
+             "app/controller.py", 1, 30),
+            ("handler", "method", "create", "app.controller::OrderController::create",
+             "app/controller.py", 3, 9),
+            ("svc", "class", "OrderService", "app.service::OrderService", "app/service.py", 1, 30),
+            ("place", "method", "place", "app.service::OrderService::place", "app/service.py", 3, 8),
+            ("prepare", "method", "prepare", "app.service::OrderService::prepare",
+             "app/service.py", 10, 20),
+            # Nested function -- ownership must walk up to OrderService.
+            ("normalize", "function", "normalize",
+             "app.service::OrderService::prepare::normalize", "app/service.py", 12, 14),
+            ("format_id", "function", "format_id", "app.util::format_id", "app/util.py", 1, 4),
+        ],
+    )
+    connection.executemany(
+        "INSERT INTO edges(id, source, target, kind, line) VALUES (?, ?, ?, ?, ?)",
+        [
+            ("c1", "ctrl", "handler", "contains", 3),
+            ("c2", "svc", "place", "contains", 3),
+            ("c3", "svc", "prepare", "contains", 10),
+            ("c4", "prepare", "normalize", "contains", 12),
+            ("e1", "handler", "place", "calls", 5),
+            ("e2", "handler", "normalize", "calls", 6),
+            ("e3", "place", "format_id", "calls", 4),
+        ],
+    )
+    connection.commit()
+    connection.close()
+    return str(database)
+
+
+def test_api_call_chain_mermaid_uses_class_lifelines(tmp_path):
+    db = _seed_sequence_graph(tmp_path)
+    with SQLiteCodeGraphRepository(db) as repository:
+        owners = repository.call_chain_owners(["handler", "place", "normalize", "format_id"])
+        assert owners["handler"]["name"] == "OrderController"
+        assert owners["place"]["name"] == "OrderService"
+        # A nested function belongs to the class that ultimately contains it.
+        assert owners["normalize"]["name"] == "OrderService"
+        assert "format_id" not in owners
+
+        mermaid = repository.api_call_chain_mermaid("handler")
+
+    assert 'participant N0 as OrderController' in mermaid
+    assert 'participant N1 as OrderService' in mermaid
+    assert 'participant N2 as util' in mermaid
+    assert "N0->>+N1: place()" in mermaid
+    assert "N1->>+N2: format_id()" in mermaid
+    assert "N0->>+N1: normalize()" in mermaid
+    assert "as create" not in mermaid
+
+
+def test_api_call_chain_mermaid_notes_leaf_handlers(tmp_path):
+    db = _seed_sequence_graph(tmp_path)
+    with SQLiteCodeGraphRepository(db) as repository:
+        mermaid = repository.api_call_chain_mermaid("normalize")
+    assert 'participant N0 as OrderService' in mermaid
+    assert "Note over N0: No downstream calls" in mermaid
