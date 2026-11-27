@@ -140,6 +140,12 @@ def merge_knowledge_reports(reports: list[tuple[str, dict]], include_llm: bool =
         "api_contract": {"endpoint_count": len(api_endpoints), "endpoints": api_endpoints},
         "interface_contract": {
             "entry_count": len(interface_entries),
+            "declared_count": sum(
+                1 for item in interface_entries if item.get("public_surface") == "declared"
+            ),
+            "inferred_count": sum(
+                1 for item in interface_entries if item.get("public_surface") == "root"
+            ),
             "entries": interface_entries,
         },
         "module_topology": {

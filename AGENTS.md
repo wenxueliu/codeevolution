@@ -61,6 +61,9 @@ codeevolution topology --view-id <view-id>
 codeevolution impact --view-id <view-id> --service <member-id>
 codeevolution flow --view-id <view-id> --service <member-id> --entry-id <entry-id>
 
+# 公开接口契约（SDK/Library）：显式导出 + 无内部调用方的可达根
+codeevolution interface-contract --snapshot-id <id> [-o interface-contract] [--format json]
+
 # Web 控制台
 codeevolution web                    # http://0.0.0.0:8765
 ```
@@ -79,7 +82,7 @@ codeevolution web                    # http://0.0.0.0:8765
 完整命令以 `codeevolution --help` 与 `codeevolution/cli.py` 为准；旧的
 `backfill`、`update`、演进 `status` 和 `init-all` 已移除。
 
-## 能力矩阵（18 维 × 5 角色，兼作命令速查）
+## 能力矩阵（19 维 × 5 角色，兼作命令速查）
 
 | # | 能力 | 产品 | 架构 | 开发 | 测试 | 运维 | 命令 |
 |---|------|:---:|:---:|:---:|:---:|:---:|------|
@@ -101,6 +104,7 @@ codeevolution web                    # http://0.0.0.0:8765
 | 16 | 全通道流程追踪 | | x | x | x | x | `flow --view-id <id> --service <id>` |
 | 17 | 跨服务实体对齐 | | x | x | | | Web/API Graph View |
 | 18 | 服务发现+健康检查 | | | | | x | `discover` / `check` |
+| 19 | 公开接口契约 (SDK/Library) | x | x | x | x | | `knowledge --snapshot-id <id> -s interface` / `interface-contract` |
 
 ADR 的核心是**用模型生成**，不是读取已有文档：
 
@@ -237,6 +241,7 @@ curl -s http://127.0.0.1:8765/api/repos | head -c 200
 - **模块结构**：见 `codeevolution/` 源码（各文件职责以 docstring 为准），用 CodeGraph / 文件树检索。
 - **CodeGraph SQLite Schema**：`.codegraph/codegraph.db` 三表 `nodes` / `edges` / `files`；关键查询模式见 `codeevolution/codegraph_reader.py` 的 `CodeGraphReader`。
 - **架构设计**：`docs/design.md`。
+- **公开接口契约**：`docs/public-interface-contract.md`（SDK/Library 公开面判定、业务描述与规则）。
 
 ## Git 提交规则
 

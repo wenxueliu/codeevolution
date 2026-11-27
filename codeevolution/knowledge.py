@@ -268,11 +268,17 @@ class KnowledgeExtractor:
 
     @staticmethod
     def _serialize_interface(data):
+        # The public surface is already the filtered contract, so it is served
+        # whole.  The cap is a payload safety valve, never silent truncation.
+        limit = 1000
         return {
             "version": INTERFACE_VERSION,
             "entry_count": len(data),
+            "declared_count": sum(1 for item in data if item["public_surface"] == "declared"),
+            "inferred_count": sum(1 for item in data if item["public_surface"] == "root"),
             "file_count": len({item["file_path"] for item in data}),
-            "entries": data[:200],
+            "truncated": len(data) > limit,
+            "entries": data[:limit],
         }
 
     @staticmethod

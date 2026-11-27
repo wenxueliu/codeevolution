@@ -360,3 +360,44 @@ def test_cli_without_command_keeps_exit_contract(monkeypatch, capsys):
         cli.main()
     assert raised.value.code == 1
     assert "usage: codeevolution" in capsys.readouterr().out
+
+
+def test_interface_contract_export_returns_one_document_per_entry():
+    class Queries:
+        def interface_contract_export(self, snapshot_id):
+            assert snapshot_id == "repo-snapshot"
+            return [{
+                "name": "Client",
+                "kind": "class",
+                "qualified_name": "Client",
+                "module": "pkg.client",
+                "file_path": "pkg/client.py",
+                "line": 3,
+                "signature": "class Client",
+                "docstring": "A client.",
+                "public_surface": "declared",
+                "declared_by": "pkg/__init__.py",
+                "member_count": 2,
+                "caller_count": 0,
+                "internal_callers": [],
+                "calls": [{"name": "connect", "file": "pkg/client.py", "line": 9, "call_line": 20}],
+                "business_description": {"summary_zh": "客户端"},
+                "business_rules": [],
+            }]
+
+    app = create_app({"snapshot_query_service": Queries()})
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/interface-contract/export",
+            params={"repository_snapshot_id": "repo-snapshot", "format": "markdown"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["entry_count"] == 1
+    document = payload["documents"][0]
+    assert document["filename"].endswith(".md")
+    assert document["content"].startswith("# Client (class)")
+    assert "## Public Surface" in document["content"]
+    assert "declared export" in document["content"]
+    assert "客户端" in document["content"]

@@ -369,6 +369,81 @@ class SnapshotQueryService:
                 raise RuntimeError("snapshot facts are unavailable")
             return self._complete_api_contract(handle, facts)
 
+    def interface_contract(self, snapshot_id: str) -> dict:
+        """Return the classified public surface for an SDK/library snapshot."""
+        with self.open(snapshot_id) as handle:
+            facts = handle.snapshot.facts
+            if facts is None:
+                raise RuntimeError("snapshot facts are unavailable")
+            return self._with_interface_contract(handle, facts)["interface_contract"]
+
+    def interface_contract_export(self, snapshot_id: str) -> list[dict]:
+        """Per-entry contract facts for the Markdown/JSON exporter.
+
+        The section payload stays lean; the export adds each entry's direct
+        downstream calls (the contract's "what does it hand off to" evidence)
+        and, when the snapshot already has LLM knowledge, the matching
+        business description and rules.
+        """
+        with self.open(snapshot_id) as handle:
+            facts = handle.snapshot.facts
+            if facts is None:
+                raise RuntimeError("snapshot facts are unavailable")
+            facts = self._with_interface_contract(handle, facts)
+            contract = facts["interface_contract"]
+            descriptions = _business_descriptions_by_name(facts.get("business_descriptions"))
+            rules = _business_rules_by_name(facts.get("business_rules"))
+            entries = []
+            for entry in contract.get("entries") or []:
+                node_id = entry.get("node_id") or ""
+                calls: list[dict] = []
+                if node_id:
+                    try:
+                        rows = handle.graph.get_callee_rows(node_id, limit=20)
+                    except Exception:
+                        rows = []
+                    calls = [
+                        {
+                            "name": row.get("name") or "",
+                            "qualified_name": row.get("qualified_name") or "",
+                            "file": row.get("file_path") or "",
+                            "line": row.get("start_line") or 0,
+                            "call_line": row.get("call_line") or 0,
+                        }
+                        for row in rows
+                    ]
+                members: list[dict] = []
+                if entry.get("kind") == "class" and entry.get("qualified_name"):
+                    try:
+                        symbols = handle.graph.symbols_in_file(entry["file_path"])
+                    except Exception:
+                        symbols = []
+                    prefix = entry["qualified_name"] + "::"
+                    members = [
+                        {
+                            "name": row.get("name") or "",
+                            "signature": row.get("signature") or "",
+                            "line": row.get("start_line") or 0,
+                        }
+                        for row in symbols
+                        if row.get("kind") == "method"
+                        and (row.get("qualified_name") or "").startswith(prefix)
+                        and not (row.get("name") or "").startswith("_")
+                    ][:50]
+                names = {entry.get("name"), entry.get("qualified_name")}
+                entries.append(
+                    {
+                        **entry,
+                        "calls": calls,
+                        "members": members,
+                        "business_description": _first_match(descriptions, names),
+                        "business_rules": [
+                            item for name in names for item in rules.get(name, [])
+                        ],
+                    }
+                )
+            return entries
+
     def _complete_api_contract(self, handle: RepositorySnapshotHandle, facts: dict) -> dict:
         projected = _project_api_node_ids(facts)
         api = projected.get("api_contract") or {}
@@ -487,3 +562,38 @@ def _api_endpoint_key(endpoint: dict) -> str:
             str(endpoint.get("handler") or ""),
         )
     )
+
+
+def _business_descriptions_by_name(value) -> dict[str, dict]:
+    """Index optional LLM business descriptions by both simple and qualified name."""
+    if not isinstance(value, list):
+        return {}
+    index: dict[str, dict] = {}
+    for item in value:
+        if not isinstance(item, dict) or item.get("error"):
+            continue
+        for key in ("function_name", "qualified_name", "name"):
+            name = item.get(key)
+            if isinstance(name, str) and name:
+                index.setdefault(name, item)
+    return index
+
+
+def _business_rules_by_name(value) -> dict[str, list[dict]]:
+    if not isinstance(value, list):
+        return {}
+    index: dict[str, list[dict]] = {}
+    for item in value:
+        if not isinstance(item, dict) or item.get("error"):
+            continue
+        name = item.get("function") or item.get("function_name") or item.get("qualified_name")
+        if isinstance(name, str) and name:
+            index.setdefault(name, []).append(item)
+    return index
+
+
+def _first_match(index: dict[str, dict], names: set) -> dict | None:
+    for name in sorted(name for name in names if isinstance(name, str) and name):
+        if name in index:
+            return index[name]
+    return None

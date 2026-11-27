@@ -880,6 +880,156 @@ def _render_api_contract_markdown(document: dict) -> str:
     )
 
 
+def _interface_contract_document(entry: dict) -> dict:
+    """Keep the exported contract narrower than the knowledge section."""
+    return {
+        "name": entry.get("name") or "",
+        "kind": entry.get("kind") or "",
+        "module": entry.get("module") or "",
+        "file": entry.get("file_path") or "",
+        "line": entry.get("line") or 0,
+        "signature": entry.get("signature") or "",
+        "docstring": entry.get("docstring") or "",
+        "public_surface": entry.get("public_surface") or "",
+        "declared_by": entry.get("declared_by") or "",
+        "member_count": entry.get("member_count"),
+        "members": entry.get("members") or [],
+        "caller_count": entry.get("caller_count") or 0,
+        "internal_callers": entry.get("internal_callers") or [],
+        "calls": entry.get("calls") or [],
+        "feature_explanation": _interface_feature_explanation(entry),
+        "business_description": entry.get("business_description"),
+        "business_rules": entry.get("business_rules") or [],
+    }
+
+
+def _interface_feature_explanation(entry: dict) -> str:
+    kind = entry.get("kind") or "symbol"
+    name = entry.get("qualified_name") or entry.get("name") or ""
+    module = entry.get("module") or ""
+    if entry.get("public_surface") == "declared":
+        surface = f"declared by `{entry.get('declared_by')}`" if entry.get("declared_by") else "declared"
+    else:
+        surface = "an inferred reachability root (no non-test caller in this service)"
+    return (
+        f"`{name}` is a public {kind} of module `{module}`; it is {surface}. "
+        f"{len(entry.get('calls') or [])} direct downstream call(s) and "
+        f"{entry.get('caller_count') or 0} internal call site(s) are recorded."
+    )
+
+
+def _render_interface_contract_markdown(document: dict) -> str:
+    def block(value) -> str:
+        return "```json\n" + json.dumps(value, indent=2, ensure_ascii=False) + "\n```"
+
+    title = f"{document['name']} ({document['kind']})"
+    surface = "declared export" if document["public_surface"] == "declared" else "inferred root"
+    callers = document.get("internal_callers") or []
+    caller_lines = "\n".join(
+        f"- `{item.get('name')}` at `{item.get('file_path')}:{item.get('line')}`"
+        for item in callers
+    ) or "- none"
+    members = document.get("members") or []
+    member_lines = "\n".join(
+        f"- `{item.get('name')}` — `{' '.join(str(item.get('signature') or item.get('name')).split())}` (line {item.get('line')})"
+        for item in members
+    ) or "- none"
+    calls = document.get("calls") or []
+    call_lines = "\n".join(
+        f"- `{item.get('name')}` at `{item.get('file')}:{item.get('line')}`"
+        for item in calls
+    ) or "- none"
+    rules = document.get("business_rules") or []
+    rule_lines = "\n".join(
+        f"- {item.get('description_zh') or item.get('description_en') or item.get('condition') or item}"
+        for item in rules
+    ) or "_Not generated._"
+    description = document.get("business_description") or {}
+    business = (
+        description.get("summary_zh") or description.get("summary_en")
+        or "_Not generated._"
+    )
+    docstring = document.get("docstring") or "_Not documented in source._"
+    return (
+        f"# {title}\n\n"
+        "## Public Surface\n\n"
+        f"- Module: `{document['module']}`\n"
+        f"- Source: `{document['file']}:{document['line']}`\n"
+        f"- Surface: `{surface}`\n"
+        f"- Declared by: `{document['declared_by'] or '-'}`\n"
+        f"- Internal call sites: {document['caller_count']}\n"
+        f"{caller_lines}\n\n"
+        "## Interface Contract\n\n"
+        "### Signature\n\n"
+        f"```\n{document['signature'] or document['name']}\n```\n\n"
+        "### Docstring\n\n"
+        f"{docstring}\n\n"
+        "### Public Methods\n\n"
+        f"{member_lines}\n\n"
+        "### Direct Calls\n\n"
+        f"{call_lines}\n\n"
+        "## Feature Explanation\n\n"
+        f"{document['feature_explanation']}\n\n"
+        "## Business Description\n\n"
+        f"{business}\n\n"
+        "## Business Rules\n\n"
+        f"{rule_lines}\n"
+    )
+
+
+def _interface_filename(document: dict, index: int, extension: str) -> str:
+    kind = _filename_part(document.get("kind") or "symbol")
+    name = _filename_part(document.get("name") or "interface")
+    return f"{index:04d}-{kind}-{name}.{extension}"
+
+
+def cmd_interface_contract(args):
+    """Export one contract document per public interface entry (SDK surface)."""
+    runtime = None
+    try:
+        if args.server:
+            _status, result, _headers = _request_json(
+                args.server,
+                "GET",
+                "/api/interface-contract/export?" + urlencode({
+                    "repository_snapshot_id": args.snapshot_id,
+                    "format": "json" if args.format == "json" else "markdown",
+                }),
+            )
+            documents = result.get("documents") or []
+        else:
+            runtime = SnapshotRuntime(analysis_data_dir())
+            entries = runtime.snapshot_queries.interface_contract_export(args.snapshot_id)
+            documents = [
+                _interface_contract_document(entry)
+                for entry in entries
+                if isinstance(entry, dict)
+            ]
+        if not isinstance(documents, list):
+            raise CLIContractError("snapshot interface contract is invalid", 5)
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        extension = "json" if args.format == "json" else "md"
+        for index, document in enumerate(documents, start=1):
+            filename = document.get("filename") or _interface_filename(document, index, extension)
+            content = document.get("content")
+            if content is None:
+                content = (
+                    json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+                    if args.format == "json"
+                    else _render_interface_contract_markdown(document)
+                )
+            _write_text_output(output_dir / filename, content)
+        print(f"Exported {len(documents)} public interface contract(s) to {output_dir}")
+    except CLIContractError as error:
+        _fail(str(error), error.code)
+    except (KeyError, RuntimeError, ValueError, OSError) as error:
+        _fail(str(error), 3)
+    finally:
+        if runtime is not None:
+            runtime.close()
+
+
 def _terms_local_context():
     from .application.term_service import TermRecognitionService
     from .infrastructure.term_store import TermStore
@@ -1656,6 +1806,27 @@ def main():
     )
     p.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
     p.set_defaults(handler=cmd_api_contract)
+
+    # Public interface (SDK/library) contract export
+    p = subparsers.add_parser(
+        "interface-contract",
+        help="Export one contract file per public interface entry from a snapshot",
+    )
+    p.add_argument("--snapshot-id", required=True, help="Published repository snapshot ID")
+    p.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="File format (default: markdown)",
+    )
+    p.add_argument(
+        "--output-dir",
+        "-o",
+        default="interface-contract",
+        help="Directory for one file per entry (default: ./interface-contract)",
+    )
+    p.add_argument("--server", default="", help="Optional CodeEvolution HTTP server URL")
+    p.set_defaults(handler=cmd_interface_contract)
 
     # evidence-backed terminology
     p = subparsers.add_parser("terms", help="Extract and review terminology from a snapshot")

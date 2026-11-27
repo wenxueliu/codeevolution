@@ -918,18 +918,28 @@
         </template>
 
         <template v-else-if="activeSection === 'interface_contract'">
-          <UiState v-if="!activeData.entries?.length" kind="empty" :title="t('该 Snapshot 未识别到公开接口')" :message="t('公开接口指顶层导出函数与类的公开方法，非 HTTP 面。')" />
+          <div class="interface-heading">
+            <p class="muted">{{ t('公开接口 = 显式导出（包入口 __init__）+ 无内部调用方的可达根；SDK 业务逻辑提取以此为准。') }}</p>
+            <button class="secondary sm" data-testid="interface-contract-export" :disabled="exporting || !snapshotId" @click="exportInterfaceContract">{{ exporting ? t('导出中...') : t('导出公开接口契约') }}</button>
+          </div>
+          <UiState v-if="!activeData.entries?.length" kind="empty" :title="t('该 Snapshot 未识别到公开接口')" :message="t('公开接口指显式导出的符号，以及没有被本服务其他接口调用的公共函数与方法。')" />
           <template v-else>
             <div class="metrics">
               <div class="metric">{{ activeData.entry_count ?? 0 }} <small>{{ t('个公开入口') }}</small></div>
+              <div class="metric">{{ activeData.declared_count ?? 0 }} <small>{{ t('个显式导出') }}</small></div>
+              <div class="metric">{{ activeData.inferred_count ?? 0 }} <small>{{ t('个推断根') }}</small></div>
               <div class="metric">{{ activeData.file_count ?? 0 }} <small>{{ t('个文件') }}</small></div>
             </div>
-            <div class="table-wrap"><table><thead><tr><th>{{ t('名称') }}</th><th>{{ t('类型') }}</th><th>{{ t('签名') }}</th><th>{{ t('语言') }}</th><th>{{ t('文件') }}</th></tr></thead><tbody>
+            <div class="table-wrap"><table><thead><tr><th>{{ t('名称') }}</th><th>{{ t('类型') }}</th><th>{{ t('签名') }}</th><th>{{ t('来源') }}</th><th>{{ t('内部调用方') }}</th><th>{{ t('文件') }}</th></tr></thead><tbody>
               <tr v-for="row in activeData.entries" :key="row.qualified_name || `${row.name}@${row.file_path}`">
-                <td><b>{{ row.name }}</b></td>
-                <td>{{ row.kind }}</td>
+                <td><b>{{ row.name }}</b><br><small v-if="row.module" class="muted">{{ row.module }}</small></td>
+                <td>{{ row.kind }}<small v-if="row.member_count != null" class="muted"> · {{ t('{count} 个方法', { count: row.member_count }) }}</small></td>
                 <td><code>{{ row.signature || row.qualified_name }}</code></td>
-                <td>{{ row.language }}</td>
+                <td>
+                  <span class="surface-badge" :class="row.public_surface">{{ row.public_surface === 'declared' ? t('显式导出') : t('推断根') }}</span>
+                  <br><small v-if="row.declared_by" class="muted">{{ row.declared_by }}</small>
+                </td>
+                <td>{{ row.caller_count || 0 }}</td>
                 <td><code>{{ row.file_path }}:{{ row.line }}</code></td>
               </tr>
             </tbody></table></div>
@@ -1129,7 +1139,7 @@ function snapshotIdFromRoute(route) {
 const SECTIONS = [
   ['api_contract', 'API 契约', '阶段1', '路由、方法、处理函数与参数'],
   ['adr', 'ADR 决策记录', '阶段1', '架构决策记录（MADR 4.0）与 R1/R2 结构校验'],
-  ['interface_contract', '公开接口', '阶段1', '导出的公共函数与类的公开方法——外部可访问面'],
+  ['interface_contract', '公开接口', '阶段1', '显式导出，或没有被本服务其他接口调用的可达根——外部可访问面'],
   ['page_api_map', '页面接口映射', '阶段1', '路由页面与触发的 HTTP API 端点'],
   ['terms', '术语识别', '阶段1', '从 API 契约、实体定义和前端页面生成按可信度排序的业务术语'],
   ['module_topology', '模块拓扑', '阶段1', '业务域与实体划分、依赖关系与耦合度'],
@@ -2767,6 +2777,19 @@ export default {
       } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('导出 API 契约失败') }
       finally { this.exporting = false }
     },
+    async exportInterfaceContract() {
+      if (!this.snapshotId || this.exporting) return
+      this.exporting = true; this.promptError = ''
+      try {
+        const data = await this.$api.get('/api/interface-contract/export', { repository_snapshot_id: this.snapshotId, format: 'markdown' })
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url; link.download = `interface-contract-${this.snapshotId}.json`
+        link.click(); URL.revokeObjectURL(url)
+      } catch (err) { this.promptError = (err.body && (err.body.detail || err.body.message)) || err.message || this.t('导出公开接口契约失败') }
+      finally { this.exporting = false }
+    },
     async loadBatchStatus() {
       if (!this.snapshotId) return
       try {
@@ -3281,6 +3304,10 @@ button:disabled { opacity: .55; cursor: wait; }
 .metric { display: inline-block; color: #e94560; font-size: 27px; font-weight: 700; margin-bottom: 16px; }
 .metric small { color: #888; font-size: 12px; font-weight: 400; }
 .metric.danger { color: #c0392b; }
+.interface-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.surface-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; background: #eef1f6; color: #55637a; font-size: 11px; }
+.surface-badge.declared { background: #e6f4ea; color: #1f7a3d; }
+.surface-badge.root { background: #fff3e0; color: #8a5a00; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
 .detail-card { border: 1px solid #eee; padding: 13px; border-radius: 6px; }
 .detail-card h3 { font-size: 14px; margin-bottom: 5px; }

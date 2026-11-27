@@ -2960,6 +2960,51 @@ def export_api_explanations(
     }
 
 
+@app.get("/api/interface-contract/export")
+def export_interface_contract(
+    repository_snapshot_id: str = Query(..., min_length=1),
+    format: str = Query("markdown", pattern="^(markdown|json)$"),
+):
+    """Export one contract document per public interface entry (SDK surface)."""
+    queries = get_snapshot_query_service()
+    try:
+        entries = queries.interface_contract_export(repository_snapshot_id)
+    except KeyError as error:
+        raise HTTPException(404, "repository snapshot not found") from error
+    except RuntimeError as error:
+        raise HTTPException(424, str(error)) from error
+    # Reuse the CLI exporter so the HTTP and file-system outputs cannot drift.
+    from .cli import (
+        _interface_contract_document,
+        _interface_filename,
+        _render_interface_contract_markdown,
+    )
+
+    extension = "json" if format == "json" else "md"
+    documents = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        document = _interface_contract_document(entry)
+        content = (
+            json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+            if format == "json"
+            else _render_interface_contract_markdown(document)
+        )
+        documents.append(
+            {
+                "filename": _interface_filename(document, len(documents) + 1, extension),
+                "content": content,
+            }
+        )
+    return {
+        "repository_snapshot_id": repository_snapshot_id,
+        "format": format,
+        "entry_count": len(documents),
+        "documents": documents,
+    }
+
+
 @app.get("/api/api-explanations/current")
 def current_api_explanation(
     repo: str = Query(""), member: str = Query(""), api_key: str = Query(...),

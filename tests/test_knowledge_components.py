@@ -9,6 +9,7 @@ from codeevolution.analysis.knowledge.layer_rules import LayerRuleExtractor
 from codeevolution.analysis.knowledge.module_topology import ModuleTopologyExtractor
 from codeevolution.analysis.knowledge.report_builder import KnowledgeReportBuilder
 from codeevolution.analysis.knowledge.semantic import SemanticExtractor
+from codeevolution.knowledge import KnowledgeExtractor
 
 
 class QueryStub:
@@ -174,3 +175,124 @@ def test_interface_contract_extractor_keeps_only_the_public_surface():
     assert entries[0]["node_id"] == "n1"
     assert entries[0]["qualified_name"] == "src/pkg/client.py::create_client"
     assert entries[0]["signature"] == "create_client(url: str) -> Client"
+
+
+class DeclaredExportStub:
+    """A package __init__ that re-exports a class and a function."""
+
+    def package_entry_imports(self):
+        return [{
+            "file_path": "pkg/__init__.py",
+            "signature": "from .core import (\n    Client, create_client as build,\n)",
+            "start_line": 1,
+        }]
+
+    def symbols_in_file(self, file_path):
+        if file_path != "pkg/core.py":
+            return []
+        return [
+            {"id": "c1", "kind": "class", "name": "Client", "qualified_name": "Client",
+             "file_path": file_path, "language": "python", "start_line": 3,
+             "signature": "class Client", "docstring": "A client."},
+            {"id": "f1", "kind": "function", "name": "create_client",
+             "qualified_name": "create_client", "file_path": file_path,
+             "language": "python", "start_line": 12,
+             "signature": "create_client(url: str) -> Client", "docstring": ""},
+            {"id": "f2", "kind": "function", "name": "internal", "qualified_name": "internal",
+             "file_path": file_path, "language": "python", "start_line": 20},
+        ]
+
+    def functions(self):
+        raise AssertionError("declared exports must win over inference")
+
+    def caller_edges(self):
+        return [{
+            "callee_id": "f1", "caller_id": "f2", "caller_name": "internal",
+            "caller_qualified_name": "internal", "caller_file": "pkg/core.py",
+            "caller_line": 20, "call_line": 25,
+        }]
+
+
+def test_interface_contract_prefers_declared_package_exports():
+    entries = InterfaceContractExtractor(DeclaredExportStub()).extract()
+
+    assert [item["name"] for item in entries] == ["Client", "build"]
+    assert {item["public_surface"] for item in entries} == {"declared"}
+    assert entries[0]["declared_by"] == "pkg/__init__.py"
+    assert entries[0]["module"] == "pkg.core"
+    # Declared exports stay public even when the package uses them internally.
+    assert entries[1]["caller_count"] == 1
+
+
+class RootSourceStub:
+    def functions(self):
+        return [
+            {"name": "root", "kind": "function", "language": "python",
+             "file_path": "pkg/api.py", "start_line": 1, "node_id": "root",
+             "qualified_name": "root", "signature": "root()"},
+            {"name": "helper", "kind": "function", "language": "python",
+             "file_path": "pkg/api.py", "start_line": 5, "node_id": "helper",
+             "qualified_name": "helper", "signature": "helper()"},
+            {"name": "nested", "kind": "function", "language": "python",
+             "file_path": "pkg/api.py", "start_line": 9, "node_id": "nested",
+             "qualified_name": "root::nested", "signature": "nested()"},
+        ]
+
+    def caller_edges(self):
+        return [{
+            "callee_id": "helper", "caller_id": "root", "caller_name": "root",
+            "caller_qualified_name": "root", "caller_file": "pkg/api.py",
+            "caller_line": 1, "call_line": 6,
+        }]
+
+    def node_kind(self, qualified_name):
+        return "function" if qualified_name == "root" else None
+
+
+def test_interface_contract_keeps_only_call_graph_roots():
+    entries = InterfaceContractExtractor(RootSourceStub()).extract()
+
+    assert [item["name"] for item in entries] == ["root"]
+    assert entries[0]["public_surface"] == "root"
+    assert entries[0]["caller_count"] == 0
+
+
+class InstantiatedClassStub:
+    def functions(self):
+        return [
+            {"name": "execute", "kind": "method", "language": "python",
+             "file_path": "pkg/service.py", "start_line": 4, "node_id": "m1",
+             "qualified_name": "Service::execute", "signature": "execute(self)"},
+        ]
+
+    def caller_edges(self):
+        return []
+
+    def node_kind(self, qualified_name):
+        return "class" if qualified_name == "Service" else None
+
+    def instantiation_edges(self):
+        return [{
+            "class_name": "Service", "class_qualified_name": "Service",
+            "caller_name": "build", "caller_qualified_name": "build",
+            "caller_file": "pkg/app.py", "caller_line": 3, "call_line": 3,
+        }]
+
+
+def test_interface_contract_drops_methods_of_internally_instantiated_classes():
+    assert InterfaceContractExtractor(InstantiatedClassStub()).extract() == []
+
+
+def test_interface_contract_serialization_keeps_every_entry():
+    entries = [
+        {"name": f"entry_{index}", "kind": "function", "file_path": f"pkg/{index}.py",
+         "public_surface": "root"}
+        for index in range(250)
+    ]
+
+    payload = KnowledgeExtractor._serialize_interface(entries)
+
+    assert payload["entry_count"] == 250
+    assert len(payload["entries"]) == 250
+    assert payload["truncated"] is False
+    assert payload["inferred_count"] == 250

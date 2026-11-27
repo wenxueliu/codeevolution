@@ -889,6 +889,72 @@ class SQLiteCodeGraphRepository(_SQLiteCodeGraphQueries):
                ORDER BY file_path, start_line"""
         )
 
+    def package_entry_imports(self) -> list[dict[str, Any]]:
+        """Relative imports declared by package entry modules.
+
+        A Python library declares its public surface by re-exporting names
+        from the package ``__init__.py``.  CodeGraph keeps the import
+        statement text (including the imported names) in ``signature``.
+        """
+        return self.query(
+            """SELECT file_path, signature, start_line
+               FROM nodes
+               WHERE kind = 'import'
+                 AND (file_path LIKE '%/__init__.py' OR file_path = '__init__.py')
+               ORDER BY file_path, start_line"""
+        )
+
+    def symbols_in_file(self, file_path: str) -> list[dict[str, Any]]:
+        """Every declared symbol in one file, including constants."""
+        return self.query(
+            """SELECT id, kind, name, qualified_name, file_path, language,
+                      start_line, end_line, signature, docstring,
+                      visibility, is_exported
+               FROM nodes
+               WHERE file_path = ?
+                 AND kind IN ('class', 'function', 'method', 'constant', 'variable')
+               ORDER BY start_line""",
+            [file_path],
+        )
+
+    def node_kind(self, qualified_name: str) -> str | None:
+        """Kind of the node whose qualified name matches exactly."""
+        row = self.conn.execute(
+            "SELECT kind FROM nodes WHERE qualified_name = ? LIMIT 1",
+            (qualified_name,),
+        ).fetchone()
+        return row["kind"] if row else None
+
+    def caller_edges(self) -> list[dict[str, Any]]:
+        """All ``calls`` edges with the caller's identity.
+
+        The bounded ``get_callers`` query is per-node; surfacing the whole
+        edge set lets the interface contract classify every candidate in one
+        pass instead of one query per function.
+        """
+        return self.query(
+            """SELECT e.target AS callee_id, e.line AS call_line,
+                      n.id AS caller_id, n.name AS caller_name,
+                      n.qualified_name AS caller_qualified_name,
+                      n.file_path AS caller_file, n.start_line AS caller_line
+               FROM edges e
+               JOIN nodes n ON n.id = e.source
+               WHERE e.kind = 'calls'"""
+        )
+
+    def instantiation_edges(self) -> list[dict[str, Any]]:
+        """All ``instantiates`` edges with the instantiating code site."""
+        return self.query(
+            """SELECT t.name AS class_name, t.qualified_name AS class_qualified_name,
+                      n.name AS caller_name, n.qualified_name AS caller_qualified_name,
+                      n.file_path AS caller_file, n.start_line AS caller_line,
+                      e.line AS call_line
+               FROM edges e
+               JOIN nodes n ON n.id = e.source
+               JOIN nodes t ON t.id = e.target
+               WHERE e.kind = 'instantiates'"""
+        )
+
     def config_candidate_nodes(self) -> list[dict[str, Any]]:
         return self.query(
             """SELECT id, name, qualified_name, file_path, kind,

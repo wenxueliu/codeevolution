@@ -442,16 +442,36 @@ class CrossRepoImplementation:
                 from ...analysis.knowledge.interface_contract import InterfaceContractExtractor
 
                 for entry in InterfaceContractExtractor(reader).extract():
-                    inbound.append(
-                        {
-                            "method": "SDK",
-                            "path": entry["name"],
-                            "handler": entry["qualified_name"],
-                            "file": entry["file_path"],
-                            "line": entry["line"],
-                            "node_id": entry["node_id"],
-                        }
-                    )
+                    roots = [entry]
+                    if entry.get("kind") == "class" and entry.get("qualified_name"):
+                        # A class node has no outgoing calls edges; reach its
+                        # public methods instead so SDK outbound calls stay
+                        # reachable from the declared surface.
+                        prefix = entry["qualified_name"] + "::"
+                        roots = [
+                            {
+                                **entry,
+                                "name": row["name"],
+                                "qualified_name": row["qualified_name"],
+                                "line": row.get("start_line") or entry["line"],
+                                "node_id": row.get("id") or "",
+                            }
+                            for row in reader.symbols_in_file(entry["file_path"])
+                            if row.get("kind") == "method"
+                            and (row.get("qualified_name") or "").startswith(prefix)
+                            and not (row.get("name") or "").startswith("_")
+                        ] or [entry]
+                    for root in roots:
+                        inbound.append(
+                            {
+                                "method": "SDK",
+                                "path": root["name"],
+                                "handler": root["qualified_name"],
+                                "file": root["file_path"],
+                                "line": root["line"],
+                                "node_id": root["node_id"],
+                            }
+                        )
 
             outbound = self._extract_outbound_calls(repo["name"], db_path, inbound)
             all_outbound.extend(outbound)
