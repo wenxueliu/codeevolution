@@ -42,7 +42,7 @@ from .domain import (
     render_prompt,
     validate_template,
 )
-from .store import AdrStore
+from .store import MAX_LIST_LIMIT, AdrStore
 
 logger = logging.getLogger(__name__)
 
@@ -1296,8 +1296,12 @@ class AdrService:
         draft = self.store.get_draft_for_generation(generation_id)
         return {"generation": generation, "draft": draft}
 
-    def list_generations(self, member_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
-        return self.store.list_generations(member_id=member_id, limit=limit)
+    def list_generations(
+        self, member_id: str = "", limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        return self.store.list_generations(
+            member_id=member_id, limit=limit, offset=offset
+        )
 
     def batch_progress(self, batch_id: str) -> dict[str, Any]:
         """Mirror the API-explanation batch contract: progress over the selection.
@@ -1306,7 +1310,9 @@ class AdrService:
         ``failed``/``skipped`` are terminal too, so ``percent`` is the share of
         selected commits that no longer need work.
         """
-        generations = self.store.list_generations(batch_id=batch_id, limit=200)
+        # Counts come from SQL; the list is only a display page for the batch
+        # (batches are capped at 100 commits), so it can never skew progress.
+        generations = self.store.list_generations(batch_id=batch_id, limit=MAX_LIST_LIMIT)
         counts = self.store.count_generations(batch_id)
         total = sum(counts.values())
         completed = counts.get("succeeded", 0)
@@ -1334,17 +1340,17 @@ class AdrService:
     def source_mapping(self, member_id: str) -> dict[str, Any]:
         """Show how each source kind maps to its prompt and latest ADR."""
         prompts = {item["source_kind"]: item for item in self.prompts(member_id)["kinds"]}
-        generations = self.store.list_generations(member_id=member_id, limit=200)
-        drafts = self.store.list_drafts(member_id, limit=200)
-        latest_generation: dict[str, dict[str, Any]] = {}
-        counts: dict[str, int] = {}
-        for generation in generations:
-            kind = generation["source_kind"]
-            counts[kind] = counts.get(kind, 0) + 1
-            latest_generation.setdefault(kind, generation)
-        latest_draft: dict[str, dict[str, Any]] = {}
-        for draft in drafts:
-            latest_draft.setdefault(draft["source_kind"], draft)
+        # Counts and "latest" come from SQL per source kind: a paged list would
+        # under-count a member whose generations exceed one page.
+        counts = self.store.generation_counts_by_kind(member_id)
+        latest_generation = {
+            generation["source_kind"]: generation
+            for generation in self.store.latest_generations_by_kind(member_id)
+        }
+        latest_draft = {
+            draft["source_kind"]: draft
+            for draft in self.store.latest_drafts_by_kind(member_id)
+        }
 
         rows = []
         for kind in GENERATION_KINDS:

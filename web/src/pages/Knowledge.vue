@@ -281,6 +281,7 @@
                     <button class="secondary sm" type="button" :disabled="adrScanRunning || adrCommitsLoading" data-testid="adr-commit-scan" @click="scanAdrCommits">{{ adrScanRunning ? t('AI 分诊中...') : t('AI 分诊本页') }}</button>
                     <button class="secondary sm" type="button" :disabled="adrCommitsLoading || adrScanRunning" data-testid="adr-commit-refresh" @click="loadAdrCommits">{{ adrCommitsLoading ? t('加载中...') : t('刷新') }}</button>
                     <label class="adr-check"><input v-model="adrCommitFilterCandidates" type="checkbox" data-testid="adr-commit-filter" /> <span>{{ t('仅显示候选') }}</span></label>
+                    <label class="adr-check"><input v-model="adrCommitIncludeMerges" type="checkbox" data-testid="adr-commit-include-merges" @change="resetAdrCommitPaging" /> <span>{{ t('包含合并提交') }}</span></label>
                     <label class="adr-check"><input v-model="adrForce" type="checkbox" data-testid="adr-commit-force" /> <span>{{ t('强制生成已跳过提交') }}</span></label>
                     <span class="adr-commit-summary">{{ t('本页候选 {candidates} / 共 {total} 个提交', { candidates: adrCommitCandidateCount, total: adrCommitsTotalAll }) }}<template v-if="adrCommitsScanned"> · {{ t('已分诊 {scanned}', { scanned: adrCommitsScanned }) }}</template></span>
                     <button class="primary sm" type="button" :disabled="!adrSelectedCommitShas.length || adrBatchSubmitting || adrBatchActive || adrActiveGeneration || adrSubmitting" data-testid="adr-batch-generate" @click="submitAdrBatchGeneration">{{ adrBatchSubmitting ? t('提交中...') : t('生成选中（{count}）', { count: adrSelectedCommitShas.length }) }}</button>
@@ -1157,7 +1158,7 @@ export default {
       adrCommits: [], adrCommitsLoading: false, adrCommitsError: '', adrCommitsScanned: 0, adrCommitsLoadedFor: '',
       adrCommitsTotal: 0, adrCommitsTotalAll: 0, adrCommitOffset: 0, adrCommitPageSize: 50,
       adrCommitCounts: {}, adrCommitProgress: null, adrStageFilter: '', adrCommitsSeq: 0,
-      adrScanRunning: false, adrCommitFilterCandidates: true, adrSelectedCommitShas: [], adrGeneratingSha: '',
+      adrScanRunning: false, adrCommitFilterCandidates: true, adrCommitIncludeMerges: true, adrSelectedCommitShas: [], adrGeneratingSha: '',
       adrDrafts: [], adrDraftsLoading: false, adrDraftsError: '',
       adrExportingId: '', adrDeletingId: '', adrExportState: { id: '', path: '', error: '' },
       adrDetail: null, adrDetailLoading: false, adrDetailError: '', adrBacktestingId: '', adrBacktestError: '',
@@ -1819,6 +1820,7 @@ export default {
           since: this.adrSince || undefined,
           until: this.adrUntil || undefined,
           stage: this.adrStageFilter || undefined,
+          include_merges: this.adrCommitIncludeMerges,
         })
         if (seq === this.adrCommitsSeq) this.applyAdrCommits(data)
       } catch (err) {
@@ -1842,6 +1844,7 @@ export default {
             since: this.adrSince || '',
             until: this.adrUntil || '',
             stage: this.adrStageFilter || '',
+            include_merges: this.adrCommitIncludeMerges,
             refresh: false,
           }),
         })

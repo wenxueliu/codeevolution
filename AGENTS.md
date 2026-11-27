@@ -106,7 +106,8 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
 
 - **提交表格**：`adr commits` **分页覆盖整个 git 历史**（`--offset/--limit`，默认每页 50、
   上限 100），总数与 `git rev-list --count HEAD` 一致；**合并提交保留在表中并直接标为已跳过**
-  （不送 AI 分诊、不可勾选生成，`--no-merges` 可隐藏），随后规则过滤文档/测试/lockfile
+  （不送 AI 分诊、不可勾选生成），工具栏「包含合并提交」开关（默认勾选）与
+  `--no-merges` / `?include_merges=false` 可隐藏，随后规则过滤文档/测试/lockfile
   噪声（也标为已跳过），再由「提交分诊」提示词按**当前页**判断 bug fix、lint、test-only 等；
   结果按 `(member, sha)` 缓存，提交行与草稿/生成记录按每条提交的最新记录全量映射（不再截断）。
   每行展示生命周期状态：待生成（pending）→ 排队中（queued）→ 生成中（generating）→

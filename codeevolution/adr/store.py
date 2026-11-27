@@ -141,6 +141,11 @@ CREATE TABLE IF NOT EXISTS adr_backtests (
 """
 
 
+# Listing endpoints page through rows; this is the largest page they accept, so
+# callers never get a silently smaller list than the limit they asked for.
+MAX_LIST_LIMIT = 500
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -385,7 +390,14 @@ class AdrStore:
         member_id: str = "",
         batch_id: str = "",
         limit: int = 50,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
+        """Newest-first generations, paged with ``offset`` up to ``MAX_LIST_LIMIT``.
+
+        The limit is honoured up to the documented page cap instead of being
+        clipped to a smaller hidden value, and ``offset`` keeps older rows
+        reachable when a member has more generations than one page.
+        """
         clauses: list[str] = []
         params: list[Any] = []
         if member_id:
@@ -396,10 +408,54 @@ class AdrStore:
             params.append(batch_id)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._connection.execute(
-            f"SELECT * FROM adr_generations{where} ORDER BY created_at DESC LIMIT ?",
-            (*params, max(1, min(int(limit), 200))),
+            f"SELECT * FROM adr_generations{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, max(1, min(int(limit), MAX_LIST_LIMIT)), max(0, int(offset))),
         ).fetchall()
         return [decoded for row in rows if (decoded := self._decode_generation(row))]
+
+    @_synchronized
+    def generation_counts_by_kind(self, member_id: str) -> dict[str, int]:
+        """Generation totals per source kind, straight from SQL (no page cap)."""
+        rows = self._connection.execute(
+            "SELECT source_kind, COUNT(*) AS count FROM adr_generations"
+            " WHERE member_id=? GROUP BY source_kind",
+            (member_id,),
+        ).fetchall()
+        return {row["source_kind"]: row["count"] for row in rows}
+
+    @_synchronized
+    def latest_generations_by_kind(self, member_id: str) -> list[dict[str, Any]]:
+        """Newest generation per source kind, used by the source mapping panel."""
+        return self._latest_by(
+            "adr_generations", member_id, "source_kind", self._decode_generation
+        )
+
+    @_synchronized
+    def latest_drafts_by_kind(self, member_id: str) -> list[dict[str, Any]]:
+        """Newest draft per source kind, used by the source mapping panel."""
+        return self._latest_by("adr_drafts", member_id, "source_kind", lambda row: dict(row))
+
+    def _latest_by(self, table: str, member_id: str, partition: str, decode):
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY {partition} ORDER BY created_at DESC, rowid DESC
+                ) AS _row_number
+                FROM {table}
+                WHERE member_id=?
+            ) WHERE _row_number=1
+            """,
+            (member_id,),
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = decode(row)
+            if item is None:
+                continue
+            item.pop("_row_number", None)
+            items.append(item)
+        return items
 
     @_synchronized
     def latest_commit_generations(self, member_id: str) -> list[dict[str, Any]]:
@@ -528,12 +584,12 @@ class AdrStore:
         if member_id:
             rows = self._connection.execute(
                 "SELECT * FROM adr_drafts WHERE member_id=? ORDER BY created_at DESC LIMIT ?",
-                (member_id, max(1, min(int(limit), 500))),
+                (member_id, max(1, min(int(limit), MAX_LIST_LIMIT))),
             ).fetchall()
         else:
             rows = self._connection.execute(
                 "SELECT * FROM adr_drafts ORDER BY created_at DESC LIMIT ?",
-                (max(1, min(int(limit), 500)),),
+                (max(1, min(int(limit), MAX_LIST_LIMIT)),),
             ).fetchall()
         return [dict(row) for row in rows]
 

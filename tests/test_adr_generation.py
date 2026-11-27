@@ -877,3 +877,44 @@ def test_export_records_provenance_and_replaces_it_idempotently(tmp_path):
         assert again.count("status: accepted") == 1
         assert again.count("exported_at:") == 1
         assert "app/payments.py" in again
+
+
+def test_generation_listing_and_mapping_are_not_capped_at_200(tmp_path):
+    """A member with more than 200 generations pages through all of them.
+
+    The store used to clip every listing to the newest 200 rows, so both the
+    list endpoint and the source mapping under-reported older generations.
+    """
+    _repo, store, _service, _prompts, client = _setup(tmp_path)
+    for index in range(230):
+        store.create_generation(
+            member_id="member-1",
+            source_kind="text",
+            source_ref=f"decision-{index:03d}",
+            source_payload={"text": {"text": f"decision {index}"}},
+            source_digest=f"sha256:{index:064x}",
+            model="stub",
+            status="succeeded",
+        )
+
+    with client:
+        first = client.get(
+            "/api/adr/generations", params={"member_id": "member-1", "limit": 500}
+        ).json()
+        assert len(first["generations"]) == 230
+
+        tail = client.get(
+            "/api/adr/generations",
+            params={"member_id": "member-1", "limit": 50, "offset": 200},
+        ).json()
+        assert len(tail["generations"]) == 30
+        assert not {item["id"] for item in tail["generations"]} & {
+            item["id"] for item in first["generations"][:200]
+        }
+
+        mapping = client.get(
+            "/api/adr/mapping", params={"member_id": "member-1"}
+        ).json()
+        text_row = next(row for row in mapping["sources"] if row["source_kind"] == "text")
+        assert text_row["generation_count"] == 230
+        assert text_row["latest_generation"] is not None

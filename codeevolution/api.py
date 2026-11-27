@@ -2081,7 +2081,8 @@ def list_adr_generations(
     snapshot_id: str = Query("", max_length=200),
     member_id: str = Query("", max_length=200),
     batch_id: str = Query("", max_length=100),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ):
     service = get_adr_service()
     if batch_id:
@@ -2089,7 +2090,7 @@ def list_adr_generations(
     mid = member_id
     if not mid and snapshot_id:
         mid = _adr_member_id(snapshot_id, "")
-    return {"generations": service.list_generations(member_id=mid, limit=limit)}
+    return {"generations": service.list_generations(member_id=mid, limit=limit, offset=offset)}
 
 
 @app.get("/api/adr/generations/{generation_id}")
