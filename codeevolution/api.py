@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
-from .adr.service import AdrServiceError
+from .adr.service import MAX_BATCH_COMMITS, AdrServiceError
 from .adr.store import max_list_limit
 from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService, SnapshotChatService
@@ -179,12 +179,15 @@ class AdrCommitScanRequest(BaseModel):
     include_merges: bool = True
     refresh: bool = False
     stage: str = Field(default="", max_length=40)
+    candidate: str = Field(default="", max_length=20)
+    reason: str = Field(default="", max_length=20)
+    order: str = Field(default="desc", pattern="^(asc|desc)$")
 
 
 class AdrBatchGenerationRequest(BaseModel):
     snapshot_id: str = Field(default="", max_length=200)
     member_id: str = Field(default="", max_length=200)
-    commits: list[str] = Field(min_length=1, max_length=100)
+    commits: list[str] = Field(min_length=1, max_length=MAX_BATCH_COMMITS)
     force: bool = False
 
 
@@ -1963,6 +1966,9 @@ def list_adr_commits(
     limit: int = Query(50, ge=1, le=100),
     include_merges: bool = Query(True),
     stage: str = Query("", max_length=40),
+    candidate: str = Query("", max_length=20),
+    reason: str = Query("", max_length=20),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ):
     member = _adr_member(snapshot_id, member_id)
     try:
@@ -1974,6 +1980,9 @@ def list_adr_commits(
             limit=limit,
             include_merges=include_merges,
             stage=stage,
+            candidate=candidate,
+            reason=reason,
+            order=order,
         )
     except AdrServiceError as error:
         raise HTTPException(error.status, str(error)) from error
@@ -1992,6 +2001,9 @@ def scan_adr_commits(request: AdrCommitScanRequest):
             include_merges=request.include_merges,
             refresh=request.refresh,
             stage=request.stage,
+            candidate=request.candidate,
+            reason=request.reason,
+            order=request.order,
         )
     except AdrServiceError as error:
         raise HTTPException(error.status, str(error)) from error

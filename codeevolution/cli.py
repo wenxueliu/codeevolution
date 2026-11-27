@@ -302,6 +302,10 @@ def cmd_adr(args):
                     limit=args.limit,
                     include_merges=not args.no_merges,
                     refresh=args.refresh,
+                    stage=getattr(args, "stage", "") or "",
+                    candidate=getattr(args, "candidate", "") or "",
+                    reason=getattr(args, "reason", "") or "",
+                    order=getattr(args, "order", "desc") or "desc",
                 )
             else:
                 result = service.list_commits(
@@ -312,6 +316,9 @@ def cmd_adr(args):
                     limit=args.limit,
                     include_merges=not args.no_merges,
                     stage=getattr(args, "stage", "") or "",
+                    candidate=getattr(args, "candidate", "") or "",
+                    reason=getattr(args, "reason", "") or "",
+                    order=getattr(args, "order", "desc") or "desc",
                 )
             if args.json:
                 _print_json(result)
@@ -1501,6 +1508,24 @@ def main():
         choices=["", "pending", "queued", "generating", "generated", "backtested",
                  "approved", "rejected", "exported", "skipped", "failed"],
         help="Only print commits at this lifecycle stage",
+    )
+    commits.add_argument(
+        "--candidate",
+        default="",
+        choices=["", "candidate", "rule", "skipped"],
+        help="Only print rows by candidacy: candidate / rule / skipped",
+    )
+    commits.add_argument(
+        "--reason",
+        default="",
+        choices=["", "merge", "noise", "ai", "model", "other"],
+        help="Only print skipped rows by reason category",
+    )
+    commits.add_argument(
+        "--order",
+        default="desc",
+        choices=["desc", "asc"],
+        help="Sort by commit date: desc (newest first) or asc (oldest first)",
     )
     commits.add_argument("--scan", action="store_true", help="Run the AI triage before printing")
     commits.add_argument("--refresh", action="store_true", help="Re-run triage for cached commits")

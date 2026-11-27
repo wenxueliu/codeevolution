@@ -257,6 +257,9 @@ def test_commit_table_lists_merges_as_skipped_without_triage(tmp_path):
         # the full history instead of stalling on a row nobody can generate.
         assert listing["progress"]["total"] == total
         assert listing["progress"]["processed"] == 1
+        # Selecting every pending commit must never include a merge commit.
+        assert merge["sha"] not in listing["pending_shas"]
+        assert listing["pending_total"] == len(listing["pending_shas"])
 
         scanned = client.post(
             "/api/adr/commits/scan", json={"member_id": "member-1"}
@@ -636,6 +639,7 @@ def test_batch_generation_from_selected_commits(tmp_path):
         assert progress["progress"] == {
             "total": 2,
             "completed": 1,
+            "finished": 2,
             "failed": 0,
             "skipped": 1,
             "running": 0,
@@ -952,3 +956,86 @@ def test_list_limit_defaults_to_5000_and_is_configurable(monkeypatch, tmp_path):
     assert len(store.list_generations(member_id="member-limit", limit=10)) == 2
     monkeypatch.delenv("CODEHISTORY_ADR_LIST_LIMIT")
     assert len(store.list_generations(member_id="member-limit", limit=10)) == 4
+
+
+def test_pending_selection_excludes_generated_and_batch_progress_counts_skipped(tmp_path):
+    """Pending shas drive "select all"; batch progress counts skipped as finished."""
+    _repo, _store, _service, _prompts, client = _setup(tmp_path)
+
+    with client:
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        assert listing["pending_total"] == 1
+        assert len(listing["pending_shas"]) == 1
+        feature_sha = listing["pending_shas"][0]
+
+        _generate(client, {"kind": "commit", "ref": feature_sha})
+        after = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        assert after["pending_total"] == 0
+        assert after["pending_shas"] == []
+        assert feature_sha not in after["pending_shas"]
+
+        docs_sha = next(
+            item["sha"] for item in after["items"] if item["subject"].startswith("docs:")
+        )
+        batch = client.post(
+            "/api/adr/generations/batch",
+            json={"member_id": "member-1", "commits": [docs_sha]},
+        ).json()
+        progress = client.get(f"/api/adr/batches/{batch['batch_id']}").json()["progress"]
+        assert progress["total"] == 1
+        assert progress["completed"] == 0
+        assert progress["skipped"] == 1
+        # "finished" is every terminal row and matches the percentage.
+        assert progress["finished"] == 1
+        assert progress["percent"] == 100
+
+
+def test_commit_table_filters_and_date_order(tmp_path):
+    """Candidate / skip-reason filters and asc/desc ordering are server-side."""
+    repo, total = _merge_repo(tmp_path)
+    _repo, _store, _service, _prompts, client = _wire(tmp_path, repo)
+
+    with client:
+        desc = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        asc = client.get(
+            "/api/adr/commits", params={"member_id": "member-1", "order": "asc"}
+        ).json()
+        assert [item["sha"] for item in asc["items"]] == list(
+            reversed([item["sha"] for item in desc["items"]])
+        )
+        # The merge is the newest commit, so it flips ends with the order.
+        assert desc["items"][0]["is_merge"]
+        assert asc["items"][-1]["is_merge"]
+        assert not asc["items"][0]["is_merge"]
+
+        merges = client.get(
+            "/api/adr/commits", params={"member_id": "member-1", "reason": "merge"}
+        ).json()
+        assert merges["total"] == 1
+        assert merges["items"][0]["is_merge"]
+        assert merges["total_all"] == total
+
+        rules = client.get(
+            "/api/adr/commits", params={"member_id": "member-1", "candidate": "rule"}
+        ).json()
+        assert rules["total"] == 2
+        assert all(item["candidate"] and not item["scanned"] for item in rules["items"])
+
+        skipped = client.get(
+            "/api/adr/commits", params={"member_id": "member-1", "candidate": "skipped"}
+        ).json()
+        assert skipped["total"] == 1
+        assert skipped["items"][0]["skip_category"] == "merge"
+
+        # Ordering applies to the whole filtered list, not just one page.
+        tail = client.get(
+            "/api/adr/commits",
+            params={"member_id": "member-1", "order": "asc", "limit": 1, "offset": 2},
+        ).json()
+        assert tail["total"] == total
+        assert tail["items"][0]["is_merge"]
+
+        invalid = client.get(
+            "/api/adr/commits", params={"member_id": "member-1", "reason": "nope"}
+        )
+        assert invalid.status_code == 400

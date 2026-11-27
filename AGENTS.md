@@ -113,8 +113,10 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
   每行展示生命周期状态：待生成（pending）→ 排队中（queued）→ 生成中（generating）→
   待校验（generated）→ 待审批（backtested）→ 已通过/已驳回（approved/rejected）→
   已导出（exported），另有已跳过（skipped）与失败（failed）；状态计数与已处理进度始终按
-  **整段历史**统计（不受翻页/过滤影响），并支持按状态过滤（`--stage` / `?stage=`）与
-  日期范围（`--since/--until`）。历史超过 20000 个提交时要求先缩小日期范围，避免给出
+  **整段历史**统计（不受翻页/过滤影响），并支持按状态（`--stage` / `?stage=`）、
+  候选判定（`--candidate` / `?candidate=`）、跳过原因（`--reason` / `?reason=`）过滤，
+  日期正/倒序（`--order asc|desc`，表头「日期」可点击切换）与日期范围（`--since/--until`）。
+  历史超过 20000 个提交时要求先缩小日期范围，避免给出
   只覆盖部分历史的进度。草稿/生成列表单页上限由 `CODEEVOLUTION_ADR_LIST_LIMIT`
   控制（默认 5000，兼容旧名 `CODEHISTORY_ADR_LIST_LIMIT`），并支持 `offset` 翻页。
   支持单个生成、勾选批量生成（`adr gen --commits`）。

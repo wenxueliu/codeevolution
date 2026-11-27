@@ -51,6 +51,9 @@ MAX_TEXT_CHARS = 20_000
 MAX_DRAFT_CHARS = 200_000
 MAX_HISTORY_CANDIDATES = 100
 MAX_COMMIT_PAGE = 100
+# One "generate all pending" batch may queue this many commits; larger
+# selections are truncated newest-first so the queue stays manageable.
+MAX_BATCH_COMMITS = 500
 # The commit table shows the whole history, so its status/progress needs every
 # commit's changed files.  That index is one ``git log`` per (repo, HEAD, range);
 # beyond this size the request asks the user to narrow the date range instead of
@@ -75,6 +78,11 @@ COMMIT_STAGES = (
     "skipped",
     "failed",
 )
+# Table filters for the candidate column and the skip-reason column. They are
+# applied over the whole commit index server-side, so paging and totals stay
+# consistent with the visible filter rather than filtering one page in the UI.
+CANDIDATE_FILTERS = ("candidate", "rule", "skipped")
+SKIP_FILTERS = ("merge", "noise", "ai", "model", "other")
 EXPORT_DIR_CANDIDATES = ("docs/adr", "doc/adr", "docs/decisions", "adr")
 # BOM-marked UTF-8 keeps exported ADRs readable in Windows editors that would
 # otherwise guess GBK; the readers in this project strip it again.
@@ -450,6 +458,19 @@ class AdrService:
             scanned = True
 
         stage = self._commit_stage(candidate, draft, generation)
+        candidate_kind = "skipped" if not candidate else ("rule" if not scanned else "candidate")
+        if is_merge:
+            skip_category = "merge"
+        elif not rule_candidate_value:
+            skip_category = "noise"
+        elif generation is not None and generation.get("status") == "skipped":
+            skip_category = (
+                "model" if generation.get("stage") == "not_a_decision" else "other"
+            )
+        elif scanned and ai_candidate is False:
+            skip_category = "ai"
+        else:
+            skip_category = ""
         backtest = (draft or {}).get("backtest") or {}
         return {
             "sha": commit["sha"],
@@ -461,7 +482,9 @@ class AdrService:
             "rule_candidate": rule_candidate_value,
             "ai_candidate": ai_candidate,
             "candidate": candidate,
+            "candidate_kind": candidate_kind,
             "skip_reason": reason,
+            "skip_category": skip_category,
             "change_type": change_type,
             "scanned": scanned,
             "triaged": bool(scan is not None and scan.get("ai_candidate") is not None),
@@ -540,6 +563,9 @@ class AdrService:
         limit: int = 50,
         include_merges: bool = True,
         stage: str = "",
+        candidate: str = "",
+        reason: str = "",
+        order: str = "desc",
     ) -> dict[str, Any]:
         """One page of the full history plus global status counts and progress.
 
@@ -555,6 +581,12 @@ class AdrService:
         member_id = _member_id(member)
         if stage and stage not in COMMIT_STAGES:
             raise AdrServiceError(f"unknown commit stage: {stage}")
+        if candidate and candidate not in CANDIDATE_FILTERS:
+            raise AdrServiceError(f"unknown candidate filter: {candidate}")
+        if reason and reason not in SKIP_FILTERS:
+            raise AdrServiceError(f"unknown skip-reason filter: {reason}")
+        if order not in ("desc", "asc"):
+            raise AdrServiceError(f"unknown commit order: {order}")
         repo_root = self._repo_root(member)
         try:
             total_all = git_source.count_commits(
@@ -610,8 +642,27 @@ class AdrService:
             for name in ("generated", "backtested", "approved", "rejected", "exported", "skipped", "failed")
         )
         active = counts.get("queued", 0) + counts.get("generating", 0)
-        visible = [item for item in items if not stage or item["stage"] == stage]
+        def _matches(item: dict[str, Any]) -> bool:
+            return (
+                (not stage or item["stage"] == stage)
+                and (not candidate or item["candidate_kind"] == candidate)
+                and (not reason or item["skip_category"] == reason)
+            )
+
+        # ``items`` is newest-first; ascending order is a view of the same
+        # complete index, so sorting never changes counts or progress.
+        ordered = items if order == "desc" else list(reversed(items))
+        visible = [item for item in ordered if _matches(item)]
         page = visible[offset : offset + limit]
+        # Everything the table can select at once without paging, scoped to the
+        # current filters: candidates that still need work. Already generated or
+        # reviewed commits are excluded so "select all" cannot queue duplicates.
+        # Kept newest-first so a capped batch takes the newest commits.
+        pending_shas = [
+            item["sha"]
+            for item in items
+            if _matches(item) and item["candidate"] and item["stage"] == "pending"
+        ]
         return {
             "member_id": member_id,
             "repo": str(repo_root),
@@ -623,6 +674,9 @@ class AdrService:
             "returned": len(page),
             "has_more": offset + len(page) < len(visible),
             "scanned": sum(1 for item in items if item["scanned"]),
+            "pending_shas": pending_shas[:MAX_BATCH_COMMITS],
+            "pending_total": len(pending_shas),
+            "pending_truncated": len(pending_shas) > MAX_BATCH_COMMITS,
             "counts": counts,
             "stage": stage,
             "progress": {
@@ -644,6 +698,9 @@ class AdrService:
         include_merges: bool = True,
         refresh: bool = False,
         stage: str = "",
+        candidate: str = "",
+        reason: str = "",
+        order: str = "desc",
     ) -> dict[str, Any]:
         """Rule-filter obvious noise, then ask the model to triage the page.
 
@@ -661,6 +718,9 @@ class AdrService:
             limit=limit,
             include_merges=include_merges,
             stage=stage,
+            candidate=candidate,
+            reason=reason,
+            order=order,
         )
         pending = [
             item
@@ -782,6 +842,9 @@ class AdrService:
             limit=limit,
             include_merges=include_merges,
             stage=stage,
+            candidate=candidate,
+            reason=reason,
+            order=order,
         )
         result["failures"] = failures
         return result
@@ -817,7 +880,7 @@ class AdrService:
     def batch_generate(
         self, member: Any, shas: list[str], *, force: bool = False
     ) -> dict[str, Any]:
-        commit_shas = [str(sha).strip() for sha in shas if str(sha).strip()][:100]
+        commit_shas = [str(sha).strip() for sha in shas if str(sha).strip()][:MAX_BATCH_COMMITS]
         if not commit_shas:
             raise AdrServiceError("at least one commit is required")
         batch_id = "batch-" + _digest(f"{_member_id(member)}:{time.time()}")[7:23]
@@ -1323,7 +1386,12 @@ class AdrService:
         done = completed + failed + skipped
         progress = {
             "total": total,
+            # ``completed`` keeps meaning "succeeded"; ``finished`` is every
+            # terminal row (success, skip, failure) and matches ``percent``, so
+            # the UI can show "finished/total" without looking stuck when rows
+            # are skipped deterministically.
             "completed": completed,
+            "finished": done,
             "failed": failed,
             "skipped": skipped,
             "running": running,
