@@ -117,6 +117,16 @@ def _digest(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _model_error_text(parsed: dict[str, Any]) -> str:
+    """Human-readable provider error carried inside a JSON response body."""
+    error = parsed.get("error")
+    if isinstance(error, dict):
+        detail = error.get("message") or error.get("code") or error.get("type") or ""
+    else:
+        detail = error or parsed.get("message") or parsed.get("detail") or ""
+    return str(detail).strip()[:300]
+
+
 def _now() -> str:
     from datetime import datetime, timezone
 
@@ -661,7 +671,9 @@ class AdrService:
         pending_shas = [
             item["sha"]
             for item in items
-            if _matches(item) and item["candidate"] and item["stage"] == "pending"
+            if _matches(item)
+            and item["candidate"]
+            and item["stage"] in ("pending", "failed")
         ]
         return {
             "member_id": member_id,
@@ -948,6 +960,24 @@ class AdrService:
                     "prompt_rendered": rendered,
                     "raw_response": raw[:200_000],
                     "error_message": "模型输出不是合法 JSON",
+                    "duration_ms": duration,
+                }
+            )
+        if "verdict" not in parsed:
+            detail = _model_error_text(parsed)
+            return self.store.upsert_backtest(
+                {
+                    "draft_id": draft_id,
+                    "status": "failed",
+                    "model": self.model_name(),
+                    "prompt_text": prompt["text"],
+                    "prompt_rendered": rendered,
+                    "raw_response": raw[:200_000],
+                    "error_message": (
+                        f"模型返回错误：{detail}"
+                        if detail
+                        else "模型输出缺少 verdict 字段，已按失败处理（可重试）"
+                    ),
                     "duration_ms": duration,
                 }
             )
@@ -1267,6 +1297,27 @@ class AdrService:
                     progress=100,
                     raw_response=raw[:200_000],
                     error_message="模型输出不是合法 JSON（原始响应已保留，便于调试提示词）",
+                    duration_ms=duration,
+                    completed_at=_now(),
+                )
+                return self.store.get_generation(generation_id)
+
+            if "is_decision" not in parsed:
+                # A provider/proxy error returned as JSON has no is_decision
+                # field. Treating it as "model says this is not a decision"
+                # silently marked failed calls as skipped and hid the error.
+                detail = _model_error_text(parsed)
+                self.store.update_generation(
+                    generation_id,
+                    status="failed",
+                    stage="invalid_response",
+                    progress=100,
+                    raw_response=raw[:200_000],
+                    error_message=(
+                        f"模型返回错误：{detail}"
+                        if detail
+                        else "模型输出缺少 is_decision 字段，已按失败处理（可重试）"
+                    ),
                     duration_ms=duration,
                     completed_at=_now(),
                 )

@@ -1039,3 +1039,39 @@ def test_commit_table_filters_and_date_order(tmp_path):
             "/api/adr/commits", params={"member_id": "member-1", "reason": "nope"}
         )
         assert invalid.status_code == 400
+
+
+def test_model_error_payload_fails_instead_of_skipping(tmp_path):
+    """A provider error returned as JSON must be a retryable failure, not a skip."""
+    _repo, _store, _service, _prompts, client = _setup(
+        tmp_path,
+        decision={"error": {"message": "429 rate limited", "type": "rate_limit_error"}},
+    )
+
+    with client:
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        sha = next(
+            item["sha"]
+            for item in listing["items"]
+            if item["subject"] == "feat: add payment gateway"
+        )
+        detail = _generate(client, {"kind": "commit", "ref": sha})["generation"]
+        assert detail["status"] == "failed"
+        assert detail["stage"] == "invalid_response"
+        assert "429 rate limited" in detail["error_message"]
+
+        after = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        row = next(item for item in after["items"] if item["sha"] == sha)
+        assert row["stage"] == "failed"
+        assert row["generation_status"] == "failed"
+        assert row["candidate"] is True
+        # Failed work stays retryable instead of disappearing from the queue.
+        assert sha in after["pending_shas"]
+        assert after["counts"]["failed"] == 1
+        assert after["counts"]["skipped"] == 1  # only the docs-only commit
+
+        retry = client.post(
+            "/api/adr/generations",
+            json={"member_id": "member-1", "source": {"kind": "commit", "ref": sha}},
+        )
+        assert retry.status_code == 202

@@ -1723,7 +1723,8 @@ export default {
     },
     adrCommitSelectable(commit) {
       if (commit?.is_merge) return false
-      return Boolean(commit?.candidate || this.adrForce)
+      // Failed generations stay selectable so a model error can be retried.
+      return Boolean(commit?.candidate || commit?.stage === 'failed' || this.adrForce)
     },
     adrCommitStageKey(stage) {
       return ADR_COMMIT_STAGES.includes(stage) ? stage : 'pending'
@@ -1754,7 +1755,8 @@ export default {
     },
     adrCommitCanGenerate(commit) {
       const stage = this.adrCommitStageKey(commit?.stage)
-      if (stage === 'pending') return true
+      // A failed generation is retryable: model errors must not become a dead end.
+      if (stage === 'pending' || stage === 'failed') return true
       return stage === 'skipped' && this.adrForce
     },
     adrCommitGenerateDisabled(commit) {
@@ -1766,6 +1768,7 @@ export default {
       if (this.adrGeneratingSha === commit.sha) return this.t('生成中...')
       const stage = this.adrCommitStageKey(commit?.stage)
       if (stage === 'queued' || stage === 'generating') return this.adrCommitStageText(commit)
+      if (stage === 'failed') return this.t('重试')
       return this.t('生成')
     },
     adrCommitCanBacktest(commit) {

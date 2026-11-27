@@ -121,7 +121,10 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
   控制（默认 5000，兼容旧名 `CODEHISTORY_ADR_LIST_LIMIT`），并支持 `offset` 翻页。
   支持单个生成、勾选批量生成（`adr gen --commits`）。
 - **生成**：`adr gen` 支持 `--commit`、`--file`、`--text`、`--history`、`--commits`；
-  提示词按「服务 × 来源类型」版本化（commit/file/text/triage/backtest 五类）。
+  提示词按「服务 × 来源类型」版本化（commit/file/text/triage/backtest 五类）。模型调用报错
+  （含以 JSON 返回的 provider 错误、缺少 `is_decision`/`verdict` 的响应）一律记为
+  `failed`（可重试），只有模型明确返回 `is_decision: false` 才标记为已跳过；失败提交仍属于
+  「全选待生成」范围，可一键重试，避免把报错误判成「不构成架构决策」。
 - **输出模板**：默认 MADR 4.0，可按服务覆盖；占位符包括 `{{frontmatter}}`、`{{title}}`、
   `{{context}}`、`{{drivers}}`、`{{options}}`、`{{outcome}}`、`{{consequences}}`、
   `{{confirmation}}`、`{{options_detail}}`、`{{evidence}}`，`{{title}}` 必填。
