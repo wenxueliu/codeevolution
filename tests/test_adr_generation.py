@@ -1156,3 +1156,33 @@ def test_merge_commit_cannot_be_rejected(tmp_path):
             json={"member_id": "member-1"},
         )
         assert response.status_code == 400
+
+
+def test_rejected_model_skip_does_not_fall_back_to_skipped(tmp_path):
+    """After a human rejects the skip, a model refusal must stay retryable."""
+    _repo, _store, _service, prompts, client = _setup(
+        tmp_path, decision={"is_decision": False, "reason": "只是内部重构"}
+    )
+
+    with client:
+        listing = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        sha = next(
+            item["sha"]
+            for item in listing["items"]
+            if item["subject"] == "feat: add payment gateway"
+        )
+        assert _generate(client, {"kind": "commit", "ref": sha})["generation"]["status"] == "skipped"
+
+        client.post(f"/api/adr/commits/{sha}/override", json={"member_id": "member-1"})
+        detail = _generate(client, {"kind": "commit", "ref": sha})["generation"]
+        assert detail["status"] == "failed"
+        assert detail["stage"] == "override_refused"
+        assert "人工驳回后模型仍判定非决策" in detail["error_message"]
+        # The generation prompt tells the model a human overruled the skip.
+        assert "人工复核" in prompts[-1]
+
+        after = client.get("/api/adr/commits", params={"member_id": "member-1"}).json()
+        row = next(item for item in after["items"] if item["sha"] == sha)
+        assert row["stage"] == "failed"
+        assert row["generation_error"]
+        assert sha in after["pending_shas"]

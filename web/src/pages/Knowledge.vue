@@ -364,6 +364,7 @@
                           <td>
                             <span v-if="commit.is_merge" class="muted">{{ t('合并提交，不生成 ADR') }}</span>
                             <span v-else-if="commit.generation_skip_reason && !commit.draft_id && !commit.overridden" class="muted">{{ commit.generation_skip_reason }}</span>
+                            <span v-else-if="commit.generation_status === 'failed' && commit.generation_error && !commit.draft_id" class="muted">{{ commit.generation_error }}</span>
                             <template v-else-if="!commit.scanned">
                               <span class="muted">{{ t('待 AI 分诊') }}</span>
                               <span v-if="commit.skip_reason" class="muted"> · {{ commit.skip_reason }}</span>
@@ -1983,6 +1984,7 @@ export default {
       this.adrError = ''
       this.adrCommitSelectionNote = ''
       try {
+        this.adrCommitsError = ''
         await this.$api.request(`/api/adr/commits/${commit.sha}/override`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1992,9 +1994,12 @@ export default {
             reason: restore ? '' : this.t('人工驳回跳过'),
           }),
         })
+        this.adrCommitSelectionNote = restore
+          ? this.t('已恢复跳过判定。')
+          : this.t('已驳回跳过，该提交回到待生成，可直接生成。')
         await this.loadAdrCommits()
       } catch (err) {
-        this.adrError = this.adrErrorMessage(err, restore ? '恢复跳过失败' : '驳回跳过失败')
+        this.adrCommitsError = this.adrErrorMessage(err, restore ? '恢复跳过失败' : '驳回跳过失败')
       } finally {
         this.adrOverridingSha = ''
       }

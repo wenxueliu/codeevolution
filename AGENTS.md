@@ -118,8 +118,10 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
   日期正/倒序（`--order asc|desc`，表头「日期」可点击切换）与日期范围（`--since/--until`）。
   历史超过 20000 个提交时要求先缩小日期范围，避免给出
   只覆盖部分历史的进度。已跳过（合并提交除外）支持**人工驳回**：驳回后恢复为候选（pending）、
-  生成时强制越过规则过滤与 AI 跳过判定，可重新生成，也可「恢复跳过」撤销（`adr override <sha>`
-  与 `POST /api/adr/commits/{sha}/override`，记录 reason/actor 与时间）。
+  生成时强制越过规则过滤与 AI 跳过判定，可重新生成（生成提示词会附「人工复核」说明）；若模型
+  仍返回 `is_decision: false`，该次生成记为 `failed`（`override_refused`）并保留可重试，不会
+  再次悄悄回到「已跳过」。也可「恢复跳过」撤销（`adr override <sha>` 与
+  `POST /api/adr/commits/{sha}/override`，记录 reason/actor 与时间）。
   草稿/生成列表单页上限由 `CODEEVOLUTION_ADR_LIST_LIMIT`
   控制（默认 5000，兼容旧名 `CODEHISTORY_ADR_LIST_LIMIT`），并支持 `offset` 翻页。
   支持单个生成、勾选批量生成（`adr gen --commits`）。

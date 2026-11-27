@@ -531,6 +531,7 @@ class AdrService:
             "generation_stage": generation.get("stage", "") if generation else "",
             "generation_progress": generation.get("progress", 0) if generation else 0,
             "generation_skip_reason": generation.get("skip_reason", "") if generation else "",
+            "generation_error": generation.get("error_message", "") if generation else "",
             "draft_id": draft["id"] if draft else "",
             "draft_title": draft["title"] if draft else "",
             "draft_status": draft["status"] if draft else "",
@@ -1383,8 +1384,24 @@ class AdrService:
                     duration_ms=int((time.monotonic() - started) * 1000),
                 )
 
+            override = (
+                self.store.get_commit_override(generation["member_id"], generation["source_ref"])
+                if source_kind == "commit"
+                else None
+            )
+            if override is not None and override.get("action") != "candidate":
+                override = None
+
             values = self._prompt_values(member, repo_root, source_kind, generation["source_ref"], payload)
             prompt = render_prompt(generation["prompt_text"] or default_prompt(source_kind), values)
+            if override is not None:
+                # A human rejected the automatic skip: tell the model so, and
+                # never let it fall back to "not a decision" silently.
+                note = "【人工复核】该提交的自动跳过判定已被人工驳回"
+                if override.get("reason"):
+                    note += f"（原因：{override['reason']}）"
+                note += "。请仍按架构决策候选提取并输出 MADR JSON；若确实不构成决策，请在 reason 中说明，系统不会自动把它记为已跳过。"
+                prompt += "\n\n" + note
             self.store.update_generation(
                 generation_id, stage="calling_model", progress=30, prompt_rendered=prompt
             )
@@ -1435,6 +1452,23 @@ class AdrService:
             )
 
             if not decision["is_decision"]:
+                if override is not None:
+                    # The human already overruled this verdict. Keep the commit
+                    # retryable and surface the refusal instead of skipping it
+                    # again, which looked like "reject did nothing".
+                    self.store.update_generation(
+                        generation_id,
+                        status="failed",
+                        stage="override_refused",
+                        progress=100,
+                        error_message=(
+                            "人工驳回后模型仍判定非决策："
+                            + (decision["reason"] or "未给出原因")
+                        ),
+                        duration_ms=duration,
+                        completed_at=_now(),
+                    )
+                    return self.store.get_generation(generation_id)
                 self.store.update_generation(
                     generation_id,
                     status="skipped",
