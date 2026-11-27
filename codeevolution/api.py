@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
 from .adr.service import AdrServiceError
+from .adr.store import max_list_limit
 from .analysis.knowledge.node_rule import NodeRuleService
 from .application.chat_service import ChatService, SnapshotChatService
 from .application.knowledge_service import GroupedKnowledgeService, KnowledgeService
@@ -2081,7 +2082,7 @@ def list_adr_generations(
     snapshot_id: str = Query("", max_length=200),
     member_id: str = Query("", max_length=200),
     batch_id: str = Query("", max_length=100),
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=max_list_limit()),
     offset: int = Query(0, ge=0),
 ):
     service = get_adr_service()
@@ -2110,7 +2111,7 @@ def get_adr_batch(batch_id: str):
 def list_adr_drafts(
     snapshot_id: str = Query("", max_length=200),
     member_id: str = Query("", max_length=200),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=max_list_limit()),
 ):
     mid = member_id
     if not mid and snapshot_id:

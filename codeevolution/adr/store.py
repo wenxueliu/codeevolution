@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..paths import environment_value
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS adr_prompts (
     id TEXT PRIMARY KEY,
@@ -141,9 +143,21 @@ CREATE TABLE IF NOT EXISTS adr_backtests (
 """
 
 
-# Listing endpoints page through rows; this is the largest page they accept, so
-# callers never get a silently smaller list than the limit they asked for.
-MAX_LIST_LIMIT = 500
+# Listing endpoints page through rows. The largest accepted page is
+# configurable so a large installation can page through more rows at once
+# without a silent clip: set ``CODEEVOLUTION_ADR_LIST_LIMIT``.
+DEFAULT_MAX_LIST_LIMIT = 5000
+
+
+def max_list_limit() -> int:
+    """Largest page a listing accepts (env ``CODEEVOLUTION_ADR_LIST_LIMIT``)."""
+    raw = environment_value(
+        "CODEEVOLUTION_ADR_LIST_LIMIT", str(DEFAULT_MAX_LIST_LIMIT)
+    ).strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_LIST_LIMIT
 
 
 def _now() -> str:
@@ -392,11 +406,11 @@ class AdrStore:
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Newest-first generations, paged with ``offset`` up to ``MAX_LIST_LIMIT``.
+        """Newest-first generations, paged with ``offset`` up to the page cap.
 
-        The limit is honoured up to the documented page cap instead of being
-        clipped to a smaller hidden value, and ``offset`` keeps older rows
-        reachable when a member has more generations than one page.
+        The limit is honoured up to ``max_list_limit()`` (5000 by default,
+        configurable) instead of being clipped to a smaller hidden value, and
+        ``offset`` keeps older rows reachable beyond one page.
         """
         clauses: list[str] = []
         params: list[Any] = []
@@ -409,7 +423,7 @@ class AdrStore:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._connection.execute(
             f"SELECT * FROM adr_generations{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (*params, max(1, min(int(limit), MAX_LIST_LIMIT)), max(0, int(offset))),
+            (*params, max(1, min(int(limit), max_list_limit())), max(0, int(offset))),
         ).fetchall()
         return [decoded for row in rows if (decoded := self._decode_generation(row))]
 
@@ -584,12 +598,12 @@ class AdrStore:
         if member_id:
             rows = self._connection.execute(
                 "SELECT * FROM adr_drafts WHERE member_id=? ORDER BY created_at DESC LIMIT ?",
-                (member_id, max(1, min(int(limit), MAX_LIST_LIMIT))),
+                (member_id, max(1, min(int(limit), max_list_limit()))),
             ).fetchall()
         else:
             rows = self._connection.execute(
                 "SELECT * FROM adr_drafts ORDER BY created_at DESC LIMIT ?",
-                (max(1, min(int(limit), MAX_LIST_LIMIT)),),
+                (max(1, min(int(limit), max_list_limit())),),
             ).fetchall()
         return [dict(row) for row in rows]
 

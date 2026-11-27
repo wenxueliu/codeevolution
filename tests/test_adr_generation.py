@@ -918,3 +918,37 @@ def test_generation_listing_and_mapping_are_not_capped_at_200(tmp_path):
         text_row = next(row for row in mapping["sources"] if row["source_kind"] == "text")
         assert text_row["generation_count"] == 230
         assert text_row["latest_generation"] is not None
+
+
+def test_list_limit_defaults_to_5000_and_is_configurable(monkeypatch, tmp_path):
+    from codeevolution.adr.store import DEFAULT_MAX_LIST_LIMIT, max_list_limit
+
+    for name in ("CODEEVOLUTION_ADR_LIST_LIMIT", "CODEHISTORY_ADR_LIST_LIMIT"):
+        monkeypatch.delenv(name, raising=False)
+    assert DEFAULT_MAX_LIST_LIMIT == 5000
+    assert max_list_limit() == 5000
+
+    monkeypatch.setenv("CODEEVOLUTION_ADR_LIST_LIMIT", "not-a-number")
+    assert max_list_limit() == 5000
+
+    monkeypatch.setenv("CODEEVOLUTION_ADR_LIST_LIMIT", "3")
+    assert max_list_limit() == 3
+
+    # The legacy env name keeps working after the project rename.
+    monkeypatch.delenv("CODEEVOLUTION_ADR_LIST_LIMIT")
+    monkeypatch.setenv("CODEHISTORY_ADR_LIST_LIMIT", "2")
+    assert max_list_limit() == 2
+
+    store = AdrStore(tmp_path / "limit.db")
+    for index in range(4):
+        store.create_generation(
+            member_id="member-limit",
+            source_kind="text",
+            source_ref=f"source-{index}",
+            source_payload={"text": {"text": str(index)}},
+            source_digest=f"sha256:{index:064x}",
+            status="succeeded",
+        )
+    assert len(store.list_generations(member_id="member-limit", limit=10)) == 2
+    monkeypatch.delenv("CODEHISTORY_ADR_LIST_LIMIT")
+    assert len(store.list_generations(member_id="member-limit", limit=10)) == 4

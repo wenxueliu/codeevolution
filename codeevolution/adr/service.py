@@ -42,7 +42,7 @@ from .domain import (
     render_prompt,
     validate_template,
 )
-from .store import MAX_LIST_LIMIT, AdrStore
+from .store import AdrStore, max_list_limit
 
 logger = logging.getLogger(__name__)
 
@@ -1312,7 +1312,7 @@ class AdrService:
         """
         # Counts come from SQL; the list is only a display page for the batch
         # (batches are capped at 100 commits), so it can never skew progress.
-        generations = self.store.list_generations(batch_id=batch_id, limit=MAX_LIST_LIMIT)
+        generations = self.store.list_generations(batch_id=batch_id, limit=max_list_limit())
         counts = self.store.count_generations(batch_id)
         total = sum(counts.values())
         completed = counts.get("succeeded", 0)

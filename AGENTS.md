@@ -115,7 +115,9 @@ ADR 的核心是**用模型生成**，不是读取已有文档：
   已导出（exported），另有已跳过（skipped）与失败（failed）；状态计数与已处理进度始终按
   **整段历史**统计（不受翻页/过滤影响），并支持按状态过滤（`--stage` / `?stage=`）与
   日期范围（`--since/--until`）。历史超过 20000 个提交时要求先缩小日期范围，避免给出
-  只覆盖部分历史的进度。支持单个生成、勾选批量生成（`adr gen --commits`）。
+  只覆盖部分历史的进度。草稿/生成列表单页上限由 `CODEEVOLUTION_ADR_LIST_LIMIT`
+  控制（默认 5000，兼容旧名 `CODEHISTORY_ADR_LIST_LIMIT`），并支持 `offset` 翻页。
+  支持单个生成、勾选批量生成（`adr gen --commits`）。
 - **生成**：`adr gen` 支持 `--commit`、`--file`、`--text`、`--history`、`--commits`；
   提示词按「服务 × 来源类型」版本化（commit/file/text/triage/backtest 五类）。
 - **输出模板**：默认 MADR 4.0，可按服务覆盖；占位符包括 `{{frontmatter}}`、`{{title}}`、
